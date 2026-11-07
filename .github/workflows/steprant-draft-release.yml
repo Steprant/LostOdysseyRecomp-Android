@@ -16,7 +16,7 @@ permissions:
   contents: write
   actions: read
 env:
-  RUN_ID: ${{ inputs.run_id || '42393090638' }}
+  RUN_ID: ${{ inputs.run_id || '42408449395' }}
   TAG: v1.6-steprant.20261106
   TITLE: Lost Odyssey Steprant Android 1.6 (test build)
 jobs:
