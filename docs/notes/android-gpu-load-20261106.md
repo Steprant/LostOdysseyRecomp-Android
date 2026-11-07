@@ -517,3 +517,44 @@ replaces the Adreno 650 `syncdraw` default only when chosen. Verification:
 `ab_switches_test` (defaults set nothing, persisted values reload, the
 environment wins and is logged, range check) and the Android settings
 fixture (`settings_interaction_android`), which compiles the Android page.
+
+## G3: SGSR2 Quality with SMAA, no sharpening (2026-11-07, night)
+
+Decisions from Stefano: SMAA goes into Quality, the SGSR2 sharpness row and
+pass go away.
+
+- **Sharpening removed.** The Sharpness row is FSR-only again (hidden for
+  SGSR2), the renderer passes no sharpening options to SGSR2, and the
+  controller no longer builds or dispatches the sharpen pipeline: the
+  upscale pass writes the output itself (`sharpen = 0`; the shader source is
+  unchanged, its sharpen entry point is simply unused).
+- **SMAA 1x on SGSR2's input.** In Quality, with an RGBA8 SDR colour input
+  (the 8-bit render targets of Android), the controller runs SMAA HIGH at
+  the render size before the convert pass, inside SGSR2's isolated command
+  list: the colour's render region is copied into SMAA's first RGBA8 stage
+  (`SmaaPipeline::DrawCopied`, instead of Presentation's crop pass), then
+  edge detection, blending weights and neighborhood blending, with a
+  full-screen-triangle vertex shader compiled through
+  `xenos::CompileCachedHlsl`. The convert pass reads the anti-aliased
+  copy; colour history, YCoCg and the clamp box all start from it. Balanced,
+  Performance, HDR or non-RGBA8 input run without SMAA. A failure to build
+  it logs once and leaves SGSR2 running without it.
+- **Kernel.** With SMAA, Quality keeps the reference upsampling kernel
+  (`kernelScale` 1.0): the input edges are already smoothed and the wider
+  kernel would only blur texture detail further. Without SMAA (switch off)
+  Quality keeps 0.8. `LO_SGSR2_KERNEL_SCALE` still overrides. Screenshots
+  from the phone should confirm or move this.
+- **Switch.** "SMAA in SGSR2 Quality" on the Android diagnostics page
+  (`LO_SGSR2_SMAA=0` turns it off). The log says once
+  `SGSR2: SMAA on input active|inactive`.
+- **Lavapipe (`sgsr2_test`).** Staircase edge, one frame without history:
+  edge RMSE against the area-sampled ideal 0.1086 without SMAA, 0.0874 with
+  (−20%); output finite and in [0, 1]; a flat colour unchanged (≤0.006).
+  On the accumulated detail scene SMAA costs some above-Nyquist detail:
+  green (5-pixel sinusoid) RMSE 0.0668 → 0.0872, red gradient 0.0059 →
+  0.0046, blue hard edge 0.0259 → 0.0327 — the softer look requested, at a
+  cost in fine texture. No validation-layer message.
+- **Cost.** Not measured on the phone. SMAA HIGH at 1780×800 is a copy and
+  three full-screen passes on 1.4 MP (about 1 ms expected on Adreno 750).
+  The `gpu passes:` profile covers the renderer's render passes, not
+  SGSR2's isolated list; P4's per-class profile adds an SGSR2 bracket.

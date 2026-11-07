@@ -113,6 +113,50 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
         plume::RenderBuffer *ramp,uint64_t rampBytes)
     {
         using namespace plume;
+        Prepare(c,w,h,hdr);
+        RenderTexture *cropped=hdr?hdrStages[0].get():stages[0].get();
+        RenderFramebuffer *croppedFb=hdr?hdrFb[0].get():fb[0].get();
+        RenderViewport vp(0,0,float(w),float(h));RenderRect rect(0,0,w,h);
+        c->setViewports(&vp,1);c->setScissors(&rect,1);
+        // Native-size crop removes padded storage before neighborhood searches.
+        c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(source,RenderTextureLayout::SHADER_READ));
+        c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(cropped,RenderTextureLayout::COLOR_WRITE));
+        c->setFramebuffer(croppedFb);cropSet->setTexture(0,source,RenderTextureLayout::SHADER_READ);
+        cropSet->setTexture(2,source,RenderTextureLayout::SHADER_READ);
+        cropSet->setBuffer(3,ramp,rampBytes);
+        // Match Presentation's complete 64-byte push-constant range. Cropping
+        // keeps the source encoding; the final pass owns output conversion.
+        struct { float x,y,w,h,sw,sh;uint32_t aa,filter,expandRange,outputFlags;float outputScale,peakRatio;float calibrationRect[4]; }
+            crop{0,0,float(w),float(h),float(w),float(h),0,0,0,0,1,1};
+        c->setGraphicsPipelineLayout(cropLayout);c->setPipeline(cropPipeline);
+        c->setGraphicsPushConstants(0,&crop);c->setGraphicsDescriptorSet(cropSet.get(),0);c->drawInstanced(3,1,0,0);
+        return Passes(c,cropped,w,h,hdr);
+    }
+    // SDR RGBA8 only (SGSR2's input): the region (0,0,w,h) of `source` is
+    // copied into the first stage instead of drawn through Presentation's
+    // crop. `source` is SHADER_READ before and after. The result is RGBA8,
+    // w x h, left in COLOR_WRITE; the caller transitions it for its reader.
+    plume::RenderTexture *DrawCopied(plume::RenderCommandList *c,plume::RenderTexture *source,uint32_t w,uint32_t h)
+    {
+        using namespace plume;
+        Prepare(c,w,h,false);
+        RenderTexture *cropped=stages[0].get();
+        c->barriers(RenderBarrierStage::COPY,std::vector<RenderTextureBarrier>{
+            RenderTextureBarrier(source,RenderTextureLayout::COPY_SOURCE),
+            RenderTextureBarrier(cropped,RenderTextureLayout::COPY_DEST)});
+        RenderBox box{0,0,int32_t(w),int32_t(h),0,1};
+        c->copyTextureRegion(RenderTextureCopyLocation::Subresource(cropped),
+            RenderTextureCopyLocation::Subresource(source),0,0,0,&box);
+        c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(source,RenderTextureLayout::SHADER_READ));
+        RenderViewport vp(0,0,float(w),float(h));RenderRect rect(0,0,w,h);
+        c->setViewports(&vp,1);c->setScissors(&rect,1);
+        return Passes(c,cropped,w,h,false);
+    }
+private:
+    // Lookup textures (once) and stage images for this size.
+    void Prepare(plume::RenderCommandList *c,uint32_t w,uint32_t h,bool hdr)
+    {
+        using namespace plume;
         // Owner must wait its presentation fence between calls, including resize.
         if(!uploaded) {
             auto upload=[&](RenderTexture *tex,RenderBuffer *buf,RenderFormat fmt,uint32_t tw,uint32_t th,uint32_t bpp) {
@@ -139,24 +183,13 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
             }
             hdrWidth=w;hdrHeight=h;
         }
-        RenderTexture *cropped=hdr?hdrStages[0].get():stages[0].get();
+    }
+    // Edge detection, blending weights and neighborhood blending of `cropped`.
+    plume::RenderTexture *Passes(plume::RenderCommandList *c,plume::RenderTexture *cropped,uint32_t w,uint32_t h,bool hdr)
+    {
+        using namespace plume;
         RenderTexture *output=hdr?hdrStages[1].get():stages[3].get();
-        RenderFramebuffer *croppedFb=hdr?hdrFb[0].get():fb[0].get();
         RenderFramebuffer *outputFb=hdr?hdrFb[1].get():fb[3].get();
-        RenderViewport vp(0,0,float(w),float(h));RenderRect rect(0,0,w,h);
-        c->setViewports(&vp,1);c->setScissors(&rect,1);
-        // Native-size crop removes padded storage before neighborhood searches.
-        c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(source,RenderTextureLayout::SHADER_READ));
-        c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(cropped,RenderTextureLayout::COLOR_WRITE));
-        c->setFramebuffer(croppedFb);cropSet->setTexture(0,source,RenderTextureLayout::SHADER_READ);
-        cropSet->setTexture(2,source,RenderTextureLayout::SHADER_READ);
-        cropSet->setBuffer(3,ramp,rampBytes);
-        // Match Presentation's complete 64-byte push-constant range. Cropping
-        // keeps the source encoding; the final pass owns output conversion.
-        struct { float x,y,w,h,sw,sh;uint32_t aa,filter,expandRange,outputFlags;float outputScale,peakRatio;float calibrationRect[4]; }
-            crop{0,0,float(w),float(h),float(w),float(h),0,0,0,0,1,1};
-        c->setGraphicsPipelineLayout(cropLayout);c->setPipeline(cropPipeline);
-        c->setGraphicsPushConstants(0,&crop);c->setGraphicsDescriptorSet(cropSet.get(),0);c->drawInstanced(3,1,0,0);
         // Initialize every descriptor even where an entry point does not consume it.
         for(int i=0;i<3;++i) {
             sets[i]->setTexture(0,i==1?stages[1].get():cropped,RenderTextureLayout::SHADER_READ);

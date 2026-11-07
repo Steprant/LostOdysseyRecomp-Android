@@ -269,7 +269,7 @@ bool Check(bool condition, const char* what)
 }
 
 const gpu::sgsr2::Config kConfig{kRenderW, kRenderH, kOutW, kOutH, 1};
-float gSharpness = 0.0f; // the sharpening pass, off unless a check turns it on
+bool gSmaa = false;      // SMAA on the input (Quality), off unless a check turns it on
 float gEdgeClip = NAN;   // the controller's default unless a check sets it
 
 // Records one frame, submits it and retires it, as the renderer does.
@@ -277,7 +277,7 @@ gpu::sgsr2::Status RunFrame(Fixture& f, gpu::sgsr2::Controller& controller, uint
     double jx, double jy, bool sameCamera, uint64_t& serial)
 {
     const auto attempt = controller.RecordIsolated(*f.sr, kConfig, f.Inputs(frame, reset, jx, jy),
-        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSharpness, gEdgeClip}, *f.output);
+        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSmaa, gEdgeClip}, *f.output);
     if (attempt.status != gpu::sgsr2::Status::Ready) return attempt.status;
     controller.OnBatchSubmitted(attempt.useId, ++serial);
     f.Submit(f.sr.get());
@@ -370,32 +370,75 @@ int Run(RenderDevice* device)
     pass &= Check(goodSum < badSum, "renderer jitter sign beats the flipped sign");
     pass &= Check(delta < 0.02, "static history stable (mean frame-to-frame change)");
 
-    // 2b. The sharpening pass: more edge contrast (mean horizontal blue
-    // gradient), still in range and no farther from the ideal image.
+    // 2b. SMAA on the input (Quality, G3): a staircase edge, one frame at a
+    // time with no history (reset, no jitter), as SGSR2 sees a new scene.
+    // Against the area-sampled ideal edge the output must be finite, in
+    // range, and smoother than without SMAA; a flat colour stays unchanged.
     {
-        const auto gradient = [](const std::vector<float>& rgb) {
-            double sum = 0;
-            for (uint32_t y = 2; y + 2 < kOutH; ++y)
-                for (uint32_t x = 2; x + 3 < kOutW; ++x)
-                    sum += std::abs(rgb[(size_t(y) * kOutW + x + 1) * 3 + 2] - rgb[(size_t(y) * kOutW + x) * 3 + 2]);
-            return sum;
+        // Edge y = 0.45 * x + 8 in render pixels: dark below, light above.
+        const auto light = [](double rx, double ry) { return ry < 0.45 * rx + 8.0; };
+        f.colorFn = [&](uint32_t x, uint32_t y) {
+            const uint32_t v = light(x + 0.5, y + 0.5) ? 220u : 30u;
+            return 0xff000000u | (v << 16) | (v << 8) | v;
         };
-        gSharpness = 0.5f;
-        std::vector<float> sharpened;
-        double sharpenedDelta = 1;
-        pass &= Check(accumulate(600, 1.0f, sharpened, sharpenedDelta), "sharpened frames recorded");
-        const auto sharp = Rmse(detail, sharpened);
-        const auto ss = Measure(sharpened);
-        printf("  sharpened rmse r/g/b %.4f %.4f %.4f  blue gradient %.2f (unsharpened %.2f) min %.4f max %.4f\n",
-            sharp[0], sharp[1], sharp[2], gradient(sharpened), gradient(correct), ss.min, ss.max);
-        pass &= Check(ss.finite && ss.min >= 0.0f && ss.max <= 1.0f, "sharpened output finite and in [0, 1]");
-        pass &= Check(gradient(sharpened) > gradient(correct), "sharpening adds edge contrast");
-        pass &= Check(sharp[0] + sharp[1] + sharp[2] < goodSum * 1.1, "sharpening stays close to the ideal");
-        // A flat colour is left exactly as it is.
+        f.depthFn = [](uint32_t, uint32_t) { return 0.05f; };
+        // Area-sampled ideal at output resolution (8x8 subsamples per pixel).
+        std::vector<float> ideal(size_t(kOutW) * kOutH);
+        for (uint32_t y = 0; y < kOutH; ++y)
+            for (uint32_t x = 0; x < kOutW; ++x) {
+                int lit = 0;
+                for (int sy = 0; sy < 8; ++sy)
+                    for (int sx = 0; sx < 8; ++sx)
+                        lit += light((x + (sx + 0.5) / 8.0) * kRenderW / kOutW, (y + (sy + 0.5) / 8.0) * kRenderH / kOutH);
+                ideal[size_t(y) * kOutW + x] = float((30 + (220 - 30) * lit / 64.0) / 255.0);
+            }
+        // Error near the edge only (where the staircase is).
+        const auto edgeError = [&](const std::vector<float>& rgb) {
+            double sum = 0; size_t count = 0;
+            for (uint32_t y = 2; y + 2 < kOutH; ++y)
+                for (uint32_t x = 2; x + 2 < kOutW; ++x) {
+                    const double ry = (y + 0.5) * kRenderH / kOutH, rx = (x + 0.5) * kRenderW / kOutW;
+                    if (std::abs(ry - (0.45 * rx + 8.0)) > 2.0) continue;
+                    const double d = rgb[(size_t(y) * kOutW + x) * 3 + 1] - ideal[size_t(y) * kOutW + x];
+                    sum += d * d; ++count;
+                }
+            return std::sqrt(sum / double(std::max<size_t>(count, 1)));
+        };
+        Scene unused{};
+        std::array<double, 2> error{};
+        std::array<Stats, 2> stats{};
+        for (int run = 0; run < 2; ++run) {
+            gSmaa = run == 1;
+            if (!f.Upload(unused, 0, 0, 0, false)) return 1;
+            pass &= Check(RunFrame(f, controller, 620 + run, true, 0, 0, false, serial) == gpu::sgsr2::Status::Ready,
+                run ? "staircase frame with SMAA recorded" : "staircase frame without SMAA recorded");
+            const auto out = f.Read();
+            error[run] = edgeError(out);
+            stats[run] = Measure(out);
+        }
+        printf("  staircase edge rmse: without SMAA %.4f, with SMAA %.4f (min %.4f max %.4f)\n",
+            error[0], error[1], stats[1].min, stats[1].max);
+        pass &= Check(stats[1].finite && stats[1].min >= 0.0f && stats[1].max <= 1.0f, "SMAA output finite and in [0, 1]");
+        pass &= Check(error[1] < error[0] * 0.9, "SMAA brings the staircase closer to the area-sampled edge");
+        f.colorFn = nullptr; f.depthFn = nullptr;
+        gSmaa = true;
         if (!f.Upload(flat, 0, 0, 0, false)) return 1;
         for (uint64_t frame = 650; frame < 654; ++frame) RunFrame(f, controller, frame, frame == 650, 0.25, -0.25, true, serial);
-        pass &= Check(flatDeviation(f.Read()) < 0.006, "sharpening leaves a flat colour unchanged");
-        gSharpness = 0.0f;
+        pass &= Check(flatDeviation(f.Read()) < 0.006, "SMAA leaves a flat colour unchanged");
+        // The detail scene with SMAA stays as close to the ideal as without.
+        std::vector<float> smoothed;
+        double smoothedDelta = 1;
+        pass &= Check(accumulate(660, 1.0f, smoothed, smoothedDelta), "jittered frames with SMAA recorded");
+        const auto withSmaa = Rmse(detail, smoothed);
+        printf("  detail rmse with SMAA r/g/b %.4f %.4f %.4f (without %.4f %.4f %.4f) frame_delta %.5f\n",
+            withSmaa[0], withSmaa[1], withSmaa[2], good[0], good[1], good[2], smoothedDelta);
+        // SMAA reads the above-Nyquist green pattern as edges and blends part
+        // of what the jitter would recover (measured +30% rmse on green, red
+        // and blue edges better): the softer Quality the player asked for,
+        // bounded here so a regression in the pipeline still fails.
+        pass &= Check(withSmaa[0] + withSmaa[1] + withSmaa[2] < goodSum * 1.35, "SMAA keeps most of the accumulated detail");
+        pass &= Check(withSmaa[0] <= good[0] * 1.05 && withSmaa[2] <= good[2] * 1.3, "SMAA leaves gradients and hard edges close");
+        gSmaa = false;
     }
 
     // 2c. Thin railings and a moving character, as on the device.

@@ -10,8 +10,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "shader/smaa_pipeline.h"
 
 namespace gpu::sgsr2 {
 using namespace plume;
@@ -34,7 +38,7 @@ struct PushConstants {
     uint32_t sameCamera;
     uint32_t reset;
     uint32_t depthReversed;
-    float sharpness;
+    float sharpness; // the reference's sharpening pass is not used: always 0
     uint32_t sharpen;
     float previousJitter[2];
     float edgeClip;
@@ -78,14 +82,19 @@ struct Controller::Impl {
     RenderDevice* device = nullptr;
     Config config{};
     bool ready = false, poisoned = false;
-    std::unique_ptr<RenderShader> convertShader, upscaleShader, sharpenShader;
-    std::unique_ptr<RenderPipelineLayout> convertLayout, upscaleLayout, sharpenLayout;
-    std::unique_ptr<RenderPipeline> convertPipeline, upscalePipeline, sharpenPipeline;
+    std::unique_ptr<RenderShader> convertShader, upscaleShader;
+    std::unique_ptr<RenderPipelineLayout> convertLayout, upscaleLayout;
+    std::unique_ptr<RenderPipeline> convertPipeline, upscalePipeline;
+    // SMAA on the input (Quality): built on first use; a failure leaves
+    // SGSR2 running without it.
+    std::unique_ptr<RenderShader> smaaVs;
+    std::unique_ptr<SmaaPipeline> smaa;
+    bool smaaFailed = false, smaaLogged = false;
     std::unique_ptr<RenderSampler> linearClamp, pointClamp;
     std::unique_ptr<RenderTexture> motionDepthClip, ycocg;
     std::array<std::unique_ptr<RenderTexture>, 2> history, depthHistory;
     float previousJitter[2] = {0.0f, 0.0f};
-    struct Slot { std::unique_ptr<RenderDescriptorSet> convert, upscale, sharpen; };
+    struct Slot { std::unique_ptr<RenderDescriptorSet> convert, upscale; };
     std::array<Slot, kSlots> slots;
     struct Use { uint64_t useId = 0, serial = 0; size_t slot = 0; };
     std::deque<Use> uses;
@@ -105,10 +114,11 @@ struct Controller::Impl {
     void DropAll()
     {
         DropResources();
-        for (auto& slot : slots) { slot.convert.reset(); slot.upscale.reset(); slot.sharpen.reset(); }
-        convertPipeline.reset(); upscalePipeline.reset(); sharpenPipeline.reset();
-        convertLayout.reset(); upscaleLayout.reset(); sharpenLayout.reset();
-        convertShader.reset(); upscaleShader.reset(); sharpenShader.reset();
+        for (auto& slot : slots) { slot.convert.reset(); slot.upscale.reset(); }
+        convertPipeline.reset(); upscalePipeline.reset();
+        convertLayout.reset(); upscaleLayout.reset();
+        convertShader.reset(); upscaleShader.reset();
+        smaa.reset(); smaaVs.reset(); smaaFailed = false;
         linearClamp.reset(); pointClamp.reset();
         uses.clear();
         ready = false;
@@ -128,8 +138,7 @@ struct Controller::Impl {
         };
         convertShader = compile("SGSR2_CONVERT", "sgsr2Convert");
         upscaleShader = compile("SGSR2_UPSCALE", "sgsr2Upscale");
-        sharpenShader = compile("SGSR2_SHARPEN", "sgsr2Sharpen");
-        if (!convertShader || !upscaleShader || !sharpenShader) return false;
+        if (!convertShader || !upscaleShader) return false;
 
         RenderSamplerDesc samplerDesc;
         samplerDesc.addressU = samplerDesc.addressV = samplerDesc.addressW = RenderTextureAddressMode::CLAMP;
@@ -156,13 +165,6 @@ struct Controller::Impl {
         upscaleSet.addReadWriteTexture(5);
         upscaleSet.addReadWriteTexture(6);
         upscaleSet.end();
-        RenderDescriptorSetBuilder sharpenSet;
-        sharpenSet.begin();
-        sharpenSet.addTexture(0);
-        sharpenSet.addTexture(1);
-        sharpenSet.addSampler(2);
-        sharpenSet.addReadWriteTexture(3);
-        sharpenSet.end();
 
         const auto makeLayout = [&](RenderDescriptorSetBuilder& set) {
             RenderPipelineLayoutBuilder layout;
@@ -174,21 +176,16 @@ struct Controller::Impl {
         };
         convertLayout = makeLayout(convertSet);
         upscaleLayout = makeLayout(upscaleSet);
-        sharpenLayout = makeLayout(sharpenSet);
-        if (!convertLayout || !upscaleLayout || !sharpenLayout) return false;
+        if (!convertLayout || !upscaleLayout) return false;
         convertPipeline = device->createComputePipeline(
             RenderComputePipelineDesc(convertLayout.get(), convertShader.get(), kGroup, kGroup, 1));
         upscalePipeline = device->createComputePipeline(
             RenderComputePipelineDesc(upscaleLayout.get(), upscaleShader.get(), kGroup, kGroup, 1));
-        sharpenPipeline = device->createComputePipeline(
-            RenderComputePipelineDesc(sharpenLayout.get(), sharpenShader.get(), kGroup, kGroup, 1));
-        if (!convertPipeline || !upscalePipeline || !sharpenPipeline) return false;
+        if (!convertPipeline || !upscalePipeline) return false;
         for (auto& slot : slots) {
             slot.convert = convertSet.create(device);
             slot.upscale = upscaleSet.create(device);
-            slot.sharpen = sharpenSet.create(device);
-            if (!slot.convert || !slot.upscale || !slot.sharpen) return false;
-            slot.sharpen->setSampler(2, linearClamp.get());
+            if (!slot.convert || !slot.upscale) return false;
             slot.convert->setSampler(4, pointClamp.get());
             slot.upscale->setSampler(3, linearClamp.get());
             slot.upscale->setSampler(4, pointClamp.get());
@@ -212,6 +209,30 @@ struct Controller::Impl {
         historyValid = false;
         lastFrame.reset();
         return motionDepthClip && ycocg && history[0] && history[1] && depthHistory[0] && depthHistory[1];
+    }
+
+    bool EnsureSmaa()
+    {
+        if (smaa) return true;
+        if (smaaFailed) return false;
+        // Full-screen triangle; SMAA's passes read SV_Position only.
+        static constexpr const char* kVs =
+            "float4 main(uint id : SV_VertexID) : SV_Position {\n"
+            "    float2 uv = float2((id << 1) & 2, id & 2);\n"
+            "    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+            "}\n";
+        auto compiled = xenos::CompileCachedHlsl(kVs, "main", "vs_6_0", xenos::ShaderBinaryFormat::Spirv);
+        if (compiled.ok)
+            smaaVs = device->createShader(compiled.bytecode.data(), compiled.bytecode.size(), "main", RenderShaderFormat::SPIRV);
+        auto pipeline = std::make_unique<SmaaPipeline>();
+        if (!smaaVs || !pipeline->Init(device, smaaVs.get(), linearClamp.get(), true)) {
+            LOG_WARNING("SGSR2: SMAA unavailable{}{}; continuing without it", compiled.ok ? "" : ": ", compiled.errors);
+            smaaVs.reset();
+            smaaFailed = true;
+            return false;
+        }
+        smaa = std::move(pipeline);
+        return true;
     }
 
     std::optional<size_t> FreeSlot() const
@@ -249,7 +270,7 @@ Status Controller::EnsureSession(RenderDevice& device, const Config& config)
     // A feature released for a resize (the menu switch between the quality
     // size and the output size) keeps its pipelines: only the images are
     // remade, not three compute pipelines on the frame of the switch.
-    if (p.device == &device && p.convertPipeline && p.upscalePipeline && p.sharpenPipeline) {
+    if (p.device == &device && p.convertPipeline && p.upscalePipeline) {
         p.config = config;
         if (!p.CreateResources()) {
             LOG_WARNING("SGSR2: unavailable (image creation failed)");
@@ -321,17 +342,29 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     constants.sameCamera = frame.sameCamera ? 1u : 0u;
     constants.reset = reset ? 1u : 0u;
     constants.depthReversed = inputs.depthConvention == temporal::DepthConvention::Reversed ? 1u : 0u;
-    const float sharpness = std::isfinite(frame.sharpness) ? std::clamp(frame.sharpness, 0.0f, 1.0f) : 0.0f;
-    constants.sharpness = sharpness;
-    constants.sharpen = sharpness > 0.0f ? 1u : 0u;
+    // The upscale writes the output itself (no sharpening pass).
+    constants.sharpness = 0.0f;
+    constants.sharpen = 0u;
     constants.previousJitter[0] = reset ? constants.jitterOffset[0] : p.previousJitter[0];
     constants.previousJitter[1] = reset ? constants.jitterOffset[1] : p.previousJitter[1];
     constants.edgeClip = std::isfinite(frame.edgeClip) ? std::clamp(frame.edgeClip, 0.0f, 1.0f) : EdgeClip();
     constants.kernelScale = std::isfinite(frame.kernelScale) ? std::clamp(frame.kernelScale, 0.5f, 1.0f) : 1.0f;
 
+    // SMAA 1x on an SDR RGBA8 input, at the render size, before the convert
+    // pass reads it (Quality). Colour in the history, YCoCg and the clamp
+    // box all start from the anti-aliased edges.
+    // FrameValues::smaa is set only for an RGBA8 colour (the caller sees the format).
+    const bool smaaWanted = frame.smaa && inputs.colorEncoding == temporal::ColorEncoding::Sdr;
+    const bool smaaOn = smaaWanted && p.EnsureSmaa();
+    if (frame.smaa && !p.smaaLogged) {
+        p.smaaLogged = true;
+        LOG_INFO("SGSR2: SMAA on input {} ({})", smaaOn ? "active" : "inactive",
+            inputs.colorEncoding == temporal::ColorEncoding::Sdr ? "SDR" : "not SDR");
+    }
+
     slot.convert->setTexture(0, inputs.depth.texture, RenderTextureLayout::SHADER_READ);
     slot.convert->setTexture(1, inputs.motion.texture, RenderTextureLayout::SHADER_READ);
-    slot.convert->setTexture(2, color.texture, RenderTextureLayout::SHADER_READ);
+    // Bound below once the colour source is known.
     slot.convert->setTexture(3, inputs.motionInvalidity.texture, RenderTextureLayout::SHADER_READ);
     slot.convert->setTexture(5, p.motionDepthClip.get(), RenderTextureLayout::GENERAL);
     slot.convert->setTexture(6, p.ycocg.get(), RenderTextureLayout::GENERAL);
@@ -343,15 +376,20 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     slot.upscale->setTexture(2, p.ycocg.get(), RenderTextureLayout::GENERAL);
     slot.upscale->setTexture(5, &output, RenderTextureLayout::GENERAL);
     slot.upscale->setTexture(6, p.history[write].get(), RenderTextureLayout::GENERAL);
-    slot.sharpen->setTexture(0, p.history[write].get(), RenderTextureLayout::GENERAL);
-    slot.sharpen->setTexture(1, p.motionDepthClip.get(), RenderTextureLayout::GENERAL);
-    slot.sharpen->setTexture(3, &output, RenderTextureLayout::GENERAL);
 
     const uint64_t useId = p.nextUse++;
     p.uses.push_back({useId, 0, *slotIndex});
     attempt.useId = useId;
 
     commands.begin();
+    RenderTexture* colorSource = color.texture;
+    if (smaaOn) {
+        colorSource = p.smaa->DrawCopied(&commands, color.texture, config.renderWidth, config.renderHeight);
+        commands.setFramebuffer(nullptr);
+        commands.barriers(RenderBarrierStage::COMPUTE,
+            RenderTextureBarrier(colorSource, RenderTextureLayout::SHADER_READ));
+    }
+    slot.convert->setTexture(2, colorSource, RenderTextureLayout::SHADER_READ);
     // GENERAL -> GENERAL still orders the previous frame's compute work.
     commands.barriers(RenderBarrierStage::COMPUTE, std::vector<RenderTextureBarrier>{
         RenderTextureBarrier(p.motionDepthClip.get(), RenderTextureLayout::GENERAL),
@@ -374,15 +412,6 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     commands.setComputePushConstants(0, &constants);
     commands.setComputeDescriptorSet(slot.upscale.get(), 0);
     commands.dispatch((config.outputWidth + kGroup - 1) / kGroup, (config.outputHeight + kGroup - 1) / kGroup, 1);
-    if (constants.sharpen) {
-        commands.barriers(RenderBarrierStage::COMPUTE, std::vector<RenderTextureBarrier>{
-            RenderTextureBarrier(p.history[write].get(), RenderTextureLayout::GENERAL)});
-        commands.setComputePipelineLayout(p.sharpenLayout.get());
-        commands.setPipeline(p.sharpenPipeline.get());
-        commands.setComputePushConstants(0, &constants);
-        commands.setComputeDescriptorSet(slot.sharpen.get(), 0);
-        commands.dispatch((config.outputWidth + kGroup - 1) / kGroup, (config.outputHeight + kGroup - 1) / kGroup, 1);
-    }
     commands.barriers(RenderBarrierStage::ALL, std::vector<RenderTextureBarrier>{
         RenderTextureBarrier(&output, RenderTextureLayout::GENERAL),
         RenderTextureBarrier(p.history[write].get(), RenderTextureLayout::GENERAL)});

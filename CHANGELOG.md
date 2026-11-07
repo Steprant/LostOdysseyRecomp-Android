@@ -15,7 +15,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - Audio: the XMA decoder no longer holds its lock for a whole voice while the audio driver waits; it runs on performance cores at audio priority.
 - Android diagnostics: selectable audio buffer (43/64/85 ms) and audio/XMA timing peaks in the runtime log.
 - Android diagnostics: per-render-pass GPU profile in Tester recordings.
-- Vulkan: depth-only draws run their vertex shaders without the varyings nobody reads; SGSR2 menus turn sharp sooner and the switch back reuses its render targets and pipelines; SGSR2 Quality is smoother, with sharpening on the Sharpness row (Off by default).
+- Vulkan: depth-only draws run their vertex shaders without the varyings nobody reads; SGSR2 menus turn sharp sooner and the switch back reuses its render targets and pipelines; SGSR2 Quality is smoother.
 - Android: experimental SGSR2 temporal upscaling (Anti-aliasing → SGSR2, with an SGSR2 quality row): renders at 1/1.5–1/2 of the output size and reconstructs it from jitter, depth and camera motion; scene textures keep their output-resolution detail (mip bias), a contrast-adaptive sharpen follows it, and the new 576p render resolution renders SGSR2 at 576 lines.
 - Vulkan: pixel shaders keep early depth rejection unless the game enables the alpha test (Adreno LRZ), so occluded pixels are no longer shaded; existing shader packs stay valid.
 - Android: compact 8-bit/10-bit render targets (half the bandwidth), display refresh matched to the game frame rate, and a 900p render resolution.
@@ -28,6 +28,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - Vulkan: after a render-resolution switch and back, the renderer reuses all its render targets (it kept only one size and discarded most of them).
 - SGSR2: menus, loading screens and fades no longer change the render resolution (no more hitch at every transition); their interface is drawn at the display resolution over the enlarged background. The old switch remains as an option on the Android diagnostics page, now only after 1.5 s without a 3D scene.
 - Android diagnostics: A/B switches for the recent GPU changes, the Turnip render mode and the old menu behaviour; saved at once, applied after restarting and listed in the runtime log.
+- SGSR2 Quality: SMAA on the render-size image before the upscale for smoother edges; the SGSR2 sharpness setting and pass are removed (sharpening stays for FSR).
 
 ### 简体中文
 
@@ -50,6 +51,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - Vulkan：渲染分辨率切换并切回后，渲染器复用全部渲染目标（此前只保留一种尺寸，大部分被丢弃）。
 - SGSR2：菜单、加载画面和淡入淡出不再改变渲染分辨率（每次过渡不再卡顿）；其界面以显示分辨率绘制在放大的背景之上。旧的切换方式保留为 Android 诊断页面中的选项，且仅在 1.5 秒无 3D 场景后触发。
 - Android 诊断：为近期 GPU 改动、Turnip 渲染模式和旧菜单行为提供 A/B 开关；立即保存，重启后生效，并记录在运行日志中。
+- SGSR2 品质模式：放大前在渲染尺寸图像上执行 SMAA，边缘更平滑；移除 SGSR2 锐化设置和锐化通道（FSR 仍保留锐化）。
 
 ## [v1.5-steprant.20261104](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) — Steprant Android 1.5 — 2026-11-04
 

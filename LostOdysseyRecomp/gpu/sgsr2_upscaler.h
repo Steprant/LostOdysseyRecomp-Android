@@ -35,7 +35,7 @@ struct Attempt {
 struct FrameValues {
     float cameraFovAngleHor = 1.0f; // tan(horizontal fov / 2)
     bool sameCamera = false;        // view-projection unchanged since the last frame
-    float sharpness = 0.0f;         // 0 off, up to 1: contrast-adaptive sharpening of the output
+    bool smaa = false;              // SMAA 1x on the colour input before SGSR2; only for an RGBA8, SDR colour
     float edgeClip = NAN;           // depth-edge history clip weight; NaN: LO_SGSR2_EDGE_CLIP or 1
     float kernelScale = 1.0f;       // 0.5..1: narrows the Lanczos window's bias (wider, softer kernel) below 1
 };
@@ -54,6 +54,8 @@ public:
     Status EnsureSession(plume::RenderDevice& device, const Config& config);
     // Opens, records and closes the isolated list. Inputs are SHADER_READ,
     // output (RGBA16F storage, output size) GENERAL before and after.
+    // With FrameValues::smaa and an RGBA8 SDR colour, SMAA's three passes run
+    // first in the same list, on a copy of the colour's render region.
     Attempt RecordIsolated(plume::RenderCommandList& commands, const Config& config,
         const temporal::TemporalFrameInputs& inputs, const FrameValues& frame, plume::RenderTexture& output);
     void OnBatchSubmitted(uint64_t useId, uint64_t serial);

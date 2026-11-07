@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cfloat>
 #include <cstdlib>
+#include <string_view>
 
 #if LO_PLATFORM_MACOS
 #include <os/logger.h>
@@ -198,23 +199,24 @@ SrResult TemporalUpscaler::RecordIsolated(plume::VulkanCommandList& commands,
     if (request.plan.requestedUpscaler == upscaling::Upscaler::Sgsr2) {
         const auto& inputs = request.inputs;
         sgsr2::FrameValues frame{};
-        // Contrast-adaptive sharpening after SGSR2's accumulation: the
-        // Sharpness row (shared with FSR, Off by default). Quality also widens
-        // the upsampling kernel (kernelScale 0.8) for the smoother look of a
-        // spatial AA; Balanced and Performance keep the reference kernel.
-        // LO_SGSR2_SHARPNESS=0..1 and LO_SGSR2_KERNEL_SCALE=0.5..1 override.
-        static const float sharpnessOverride = [] {
-            const char* value = std::getenv("LO_SGSR2_SHARPNESS");
-            return value && *value ? float(std::clamp(std::atof(value), 0.0, 1.0)) : -1.0f;
+        // Quality: SMAA 1x on the RGBA8 SDR input (G3; LO_SGSR2_SMAA=0, the
+        // Android diagnostics switch, turns it off). The input's edges are
+        // then anti-aliased before accumulation, so Quality keeps the
+        // reference kernel; without SMAA it widens it (kernelScale 0.8) for
+        // a softer image. Balanced and Performance keep the reference and no
+        // SMAA. No sharpening pass. LO_SGSR2_KERNEL_SCALE=0.5..1 overrides.
+        static const bool smaaEnabled = [] {
+            const char* value = std::getenv("LO_SGSR2_SMAA");
+            return !(value && std::string_view(value) == "0");
         }();
         static const float kernelOverride = [] {
             const char* value = std::getenv("LO_SGSR2_KERNEL_SCALE");
             return value && *value ? float(std::clamp(std::atof(value), 0.5, 1.0)) : -1.0f;
         }();
-        frame.sharpness = sharpnessOverride >= 0.0f ? sharpnessOverride :
-            request.options.fsrSharpening ? std::clamp(request.options.fsrSharpness, 0.0f, 1.0f) : 0.0f;
-        frame.kernelScale = kernelOverride > 0.0f ? kernelOverride :
-            request.plan.fsrQuality == upscaling::FsrQuality::Quality ? 0.8f : 1.0f;
+        const bool quality = request.plan.fsrQuality == upscaling::FsrQuality::Quality;
+        frame.smaa = smaaEnabled && quality && inputs.color.texture &&
+            static_cast<const plume::VulkanTexture*>(inputs.color.texture)->desc.format == plume::RenderFormat::R8G8B8A8_UNORM;
+        frame.kernelScale = kernelOverride > 0.0f ? kernelOverride : quality && !frame.smaa ? 0.8f : 1.0f;
         if (inputs.cameraValid && inputs.color.height) {
             const double aspect = double(inputs.color.width) / inputs.color.height;
             if (const auto projection = fsr::DeriveProjection(inputs.cameraViewProjection, aspect))

@@ -1207,9 +1207,9 @@ bool GraphicsRowHidden(int r)
     if (r == int(GraphicsRow::DlssQuality))
         return edit.upscaler != gpu::upscaling::Upscaler::Sgsr2 &&
             (!graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr);
+    // SGSR2 has no sharpening pass (its Quality uses SMAA instead): FSR only.
     if (r == int(GraphicsRow::FsrSharpness))
-        return edit.upscaler != gpu::upscaling::Upscaler::Sgsr2 &&
-            (!graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr);
+        return !graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr;
 #endif
     // A single adapter or display leaves nothing to choose.
     if (r == int(GraphicsRow::Gpu))
@@ -1606,9 +1606,7 @@ void Publish(uint8_t *base, uint32_t config)
         sharpnessChoices.emplace_back(Tr(L"Off", L"關"));
         for (uint32_t percent = 1; percent <= 100; ++percent)
             sharpnessChoices.push_back(std::to_wstring(percent) + L"%");
-        const bool sharpnessForSgsr2 = edit.upscaler == gpu::upscaling::Upscaler::Sgsr2;
-        auto fsrSharpness = makeChoices(sharpnessForSgsr2 ? L"SGSR2 sharpness" : L"FSR sharpness",
-                                        sharpnessForSgsr2 ? L"SGSR2 銳化" : L"FSR 銳化", std::move(sharpnessChoices),
+        auto fsrSharpness = makeChoices(L"FSR sharpness", L"FSR 銳化", std::move(sharpnessChoices),
                                         std::min(edit.fsrSharpnessPercent, 100u));
         fsrSharpness.hidden = GraphicsRowHidden(int(GraphicsRow::FsrSharpness));
         placeGraphics(GraphicsRow::FsrSharpness, std::move(fsrSharpness));
@@ -1940,12 +1938,8 @@ void Publish(uint8_t *base, uint32_t config)
                            L"M：比舊版模型更穩定、更清晰，開銷適中。L：最穩定、拖影最少，但較慢，RTX 20/30 系列尤其明顯。");
             break;
         case GraphicsRow::FsrSharpness:
-            if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2)
-                next.help = Tr(L"SGSR2 sharpening after the upscale: Off keeps the smooth image; 1-100% adds edge contrast.",
-                               L"SGSR2 放大後銳化：關閉保持柔和畫面；1-100% 增加邊緣對比。");
-            else
-                next.help = Tr(L"FSR sharpening: Off disables RCAS; 1-100% sets sharpening strength.",
-                               L"FSR 銳化：關閉會停用 RCAS；1-100% 調整銳化強度。");
+            next.help = Tr(L"FSR sharpening: Off disables RCAS; 1-100% sets sharpening strength.",
+                           L"FSR 銳化：關閉會停用 RCAS；1-100% 調整銳化強度。");
             break;
         case GraphicsRow::DlssNeuralRendering:
         {

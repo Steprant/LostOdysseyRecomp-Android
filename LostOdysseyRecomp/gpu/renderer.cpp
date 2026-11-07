@@ -10285,8 +10285,8 @@ void main()
                         }
                     }
                     frameSrOptions = {};
-                    if (activePlan.requestedUpscaler == upscaling::Upscaler::Fsr ||
-                        activePlan.requestedUpscaler == upscaling::Upscaler::Sgsr2) {
+                    // SGSR2 takes no sharpening (G3): its Quality runs SMAA on the input.
+                    if (activePlan.requestedUpscaler == upscaling::Upscaler::Fsr) {
                         const uint32_t percent = std::min(settings::GetConfig().fsrSharpnessPercent, 100u);
                         frameSrOptions = {percent != 0, float(percent) / 100.0f};
                     } else if (activePlan.requestedUpscaler == upscaling::Upscaler::Dlss) {
