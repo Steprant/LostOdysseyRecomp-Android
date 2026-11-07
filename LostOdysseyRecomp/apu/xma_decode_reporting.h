@@ -48,6 +48,69 @@ private:
     Clock::time_point lastReport_{};
 };
 
+// A1: a run of failed frames on one context. More than BurstThreshold in one
+// second is a burst; the first failure past the threshold reports it once,
+// and the window that ends one returns its total for a closing line.
+class FailureBurst
+{
+public:
+    using Clock = std::chrono::steady_clock;
+    static constexpr uint32_t BurstThreshold = 100;
+    struct Result { bool burstStart = false; uint32_t endedBurstCount = 0; };
+
+    Result Observe(Clock::time_point now) noexcept
+    {
+        Result result;
+        if (count_ == 0 || now - windowStart_ >= std::chrono::seconds(1))
+        {
+            if (inBurst_) result.endedBurstCount = count_;
+            windowStart_ = now;
+            count_ = 0;
+            inBurst_ = false;
+        }
+        ++count_;
+        if (!inBurst_ && count_ > BurstThreshold)
+        {
+            inBurst_ = true;
+            result.burstStart = true;
+        }
+        return result;
+    }
+    uint32_t Count() const noexcept { return count_; }
+    bool InBurst() const noexcept { return inBurst_; }
+
+private:
+    Clock::time_point windowStart_{};
+    uint32_t count_ = 0;
+    bool inBurst_ = false;
+};
+
+// A1: what a context does after a failed frame. A second failure in the same
+// packet means the assembler lost the frame boundaries there: skip to the
+// next packet, whose header gives its first frame. From SilenceAfter
+// failures in a row the decoder is flushed and the failed frame becomes 512
+// samples of silence, so the voice keeps its timing and the worker stops
+// chewing through the input as fast as it can.
+enum class FailureAction : uint8_t { Continue, SkipPacket, Silence };
+
+struct FailureRun
+{
+    static constexpr uint32_t SilenceAfter = 8;
+    uint32_t consecutive = 0, samePacket = 0;
+    uint64_t packetKey = ~0ull;
+
+    FailureAction OnFailure(uint64_t key) noexcept
+    {
+        ++consecutive;
+        samePacket = key == packetKey ? samePacket + 1 : 1;
+        packetKey = key;
+        if (consecutive >= SilenceAfter) return FailureAction::Silence;
+        if (samePacket >= 2) return FailureAction::SkipPacket;
+        return FailureAction::Continue;
+    }
+    void OnSuccess() noexcept { consecutive = samePacket = 0; packetKey = ~0ull; }
+};
+
 // receiveResult is the existing combined result and may equal sendResult
 // when send failed. Do not describe that value as a receive result in logs.
 constexpr const char* DecodeFailureStage(int sendResult, int receiveResult) noexcept

@@ -185,10 +185,50 @@ void BudgetedWorkMatchesSingleHold() {
     }
     g_workBudget=16;
 }
+// A1: one failed frame is just skipped (no packet skipped, every later frame
+// still assembled bit-exactly); a decoder that keeps failing resynchronises
+// on packet boundaries, is flushed, and from the eighth failure in a row
+// each failed frame becomes silence, so a kick writes its output ring
+// instead of burning through the whole input.
+void IsolatedFailureKeepsFrames() {
+    const Stream s({5000,4000,7000,3000,6000,5500,2000,9000});
+    std::vector<uint8_t> input;
+    for(auto& packet:s.packets) input.insert(input.end(),packet.begin(),packet.end());
+    std::fill(g_memory.bytes.begin(),g_memory.bytes.end(),uint8_t(0));
+    std::copy(input.begin(),input.end(),g_memory.bytes.begin()+0x10000);
+    ContextData d{};
+    ContextData::SetBits(d.d[0],0,12,unsigned(s.packets.size())); d.setInput0Valid(true);
+    ContextData::SetBits(d.d[1],27,2,3); ContextData::SetBits(d.d[1],29,1,1);
+    d.d[5]=0x10000; d.setInputReadOffset(32);
+    Context ctx;
+    sentFrames.clear();
+    failingFrames=1;
+    for(unsigned guard=0;guard<64 && d.anyInputValid();++guard) { ProcessPacket(ctx,d); ctx.remainingSubframes=0; }
+    Check(sentFrames==s.frames,"a single failed frame changed which frames are assembled");
+    Check(ctx.failureResyncs==0 && ctx.failureSilenced==0 && ctx.failureRun.consecutive==0,
+          "a single failure triggered recovery");
+    ctx.Reset();
+}
+void PersistentFailureRecovers() {
+    const Stream s({6000,6100,5900,6200,6000,5800,6300,6000,6100,5900,6200,6000,5800,6300,6000,6100,5900,6200,6000,5800});
+    failingFrames=1000000; flushes=0;
+    const auto result=DecodeKick(s,0);
+    failingFrames=0;
+    Check(result.holds==1,"a failing stream did not finish its kick");
+    Check(flushes>0,"the decoder was never flushed after repeated failures");
+    Check(result.frames.size()<s.frames.size(),"repeated failures still burned through the whole input");
+    // Every frame failed, so only the silence frames can have moved the
+    // ring's write cursor (31 blocks; 16 or more means four frames or more).
+    Check(result.context.outputWriteOffset()>=16,"silence did not advance the output ring");
+    std::printf("persistent failure: %zu of %zu frames tried, %d flushes, ring write %u\n",
+        result.frames.size(),s.frames.size(),flushes,result.context.outputWriteOffset());
+}
 }
 int main() {
     WaitingForRefill();
     BudgetedWorkMatchesSingleHold();
+    IsolatedFailureKeepsFrames();
+    PersistentFailureRecovers();
     // A length header may straddle a packet (including just one bit before it).
     for(unsigned tail=1;tail<24;++tail)
         for(unsigned split=1;split<5;++split)

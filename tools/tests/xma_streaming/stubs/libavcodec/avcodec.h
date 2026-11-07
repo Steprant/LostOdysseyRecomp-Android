@@ -17,8 +17,13 @@ inline int avcodec_open2(AVCodecContext*,const AVCodec*,void*) { return 0; }
 inline int avcodec_send_packet(AVCodecContext*,const AVPacket* p) {
     sentFrames.emplace_back(p->data,p->data+p->size); return 0;
 }
+// A1 tests: the next N frames fail to decode (AVERROR_INVALIDDATA).
+inline int failingFrames = 0;
+inline int flushes = 0;
+inline void avcodec_flush_buffers(AVCodecContext*) { ++flushes; }
 inline int avcodec_receive_frame(AVCodecContext*,AVFrame* p) {
     static float samples[512]{};
+    if (failingFrames > 0) { --failingFrames; return -1094995529; }
     p->data[0]=p->data[1]=reinterpret_cast<uint8_t*>(samples);
     p->nb_samples=512; p->format=AV_SAMPLE_FMT_FLTP; return 0;
 }

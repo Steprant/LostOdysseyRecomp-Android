@@ -139,6 +139,10 @@ namespace apu::xma
         {
             uint64_t decodedSamples = 0, skippedSamples = 0, writtenSamples = 0;
             uint64_t decodeErrors = 0, explicitSeeks = 0;
+            // A1: failure bursts and the recovery from repeated failures.
+            FailureBurst failureBurst;
+            FailureRun failureRun;
+            uint64_t failureResyncs = 0, failureSilenced = 0;
             std::chrono::steady_clock::time_point diagnosticStart{}, diagnosticReport{};
             void ReportSamples(const char* reason, uint32_t id)
             {
@@ -172,6 +176,9 @@ namespace apu::xma
             void Reset()
             {
                 decodedSamples = skippedSamples = writtenSamples = decodeErrors = explicitSeeks = 0;
+                failureBurst = {};
+                failureRun = {};
+                failureResyncs = failureSilenced = 0;
                 diagnosticStart = diagnosticReport = {};
                 remainingSubframes = pcmOffset = frameBits = copiedBits = packetsSkip = framesSent = 0;
                 frameCrossedPacket = false;
@@ -518,8 +525,44 @@ namespace apu::xma
                             }
                         }
                     }
+                    // A1: one line per burst (more than 100 failures in a second
+                    // on this context), then the recovery from repeated failures.
+                    const uint32_t streamAddress = data.currentBuffer() ? data.input1Ptr() : data.input0Ptr();
+                    const auto burst = ctx.failureBurst.Observe(DecodeFailureReports::Clock::now());
+                    if (burst.endedBurstCount)
+                        LOG_WARNING("xma decode burst ended: context={} failures={} in one second resyncs={} silenced={}",
+                            id, burst.endedBurstCount, ctx.failureResyncs, ctx.failureSilenced);
+                    const uint64_t packetKey = (uint64_t(streamAddress) << 32) | packetIndex;
+                    const auto action = ctx.failureRun.OnFailure(packetKey);
+                    if (burst.burstStart)
+                        LOG_WARNING("xma decode burst: context={} stream={:#x} buffer={} packet={} bit_offset={} frame_bytes={} stage={} "
+                            "send_result={} result={} consecutive={} same_packet={} frames_sent={} rate={} stereo={} loop={} reason=\"{}\" action={}",
+                            id, streamAddress, data.currentBuffer(), packetIndex, offset, bytes + 1, stage, sent, decoded,
+                            ctx.failureRun.consecutive, ctx.failureRun.samePacket, ctx.framesSent, data.sampleRate(),
+                            data.isStereo(), data.loopCount(), t_decoderMessage[0] ? t_decoderMessage : "none",
+                            action == FailureAction::Silence ? "silence" : action == FailureAction::SkipPacket ? "skip_packet" : "continue");
+                    if (action == FailureAction::SkipPacket && data.inputReadOffset() / kBitsPerPacket == packetIndex)
+                    {
+                        // The frame ended inside this packet: resynchronise at
+                        // the next packet's first frame instead of parsing on.
+                        ctx.copiedBits = ctx.frameBits = 0;
+                        nextPacket();
+                        ++ctx.failureResyncs;
+                    }
+                    else if (action == FailureAction::Silence)
+                    {
+                        // Flush whatever state the decoder kept and emit one frame
+                        // of silence: the output advances at the audio rate.
+                        avcodec_flush_buffers(ctx.decoder);
+                        const uint32_t channels = data.isStereo() ? 2 : 1;
+                        std::fill_n(ctx.pcm.begin(), 512 * channels * 2, uint8_t(0));
+                        ctx.pcmOffset = 0;
+                        ctx.remainingSubframes = 4;
+                        ++ctx.failureSilenced;
+                    }
                     return;
                 }
+                ctx.failureRun.OnSuccess();
                 const uint32_t channels = data.isStereo() ? 2 : 1;
                 for (uint32_t i = 0; i < 512; ++i)
                     for (uint32_t c = 0; c < channels; ++c)
