@@ -31,6 +31,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - SGSR2 Quality: SMAA on the render-size image before the upscale for smoother edges; the SGSR2 sharpness setting and pass are removed (sharpening stays for FSR).
 - Android diagnostics: Tester recordings (Advanced/Intensive) time one frame every ~10 s draw by draw and log where GPU time goes by draw type (depth-only, shadows, opaque, blended, post-processing, interface, upscaler) and the ten most expensive shaders.
 - Audio: an XMA voice whose frames keep failing to decode resynchronises on the next packet and then plays silence instead of retrying thousands of times a second; each burst is logged once with its stream and packet.
+- Settings: with SGSR2 the help explains that the SGSR2 quality row sets the render size and the Render resolution row changes it only at 576p.
 
 ### 简体中文
 
@@ -56,6 +57,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - SGSR2 品质模式：放大前在渲染尺寸图像上执行 SMAA，边缘更平滑；移除 SGSR2 锐化设置和锐化通道（FSR 仍保留锐化）。
 - Android 诊断：测试录制（进阶/密集）每约 10 秒逐个绘制计时一帧，按绘制类型（仅深度、阴影、不透明、混合、后处理、界面、超分）记录 GPU 时间分布及最耗时的十个着色器。
 - 音频：持续解码失败的 XMA 声部会在下一个数据包重新同步，随后输出静音，而不是每秒重试数千次；每次突发只记录一次其流与数据包。
+- 设置：使用 SGSR2 时，帮助说明渲染尺寸由 SGSR2 品质决定，渲染解析度选项只有 576p 会改变它。
 
 ## [v1.5-steprant.20261104](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) — Steprant Android 1.5 — 2026-11-04
 

@@ -1886,6 +1886,10 @@ void Publish(uint8_t *base, uint32_t config)
 #endif
             next.help += Tr(L" An upscaler supersamples above it.",
                             L"開啟縮放器時，高於輸出即為超取樣。");
+            // U1: with SGSR2 this row is not what sets the render size.
+            if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2)
+                next.help += Tr(L" With SGSR2 the SGSR2 quality row sets the render size (Quality: display size / 1.5, e.g. 1780x800 on a 2670x1200 screen); this row changes it only at 576p, which caps it at 576 lines.",
+                                L" 使用 SGSR2 時，渲染尺寸由 SGSR2 品質決定（品質：顯示尺寸 / 1.5，例如 2670x1200 螢幕為 1780x800）；此項只有 576p 會改變它，上限為 576 行。");
             break;
         case GraphicsRow::ShadowResolution:
             next.help = Tr(L"Shadow-map resolution multiplier. Higher values need more GPU memory and rendering time. Applies after saving.",
@@ -1929,6 +1933,11 @@ void Publish(uint8_t *base, uint32_t config)
                            L"螢幕空間環境光遮蔽可加強接觸處的陰影。儲存後套用。");
             break;
         case GraphicsRow::DlssQuality:
+            if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2) {
+                next.help = Tr(L"Render size from the display size: Quality / 1.5 (with SMAA), Balanced / 1.7, Performance / 2, Native AA at the display size. The render resolution row does not change it, except 576p.",
+                               L"渲染尺寸依顯示尺寸計算：品質 / 1.5（含 SMAA）、平衡 / 1.7、效能 / 2，Native AA 為顯示尺寸。渲染解析度選項不會改變它，576p 除外。");
+                break;
+            }
             next.help = gpu::upscaling::UsesFsrQuality(edit.upscaler) ?
                 Tr(L"Performance, Balanced, Quality, or Native AA. Native AA keeps the output resolution.", L"效能、平衡、品質或 Native AA。Native AA 維持輸出解析度。") : Tr(L"Performance, Balanced, Quality, or DLAA. The status line shows the submitted mode.",
                            L"效能、平衡、品質或 DLAA。狀態列顯示已提交的模式。");

@@ -589,3 +589,14 @@ optimisation (P1: 1,400–2,000 draws, GPU time follows the draw count).
 - **Verification.** Host: `draw_class_profile_test` (classification,
   accumulation, invalid/backwards timestamps, upscaler bracket, line
   format); the real `renderer.cpp` compiles. No device data yet.
+
+## U1: which base SGSR2 uses, in the menu (2026-11-07, night)
+
+With SGSR2 the Render resolution row does not set the render size: the
+SGSR2 quality row does (display size / 1.5, 1.7 or 2; Native AA at the
+display size), and only 576p changes it, capping it at 576 lines (with
+900p, Quality still renders 1780×800 on the 2670×1200 panel). The help of
+both rows now says so when SGSR2 is selected (the quality help also notes
+that Quality includes SMAA), with Spanish, French, German and Italian
+translations in `translations_eu.h` and Traditional Chinese at the call
+site. Verified by the settings menu fixtures (15/15).
