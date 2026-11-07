@@ -38,6 +38,11 @@ namespace xenos
         // path and register reuse. Unknown when relative addressing reaches it.
         std::array<uint64_t, 4> positionConstantSlots{};
         bool positionConstantsKnown = false;
+        // ALU constants c0..c15: the components (bit k = component k) any ALU
+        // operand reads by a direct, non-relative constant reference. Metadata
+        // only: it never changes the generated HLSL (the shader cache key).
+        // Relative reads are flagged by usesRelativeConstants instead.
+        std::array<uint8_t, 16> lowConstantLanesRead{};
     };
 
     // dwords: microcode in *host* byte order (already swapped from big-endian).

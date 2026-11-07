@@ -24,6 +24,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - Graphics preset "Mobile 30 FPS": 1080 internal, 30 FPS, SGSR1, Low shadows.
 - Android: 8-bit render targets use 8-bit memory, with their pipelines prepared at startup; depth-only draws stay in the scene's render pass (about 40% fewer render passes); the display refresh follows the game frame rate; 64 ms audio buffer.
 - The runtime log and performance overlay show whether SGSR1 is active and, if not, why; the overlay shows SGSR1's render and display sizes.
+- SGSR2/TAA: no more grid of blocks in shadowed areas with jitter on: every shadow-projection pixel shader that rebuilds its receiver like the reviewed ones gets the same jitter correction, and any other one stays unjittered; the log lists each such shader and the jitter line counts corrected and uncorrected shadow draws.
 
 ### 简体中文
 
@@ -42,6 +43,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - 图形预设“Mobile 30 FPS”：1080 内部分辨率、30 FPS、SGSR1、低阴影。
 - Android：8 位渲染目标使用 8 位内存并在启动时准备管线；仅深度绘制留在场景的渲染通道中（渲染通道减少约 40%）；屏幕刷新率跟随游戏帧率；64 ms 音频缓冲。
 - 运行日志和性能叠加层显示 SGSR1 是否启用，以及未启用的原因；叠加层显示 SGSR1 的渲染与显示尺寸。
+- SGSR2/TAA：开启抖动时阴影区域不再出现方块网格：与已审核着色器同样重建接收面的所有阴影投影像素着色器都获得相同的抖动补偿，其余保持不抖动；日志列出每个此类着色器，抖动行统计已补偿与未补偿的阴影绘制。
 
 ## [v1.5-steprant.20261104](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) — Steprant Android 1.5 — 2026-11-04
 

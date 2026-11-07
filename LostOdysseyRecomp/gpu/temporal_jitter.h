@@ -42,14 +42,19 @@ inline bool IsJitterViewport(const Viewport& viewport, uint32_t vte,
 enum class JitterRejection
 {
     None, Disabled, UnknownShader, IncompatibleViewport, MissingCamera,
-    CameraMismatch, DepthMismatch, InvalidExtent, InvalidConstants, ShadowDepthMismatch
+    CameraMismatch, DepthMismatch, InvalidExtent, InvalidConstants, ShadowDepthMismatch,
+    // VS 99c2 with a pixel shader whose ray constants are not proven to have
+    // the c2/c3/c4 form: left unjittered rather than given a ray the shader
+    // would rebuild half a pixel off (shadow acne in blocks of shadow texels).
+    ShadowUnverified
 };
 
 inline const char* JitterRejectionName(JitterRejection rejection)
 {
     static constexpr const char* names[] = {
         "none", "disabled", "unknown_shader", "incompatible_viewport", "missing_camera",
-        "camera_mismatch", "depth_mismatch", "invalid_extent", "invalid_constants", "shadow_depth_mismatch"};
+        "camera_mismatch", "depth_mismatch", "invalid_extent", "invalid_constants", "shadow_depth_mismatch",
+        "shadow_unverified"};
     const auto index = static_cast<size_t>(rejection);
     return index < std::size(names) ? names[index] : "unknown";
 }
@@ -132,12 +137,78 @@ inline bool IsShadowProjectionPair(uint64_t vs, uint64_t ps)
     }
 }
 
+constexpr uint64_t ShadowProjectionVS = 0x99c2b4b0960a9ccdull;
+
+// What a pixel shader drawn with VS 99c2 reads of its ray constants c2..c5
+// (bit k = component k), from xenos::TranslatedShader::lowConstantLanesRead.
+// known=false: no analysis (the shader is not translated yet or failed).
+struct ShadowRayLanes
+{
+    uint8_t c2 = 0, c3 = 0, c4 = 0, c5 = 0;
+    bool known = false, relative = false;
+};
+
+inline ShadowRayLanes ShadowRayLanesFrom(const uint8_t (&lanes)[16], bool relative)
+{
+    return {uint8_t(lanes[2] & 15), uint8_t(lanes[3] & 15), uint8_t(lanes[4] & 15), uint8_t(lanes[5] & 15),
+        true, relative};
+}
+
+// How a VS 99c2 draw's PS ray is treated under jitter.
+enum class ShadowContract
+{
+    NotShadow,   // another VS
+    Listed,      // one of the twelve reviewed pixel shaders
+    Verified,    // unlisted, but reads c2, c3, c4 lanes together and c5, no relative constants
+    Unverified,  // unlisted and not proven: the draw stays unjittered
+};
+
+inline const char* ShadowContractName(ShadowContract contract)
+{
+    switch (contract)
+    {
+    case ShadowContract::NotShadow: return "not_shadow";
+    case ShadowContract::Listed: return "listed";
+    case ShadowContract::Verified: return "verified";
+    case ShadowContract::Unverified: return "unverified";
+    }
+    return "unknown";
+}
+
+// The components of c4 that get the ray correction: those where the shader
+// reads c2, c3 and c4 alike (ndcX*c2 + ndcY*c3 + c4 per component). A listed
+// shader without analysis (or with none of them seen) keeps all four.
+inline uint8_t ShadowCompensationLanes(ShadowContract contract, const ShadowRayLanes* lanes)
+{
+    if (contract != ShadowContract::Listed && contract != ShadowContract::Verified) return 0;
+    const uint8_t read = lanes && lanes->known ? uint8_t(lanes->c2 & lanes->c3 & lanes->c4 & 15) : 0;
+    // A reviewed shader is known to use all four; analysis can only narrow it.
+    return contract == ShadowContract::Listed && !read ? uint8_t(15) : read;
+}
+
+inline ShadowContract ClassifyShadowProjection(uint64_t vs, uint64_t ps, const ShadowRayLanes* lanes)
+{
+    // Without a pixel shader there is no ray to rebuild.
+    if (vs != ShadowProjectionVS || !ps) return ShadowContract::NotShadow;
+    if (IsShadowProjectionPair(vs, ps)) return ShadowContract::Listed;
+    // Every reviewed shader reads all four c2..c5 for linearDepth *
+    // (ndcX*c2 + ndcY*c3 + c4) + c5. An unlisted one qualifies only when the
+    // translator saw it read c2, c3 and c4 in the same lanes and c5 too,
+    // with no relative constant that could reach them some other way.
+    if (lanes && lanes->known && !lanes->relative && lanes->c5 &&
+        (lanes->c2 & lanes->c3 & lanes->c4 & 15))
+        return ShadowContract::Verified;
+    return ShadowContract::Unverified;
+}
+
 struct DrawJitter
 {
     int slot = -1;
     JitterSample sample{};
     JitterRejection rejection = JitterRejection::Disabled;
     bool applied = false, shadowCompensated = false;
+    ShadowContract shadow = ShadowContract::NotShadow;
+    uint8_t shadowLanes = 0; // components of c4 corrected
 };
 
 // Reviewed e810/fe31 uses a 1x1 RGBA guest upload at texture0. A resolve can
@@ -161,10 +232,11 @@ inline DrawJitter ApplyDrawJitter(uint64_t vs, uint64_t ps, uint64_t frame,
     uint32_t* vsConstants, uint32_t* psConstants,
     const SceneResolve* sceneDepth = nullptr, const SceneResolve* sampledDepth = nullptr,
     double jitterScale = 1, const JitterSample* frameSample = nullptr,
-    bool constantScreenSample = false)
+    bool constantScreenSample = false, const ShadowRayLanes* shadowRayLanes = nullptr)
 {
     DrawJitter result;
     result.slot = DrawPositionVPSlot(vs, ps, constantScreenSample);
+    result.shadow = ClassifyShadowProjection(vs, ps, shadowRayLanes);
     if (!enabled) return result;
     const auto reject = [&](JitterRejection why) { result.rejection = why; return result; };
     if (result.slot < 0) return reject(JitterRejection::UnknownShader);
@@ -180,14 +252,22 @@ inline DrawJitter ApplyDrawJitter(uint64_t vs, uint64_t ps, uint64_t frame,
         return reject(JitterRejection::IncompatibleViewport);
     result.sample = frameSample ? *frameSample : FrameJitter(frame, rasterViewport.width, rasterViewport.height, jitterScale);
     if (!result.sample.phase) return reject(JitterRejection::InvalidExtent);
-    const bool shadow = IsShadowProjectionPair(vs, ps);
+    if (result.shadow == ShadowContract::Unverified)
+        return reject(JitterRejection::ShadowUnverified);
+    const uint8_t shadowLanes = ShadowCompensationLanes(result.shadow, shadowRayLanes);
+    const bool shadow = shadowLanes != 0;
     if (shadow && !IsSceneDepthSample(frame, sceneDepth, sampledDepth))
         return reject(JitterRejection::ShadowDepthMismatch);
     for (unsigned i = 0; i < 16; ++i)
         if (!std::isfinite(std::bit_cast<float>(vp[i]))) return reject(JitterRejection::InvalidConstants);
+    // Only the components that enter the correction must be finite: a NaN
+    // in a lane the shader never reads cannot reach its output.
     if (shadow)
-        for (unsigned i = 2 * 4; i < 5 * 4; ++i)
-            if (!std::isfinite(std::bit_cast<float>(psConstants[i]))) return reject(JitterRejection::InvalidConstants);
+        for (unsigned component = 0; component < 4; ++component)
+            if ((shadowLanes >> component) & 1)
+                for (unsigned row = 2; row <= 4; ++row)
+                    if (!std::isfinite(std::bit_cast<float>(psConstants[row * 4 + component])))
+                        return reject(JitterRejection::InvalidConstants);
 
     for (unsigned row = 0; row < 4; ++row)
     {
@@ -205,6 +285,7 @@ inline DrawJitter ApplyDrawJitter(uint64_t vs, uint64_t ps, uint64_t frame,
         // c0/c1 (depth UV/linearization), c2/c3 and c5 stay byte-for-byte intact.
         for (unsigned component = 0; component < 4; ++component)
         {
+            if (!((shadowLanes >> component) & 1)) continue;
             const float x = std::bit_cast<float>(psConstants[2 * 4 + component]);
             const float y = std::bit_cast<float>(psConstants[3 * 4 + component]);
             const float origin = std::bit_cast<float>(psConstants[4 * 4 + component]);
@@ -212,6 +293,7 @@ inline DrawJitter ApplyDrawJitter(uint64_t vs, uint64_t ps, uint64_t frame,
                 origin - result.sample.ndcX * x - result.sample.ndcY * y);
         }
         result.shadowCompensated = true;
+        result.shadowLanes = shadowLanes;
     }
     result.applied = true;
     result.rejection = JitterRejection::None;

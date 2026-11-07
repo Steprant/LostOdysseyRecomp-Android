@@ -2602,8 +2602,82 @@ int main(int argc,char** argv)
     auto unknownPsVp = bank(0), unknownPs = originalPs;
     const auto unknownPsResult = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x12345678ull, 20,
         true,true,&anchor,37,anchor.viewport,unknownPsVp.data(),unknownPs.data());
-    Check(unknownPsResult.applied && !unknownPsResult.shadowCompensated && unknownPs == originalPs,
-        "unknown PS never acquires the known shadow reconstruction contract");
+    Check(!unknownPsResult.applied && !unknownPsResult.shadowCompensated &&
+        unknownPsResult.rejection == JitterRejection::ShadowUnverified &&
+        unknownPsResult.shadow == ShadowContract::Unverified && unknownPs == originalPs && unknownPsVp == bank(0),
+        "unanalysed PS under VS 99c2 stays unjittered instead of rebuilding an offset ray");
+
+    // G1: an unlisted shadow PS whose translated microcode reads c2, c3, c4
+    // in the same lanes and c5 gets the same ray correction as d55.
+    {
+        auto listedVp = bank(0), listedPs = originalPs;
+        const auto listed = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0xd55a20d004031279ull, 20,
+            true,true,&anchor,37,anchor.viewport,listedVp.data(),listedPs.data(),&depth,&depth);
+        Check(listed.applied && listed.shadowCompensated && listed.shadow == ShadowContract::Listed &&
+            listed.shadowLanes == 15, "listed PS without analysis keeps all four lanes");
+        const ShadowRayLanes all{15,15,15,15,true,false};
+        auto newVp = bank(0), newPs = originalPs;
+        const auto verified = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x0badc0de12345678ull, 20,
+            true,true,&anchor,37,anchor.viewport,newVp.data(),newPs.data(),&depth,&depth,1,nullptr,false,&all);
+        Check(verified.applied && verified.shadowCompensated && verified.shadow == ShadowContract::Verified &&
+            newVp == listedVp && newPs == listedPs, "verified unlisted PS matches the listed correction bit for bit");
+        auto missingDepthVp = bank(0), missingDepthPs = originalPs;
+        const auto missingDepth = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x0badc0de12345678ull, 20,
+            true,true,&anchor,37,anchor.viewport,missingDepthVp.data(),missingDepthPs.data(),nullptr,nullptr,1,nullptr,false,&all);
+        Check(!missingDepth.applied && missingDepth.rejection == JitterRejection::ShadowDepthMismatch &&
+            missingDepthPs == originalPs, "verified PS still requires the full scene depth sample");
+
+        // Lanes the shader never reads are neither checked nor changed.
+        const ShadowRayLanes xyz{7,7,7,1,true,false};
+        auto partialVp = bank(0), partialPs = originalPs;
+        partialPs[2*4+3] = std::bit_cast<uint32_t>(std::numeric_limits<float>::quiet_NaN());
+        partialPs[4*4+3] = std::bit_cast<uint32_t>(std::numeric_limits<float>::infinity());
+        const auto partialBefore = partialPs;
+        const auto partial = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x0badc0de12345678ull, 20,
+            true,true,&anchor,37,anchor.viewport,partialVp.data(),partialPs.data(),&depth,&depth,1,nullptr,false,&xyz);
+        Check(partial.applied && partial.shadowCompensated && partial.shadowLanes == 7 && partialVp == listedVp,
+            "NaN/inf in an unread lane no longer rejects the draw");
+        Check(partialPs[4*4+3] == partialBefore[4*4+3] && partialPs[2*4+3] == partialBefore[2*4+3] &&
+            std::equal(partialPs.begin()+16, partialPs.begin()+19, listedPs.begin()+16),
+            "only the read lanes of c4 are corrected");
+        auto listedPartialVp = bank(0), listedPartialPs = originalPs;
+        listedPartialPs[3*4+3] = std::bit_cast<uint32_t>(std::numeric_limits<float>::quiet_NaN());
+        const auto listedPartial = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0xd55a20d004031279ull, 20,
+            true,true,&anchor,37,anchor.viewport,listedPartialVp.data(),listedPartialPs.data(),&depth,&depth,1,nullptr,false,&xyz);
+        Check(listedPartial.applied && listedPartial.shadowLanes == 7,
+            "listed PS with analysis is checked only on the lanes it reads");
+        auto usedNanVp = bank(0), usedNanPs = originalPs;
+        usedNanPs[3*4+1] = std::bit_cast<uint32_t>(std::numeric_limits<float>::quiet_NaN());
+        const auto usedNanBefore = usedNanPs;
+        const auto usedNan = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x0badc0de12345678ull, 20,
+            true,true,&anchor,37,anchor.viewport,usedNanVp.data(),usedNanPs.data(),&depth,&depth,1,nullptr,false,&xyz);
+        Check(!usedNan.applied && usedNan.rejection == JitterRejection::InvalidConstants &&
+            usedNanVp == bank(0) && usedNanPs == usedNanBefore, "NaN in a read lane still rejects the whole draw");
+
+        // Not proven: no c5, mismatched lanes, relative constants, no analysis.
+        for (const ShadowRayLanes& lanes : {ShadowRayLanes{15,15,15,0,true,false},
+            ShadowRayLanes{1,2,4,15,true,false}, ShadowRayLanes{15,15,15,15,true,true},
+            ShadowRayLanes{15,15,15,15,false,false}})
+        {
+            auto vp = bank(0), constants = originalPs;
+            const auto result = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x0badc0de12345678ull, 20,
+                true,true,&anchor,37,anchor.viewport,vp.data(),constants.data(),&depth,&depth,1,nullptr,false,&lanes);
+            Check(!result.applied && result.rejection == JitterRejection::ShadowUnverified &&
+                vp == bank(0) && constants == originalPs, "unproven ray contract leaves the draw unjittered");
+        }
+        auto noPsVp = bank(0), noPs = originalPs;
+        const auto noPsResult = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0, 20,
+            true,true,&anchor,37,anchor.viewport,noPsVp.data(),noPs.data());
+        Check(noPsResult.applied && !noPsResult.shadowCompensated && noPsResult.shadow == ShadowContract::NotShadow &&
+            noPs == originalPs, "VS 99c2 without a pixel shader has no ray and keeps its raster jitter");
+        uint8_t lanes16[16] = {0,0,15,7,3,1};
+        const auto from = ShadowRayLanesFrom(lanes16, false);
+        Check(from.known && from.c2 == 15 && from.c3 == 7 && from.c4 == 3 && from.c5 == 1 &&
+            ShadowCompensationLanes(ClassifyShadowProjection(0x99c2b4b0960a9ccdull, 1, &from), &from) == 3,
+            "translator lanes map to the compensated components");
+        Check(std::string_view(JitterRejectionName(JitterRejection::ShadowUnverified)) == "shadow_unverified",
+            "new rejection has a log name");
+    }
     Check(!FrameJitter(1,0,1440).phase && !FrameJitter(1,2560,std::numeric_limits<double>::infinity()).phase,
         "invalid physical extent cannot produce jitter");
     auto invalidVp = bank(0), invalidPs = originalPs;
@@ -2615,7 +2689,7 @@ int main(int argc,char** argv)
         invalidVp == bank(0) && invalidPs == invalidBefore, "invalid PS cannot cause a half-applied correction");
     auto cachedVp = bank(0), cachedPs = originalPs;
     const auto cachedSample = FrameJitter(5, anchor.viewport.width, anchor.viewport.height);
-    const auto cachedResult = ApplyDrawJitter(0x99c2b4b0960a9ccdull, 0x12345678ull, 20,
+    const auto cachedResult = ApplyDrawJitter(0x702c643defe73320ull, 0x12345678ull, 20,
         true, true, &anchor, 37, anchor.viewport, cachedVp.data(), cachedPs.data(), nullptr, nullptr,
         1, &cachedSample);
     Check(cachedResult.applied && cachedResult.sample.phase == cachedSample.phase &&

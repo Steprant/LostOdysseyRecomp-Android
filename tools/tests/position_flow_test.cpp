@@ -124,9 +124,36 @@ static void Lanes() {
     Require(t.positionConstantsKnown, "lane flow is known");
     Require(t.positionConstantSlots == Slots({4}), "oPos.y from r6.y does not depend on the c20 written to r6.x");
 }
+// TranslatedShader::lowConstantLanesRead on a pixel shader shaped like the
+// shadow reconstruction (G1): r1 = r0.x*c2 + r0.y*c3 (xyz lanes) + c4, plus c5,
+// with c3.w and a high constant never read. Metadata must not alter the HLSL.
+static void PixelConstantLanes() {
+    Program p;
+    const auto ray = Vector(AluVectorOpcode::Mul, 1, 0, 2, true, 0b0111); p.Instruction(&ray);
+    const auto add = Vector(AluVectorOpcode::Add, 1, 1, 3, true, 0b0111); p.Instruction(&add);
+    const auto origin = Vector(AluVectorOpcode::Add, 1, 1, 4, true, 0b0111); p.Instruction(&origin);
+    auto out = Vector(AluVectorOpcode::Mul, 0, 1, 5, true, 0b0001);
+    out.exportData = 1; out.vectorDest = uint32_t(ExportRegister::PSColor0); p.Instruction(&out);
+    const auto high = Vector(AluVectorOpcode::Mul, 2, 0, 40, true, 0b1111); p.Instruction(&high);
+    p.Finish(0);
+    const auto t = TranslateShader(p.code.data(), uint32_t(p.code.size()), true);
+    Require(t.lowConstantLanesRead[2] == 0b0111 && t.lowConstantLanesRead[3] == 0b0111 &&
+        t.lowConstantLanesRead[4] == 0b0111, "ray constants report the lanes read");
+    Require(t.lowConstantLanesRead[5] == 0b0001, "a single-lane read reports one lane");
+    Require(t.lowConstantLanesRead[0] == 0 && t.lowConstantLanesRead[1] == 0 && t.lowConstantLanesRead[6] == 0,
+        "registers and unread constants report nothing");
+    Program q;
+    auto rel = Vector(AluVectorOpcode::Mul, 1, 0, 2, true);
+    rel.const0Relative = 1; rel.constAddressRegisterRelative = 1; q.Instruction(&rel);
+    auto relOut = Vector(AluVectorOpcode::Mul, 0, 1, 1, false, 0b0001);
+    relOut.exportData = 1; relOut.vectorDest = uint32_t(ExportRegister::PSColor0); q.Instruction(&relOut);
+    q.Finish(0);
+    const auto r = TranslateShader(q.code.data(), uint32_t(q.code.size()), true);
+    Require(r.usesRelativeConstants && r.lowConstantLanesRead[2] == 0, "relative reads are flagged, not listed");
+}
 int main() {
     try {
-        RegisterReuse(); Predicated(); Relative(); Lanes();
+        RegisterReuse(); Predicated(); Relative(); Lanes(); PixelConstantLanes();
         std::printf("PASS: %u position flow checks\n", checks);
         return 0;
     } catch (const std::exception& e) {

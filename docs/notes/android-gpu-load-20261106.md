@@ -366,3 +366,60 @@ counter instead of a host query, like draws without one.
   pixel constants c0–c5. It identifies the screen-space pass behind the
   blocky shadows so its ray can be compensated like
   `IsShadowProjectionPair`.
+
+## G1: blocks in shadowed areas under jitter (2026-11-07, night)
+
+- **Evidence.** 18:45 session: SGSR2 Native AA (jitter, 1:1) shows a regular
+  grid of blocks on shadowed floors and walls; SGSR1 720p (no jitter, 1.67×)
+  does not. The blocks therefore follow the jitter, and grow as the input
+  resolution drops.
+- **Cause.** VS `99c2b4b0960a9ccd` has camera slot 0 for every pixel shader
+  (`PositionVPSlot`), so its clip position is always jittered. The pixel
+  shader samples the jittered scene depth at that position (correct) and
+  rebuilds the receiver as `linearDepth * (ndcX*c2 + ndcY*c3 + c4) + c5`.
+  Only the twelve reviewed shaders of `IsShadowProjectionPair` had the
+  jitter removed from that ray (`c4 -= ndcX*c2 + ndcY*c3`); any other
+  pixel shader under 99c2 rebuilt a receiver offset by the jitter and
+  compared it with the shadow map off by whole texels: shadow acne in
+  blocks of shadow-map texels.
+- **Change.** The translator now records, as metadata that never alters
+  the HLSL (so the shader pack and the cache keys are untouched), the
+  components of c0..c15 each pixel shader reads by direct reference
+  (`TranslatedShader::lowConstantLanesRead`). A portable-pack record has
+  no such field, so the renderer translates a 99c2 pixel shader once, on
+  its first draw, to read it. `temporal::ClassifyShadowProjection` then
+  gives each 99c2 draw a contract:
+  - *listed* (the twelve reviewed shaders): corrected as before, on the
+    lanes they read (all four if analysis finds none);
+  - *verified*: an unlisted shader that reads c2, c3 and c4 in the same
+    lanes, also reads c5 and uses no relative constants: corrected exactly
+    like the listed ones, only on those lanes, and still only when it
+    samples the full scene depth of this frame;
+  - *unverified*: anything else stays unjittered (rejection
+    `shadow_unverified`). This is the safe side: an unjittered projection
+    rebuilds a consistent receiver and only its depth lookup moves by the
+    sub-pixel jitter, while an uncorrected jittered one rebuilds a wrong
+    receiver on every pixel.
+  A VS 99c2 draw without a pixel shader has no ray and keeps its jitter.
+- **NaN check.** The finite-constant check on the pixel side now covers
+  only the components that enter the correction (c2, c3 and c4 on the
+  corrected lanes). A NaN in a lane the shader never reads no longer
+  rejects the draw.
+- **Diagnostics.** Each pixel shader seen with VS 99c2 is logged once per
+  outcome: `renderer: shadow projection ps=… listed= contract= applied=
+  compensated= lanes= rejection= reads c2= c3= c4= c5= known= relative=
+  sampled_depth= … c0..c5`. The periodic `SGSR2 jitter:` line gains
+  `shadow_compensated=` and `shadow_uncompensated=` (draws of that frame).
+- **Verification.** Host only: `temporal_jitter_test` (a verified unlisted
+  shader matches the listed correction bit for bit; unread NaN/inf lanes
+  are skipped and left unchanged; a NaN in a read lane still rejects;
+  missing c5, mismatched lanes, relative constants or no analysis stay
+  unjittered; no-PS keeps jitter) and `position_flow_test` (lane mask of a
+  synthetic pixel shader, relative reads flagged and not listed); the real
+  `renderer.cpp` compiles in the motion-replay boundary. Not yet seen on the
+  phone.
+- **Device check.** Uhra, Residential Area, the stairs and walls on the
+  right: no blocks at 576p, 1780×800 (900p + Quality) and Native AA; the
+  zones of the twelve listed shaders unchanged. The log should list every
+  99c2 shader of the area with its contract; any `unverified` one is a
+  candidate for review.

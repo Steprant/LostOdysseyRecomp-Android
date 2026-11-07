@@ -554,6 +554,11 @@ namespace gpu::renderer
             bool hdrShaderAttempted = false;
             position_evidence::Summary position;
             bool positionReady = false;
+            // Pixel shaders drawn with VS 99c2: which lanes of c2..c5 they read
+            // (temporal::ClassifyShadowProjection). Translated on first such draw,
+            // because a portable-pack record carries no constant usage.
+            temporal::ShadowRayLanes shadowRayLanes;
+            bool shadowRayLanesReady = false;
             xenos::retry::State retry;
             // Rect-list variant (shader/rect_list_hlsl.h), built on first use.
             std::unique_ptr<RenderShader> rectList;
@@ -1574,6 +1579,10 @@ namespace gpu::renderer
             uint32_t temporalJitterDraws=0,temporalJitterMisses=0,temporalJitterUnknowns=0,temporalJitterViewportDraws=0;
             temporal::JitterMissLog viewportJitterLog;
             temporal::JitterMissLog unknownSceneDrawLog;
+            // VS 99c2 shadow projections: each PS and outcome logged once, and
+            // per-frame counts for the periodic SGSR2 jitter line.
+            temporal::JitterMissLog shadowProjectionLog;
+            uint32_t temporalShadowCompensated=0,temporalShadowUncompensated=0;
             uint64_t temporalEpoch=1,temporalFramesLogged=0,temporalSubmittedFrame=~0ull;
             temporal::JitterSample actualRasterJitter{}, frameRasterJitter{};
             std::chrono::steady_clock::time_point srFrameTime{};
@@ -10410,7 +10419,21 @@ void main()
                     &temporalScene.AnchorFor(vsConstants + temporalSlot * 4) : &temporalScene.Anchor();
                 std::optional<temporal::SceneResolve> jitterSampledDepth;
                 const bool jitterShadowPair = temporalBookkeeping && temporal::IsShadowProjectionPair(key.vs, key.ps);
-                if (temporalActive && temporalJitter && jitterShadowPair)
+                // Any PS under the shadow projection VS: its ray contract is read
+                // from the translated microcode once, whatever loaded the module.
+                const bool jitterShadowDraw = temporalBookkeeping && key.vs == temporal::ShadowProjectionVS && ps;
+                if (jitterShadowDraw && !ps->shadowRayLanesReady) {
+                    ps->shadowRayLanesReady = true;
+                    if (psWords && psCount) {
+                        std::vector<uint32_t> swapped(psCount);
+                        for (uint32_t i = 0; i < psCount; ++i) swapped[i] = ByteSwap(psWords[i]);
+                        const auto translated = xenos::TranslateShader(swapped.data(), psCount, true, uboConstants);
+                        uint8_t lanes[16];
+                        std::copy(translated.lowConstantLanesRead.begin(), translated.lowConstantLanesRead.end(), lanes);
+                        ps->shadowRayLanes = temporal::ShadowRayLanesFrom(lanes, translated.usesRelativeConstants);
+                    }
+                }
+                if (temporalActive && temporalJitter && jitterShadowDraw)
                 {
                     const uint32_t fetch0 = Reg(REG_FETCH_CONSTANTS), fetch1 = Reg(REG_FETCH_CONSTANTS + 1);
                     const uint32_t address = (fetch1 >> 12) << 12;
@@ -10498,7 +10521,30 @@ void main()
                     vsConstants, psConstants, &temporalScene.DepthFor(jitterSampledDepth ? &*jitterSampledDepth : nullptr),
                     jitterSampledDepth ? &*jitterSampledDepth : nullptr,
                     ActiveTaaOptions().jitter_scale, dlssSrRequested ? &frameRasterJitter : nullptr,
-                    constantScreenSample);
+                    constantScreenSample, jitterShadowDraw ? &ps->shadowRayLanes : nullptr);
+                if (jitterEnabled && jitterShadowDraw) {
+                    if (drawJitter.shadowCompensated) ++temporalShadowCompensated;
+                    else ++temporalShadowUncompensated;
+                    // G1 diagnostics: every PS seen with VS 99c2, its contract,
+                    // outcome and guest c0..c5, once per PS and outcome.
+                    if (shadowProjectionLog.First(key.vs, key.ps, drawJitter.rejection)) {
+                        const auto& lanes = ps->shadowRayLanes;
+                        std::string constants;
+                        for (uint32_t c = 0; c < 6; ++c) {
+                            const uint32_t base = REG_ALU_CONSTANTS + 256 * 4 + c * 4;
+                            constants += fmt::format(" c{}=({:.6g},{:.6g},{:.6g},{:.6g})", c,
+                                std::bit_cast<float>(Reg(base)), std::bit_cast<float>(Reg(base + 1)),
+                                std::bit_cast<float>(Reg(base + 2)), std::bit_cast<float>(Reg(base + 3)));
+                        }
+                        LOG_INFO("renderer: shadow projection ps={:016x} listed={} contract={} applied={} compensated={} "
+                            "lanes={:x} rejection={} reads c2={:x} c3={:x} c4={:x} c5={:x} known={} relative={} "
+                            "sampled_depth={} frame={} draw={}{}",
+                            key.ps, jitterShadowPair, temporal::ShadowContractName(drawJitter.shadow),
+                            drawJitter.applied, drawJitter.shadowCompensated, drawJitter.shadowLanes,
+                            temporal::JitterRejectionName(drawJitter.rejection), lanes.c2, lanes.c3, lanes.c4, lanes.c5,
+                            lanes.known, lanes.relative, jitterSampledDepth.has_value(), frame, drawsThisFrame, constants);
+                    }
+                }
                 // A scene-viewport draw whose shader pair is not in the jitter
                 // table (no known camera constant) would test the jittered
                 // scene depth half a pixel off. For stencil shadow volumes and
@@ -15770,10 +15816,12 @@ void main()
                 }
                 temporal::CommitTemporalFrameEnd(*owner, temporalEnd, now, r.temporalSupportedFrame, r.temporalEpoch, r.temporalFrameTime);
                 if (r.activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr && r.frame % 300 == 0)
-                    LOG_INFO("SGSR2 jitter: frame={} jittered_draws={} unjittered_known={} unknown_camera={} viewport_jittered={} input={}x{}",
+                    LOG_INFO("SGSR2 jitter: frame={} jittered_draws={} unjittered_known={} unknown_camera={} viewport_jittered={} shadow_compensated={} shadow_uncompensated={} input={}x{}",
                         r.frame, r.temporalJitterDraws, r.temporalJitterMisses, r.temporalJitterUnknowns,
-                        r.temporalJitterViewportDraws, r.activePlan.width, r.activePlan.height);
+                        r.temporalJitterViewportDraws, r.temporalShadowCompensated, r.temporalShadowUncompensated,
+                        r.activePlan.width, r.activePlan.height);
                 r.temporalJitterDraws=r.temporalJitterMisses=r.temporalJitterUnknowns=r.temporalJitterViewportDraws=0;
+                r.temporalShadowCompensated=r.temporalShadowUncompensated=0;
                 // Split-screen shots (#702) draw a full scene per panel. No upscaler
                 // can take two cameras, so these frames are shown as rendered.
                 const bool splitView = r.temporalScene.Frame() == r.frame &&

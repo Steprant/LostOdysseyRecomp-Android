@@ -694,6 +694,10 @@ namespace xenos
                     }
 
                     const auto flowSource = [&](uint32_t component) {
+                        // TranslatedShader::lowConstantLanesRead: every lane read
+                        // through a direct constant reference passes here.
+                        if (!select && !constantFlow.relative && reg < 16)
+                            this->result.lowConstantLanesRead[reg] |= uint8_t(1u << (component & 3));
                         return select ? flowRegisters[reg & 63][component & 3] : constantFlow;
                     };
                     flowOperandLanes[operand] = 0;
