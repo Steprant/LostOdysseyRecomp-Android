@@ -600,3 +600,25 @@ both rows now says so when SGSR2 is selected (the quality help also notes
 that Quality includes SMAA), with Spanish, French, German and Italian
 translations in `translations_eu.h` and Traditional Chinese at the call
 site. Verified by the settings menu fixtures (15/15).
+
+## Low-priority items after the night round (2026-11-07): G2, G4, G5, P6
+
+- **G2, fog/atmosphere (`6318b7b358aa8b45`/`c55d2c256efff0d7`).** The only
+  unjittered draw left in the jittered scene: a full-screen pass that reads
+  the scene depth with blend 0x10601. Its pixel centres sit up to half a
+  pixel off the jittered depth, so at depth edges the fog factor can
+  flicker from frame to frame; flat areas are unaffected. Two options,
+  neither applied without a device look: (a) the viewport-jitter route used
+  for unknown scene draws (it would leave a sub-pixel uncovered column and
+  row at the screen edge), (b) offsetting its depth fetch by the frame
+  jitter in a reviewed pair, like the shadow ray. Needs an A/B screenshot
+  at a fogged depth edge first.
+- **G4, aliasing on railings and foliage; G5, ghosting in transitions.**
+  To be rechecked on the phone with this build: G3's SMAA changes the
+  input edges in Quality, and M1 removes the render-size switches that
+  produced most transition ghosting.
+- **P6, 50–75 ms intervals in menus with ~20 ms of GPU.** The 7/11 ZIPs are
+  not part of this session, so the thread analysis of `frame_timing.csv`
+  is still open. M1 removes the menu-time resizes (one candidate cause);
+  the next Tester recording of a menu, with the draw-class profile (P4),
+  separates GPU from CPU/present stalls.
