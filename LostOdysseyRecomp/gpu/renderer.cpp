@@ -12534,6 +12534,7 @@ void main()
                     Gpu().occlusionPoolUsed = std::max(Gpu().occlusionPoolUsed, occlusionIndex + 1);
                     commandList->beginOcclusionQuery(occlusionPool, occlusionIndex % kOcclusionPoolQueries);
                 }
+                const uint32_t profileSkipsBefore = readOnlyDepthDrawsSkipped;
                 recordProbe.Enter(record_timing::Phase::Draw);
                 // Mode 5 has no pixel shader/color exports; its translated VS
                 // only reads resources. No Z writes, stencil or active query
@@ -12543,25 +12544,15 @@ void main()
                 if (skipReadOnlyDepthDraws && modeControl == 5 &&
                     (Reg(REG_RB_DEPTHCONTROL) & 5u) == 0 && !occlusion.Active())
                     ++readOnlyDepthDrawsSkipped;
+                else if (useIndices)
+                {
+                    RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset), uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
+                    commandList->setIndexBuffer(&view);
+                    commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
+                }
                 else
                 {
-                    if (useIndices) {
-                        RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset), uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                        commandList->setIndexBuffer(&view);
-                        commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                    } else {
-                        commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
-                    }
-                    if (Gpu().drawProfileActive && Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
-                        const bool blending = (key.blend & 0x1FFFu) != 1u || ((key.blend >> 16) & 0x1FFFu) != 1u;
-                        const bool fullTarget = indexCount <= 6 && color &&
-                            scissor.right - scissor.left + 1 >= int32_t(color->width) &&
-                            scissor.bottom - scissor.top + 1 >= int32_t(color->height);
-                        const auto drawClass = draw_profile::Classify(depthOnlyRaster || !(key.colorMask & 0xF),
-                            key.vs == temporal::ShadowProjectionVS, depth != nullptr, blending, fullTarget);
-                        commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
-                        Gpu().drawProfileRecords.push_back({key.vs, key.ps, drawClass});
-                    }
+                    commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
                 }
                 recordProbe.Enter(record_timing::Phase::Occlusion);
                 // A counted draw leaves its variant bound: the next draw binds and
@@ -12569,6 +12560,18 @@ void main()
                 // without a pixel shader.
                 if (occlusionPool)
                     commandList->endOcclusionQuery(occlusionPool, occlusionIndex % kOcclusionPoolQueries);
+                // P4: a timestamp after each emitted guest draw on a sampled frame.
+                if (Gpu().drawProfileActive && readOnlyDepthDrawsSkipped == profileSkipsBefore &&
+                    Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
+                    const bool blending = (key.blend & 0x1FFFu) != 1u || ((key.blend >> 16) & 0x1FFFu) != 1u;
+                    const bool fullTarget = indexCount <= 6 && color &&
+                        scissor.right - scissor.left + 1 >= int32_t(color->width) &&
+                        scissor.bottom - scissor.top + 1 >= int32_t(color->height);
+                    const auto drawClass = draw_profile::Classify(depthOnlyRaster || !(key.colorMask & 0xF),
+                        key.vs == temporal::ShadowProjectionVS, depth != nullptr, blending, fullTarget);
+                    commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
+                    Gpu().drawProfileRecords.push_back({key.vs, key.ps, drawClass});
+                }
                 if (countingPipeline || occlusionPool) {
                     const HostTexture* measured = depth ? depth : color;
                     occlusion.DrawMeasured({Gpu().occlusionBatch, occlusionIndex, gpu::occlusion::SampleScale(
