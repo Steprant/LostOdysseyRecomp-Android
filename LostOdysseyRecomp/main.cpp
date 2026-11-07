@@ -45,6 +45,7 @@
 #include "modding/asset_export.h"
 #include "modding/text_overlay.h"
 #include "settings/language_selection.h"
+#include "diagnostics/ab_switches.h"
 
 #ifdef _WIN32
 #include <timeapi.h>
@@ -413,6 +414,9 @@ int main(int argc, char* argv[])
     if (compactGameData)
         return CompactGameDataCommand(FindGameRoot(executableDirectory, explicitGamePath).root);
     InstallCrashHandler();
+    // Device A/B switches (Android diagnostics page): written as development
+    // variables before the renderer, Plume or the Vulkan driver read them.
+    LOG_INFO("{}", diagnostics::ab::ApplyAtStartup(os::user_paths::SettingsPath().parent_path() / "ab_switches.ini"));
 #if defined(_WIN32) && (defined(LO_ENABLE_STREAMLINE_FG) || defined(LO_ENABLE_D3D12_FG))
     LOG_INFO("FG: process physical-pixel awareness set={} error={}", fgDpiSet, fgDpiError);
 #endif

@@ -488,3 +488,32 @@ counter instead of a host query, like draws without one.
   and closing a menu or during a loading screen; sharp menu text; no frame
   above 50 ms from a switch; the log shows `interface promoted to
   2670x1200` in menus.
+
+## P5: A/B switches on the Android diagnostics page (2026-11-07, night)
+
+Players cannot set `LO_*` variables on a phone, so every device A/B now has
+a row on Settings → System → Android diagnostics, under Export. The rows
+are saved at once in `ab_switches.ini` beside `settings.ini`; at the next
+start (`main.cpp`, right after the crash handler, before the renderer, Plume
+or the Vulkan driver read anything) each non-default choice is written as
+the development variable the code already reads. A variable already in the
+environment is left alone (development override). The startup log has one
+line, `A/B switches: key=value … (set VAR=…)/(env VAR=…)`.
+
+| Row | Default | Off/other writes |
+|---|---|---|
+| Position-only depth vertex shaders | On | `LO_VK_KEEP_VS_OUTPUTS=1` |
+| Pixel shaders without discard | On | `LO_ALPHATEST_SPEC=0` |
+| Depth-only draws without pixel shader | On | `LO_KEEP_DEPTH_ONLY_PS=1` |
+| Viewport jitter for unknown draws | On | `LO_SR_VIEWPORT_JITTER=0` |
+| Keep render targets across resizes | On | `LO_PARK_TARGETS=0` |
+| SMAA in SGSR2 Quality | On | `LO_SGSR2_SMAA=0` (G3) |
+| Menus: render-size switch (old) | Off | On writes `LO_SGSR2_NATIVE_MENUS=1` (M1 fallback) |
+| Turnip render mode | Auto | `TU_DEBUG=sysmem` / `TU_DEBUG=gmem` |
+
+All apply after restarting (the page says so when a row changes). The
+Turnip mode is read by Mesa when libadrenotools loads the driver; it
+replaces the Adreno 650 `syncdraw` default only when chosen. Verification:
+`ab_switches_test` (defaults set nothing, persisted values reload, the
+environment wins and is logged, range check) and the Android settings
+fixture (`settings_interaction_android`), which compiles the Android page.

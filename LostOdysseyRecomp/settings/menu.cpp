@@ -33,6 +33,7 @@
 #if LO_PLATFORM_ANDROID
 #include <SDL3/SDL_system.h>
 #include <diagnostics/android_tester.h>
+#include <diagnostics/ab_switches.h>
 #endif
 extern "C" PPC_FUNC(__imp__sub_822F19B0);
 extern "C" PPC_FUNC(__imp__sub_82481BE8);
@@ -153,7 +154,9 @@ std::atomic<bool> achievementsOpen{false};
 #if LO_PLATFORM_ANDROID
 std::atomic<bool> testerOpen{false};
 int testerFocus = 0;
-enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport, TesterRowCount };
+// The A/B switch rows (diagnostics/ab_switches.h) follow Export; each applies after restarting.
+enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
+    TesterAbFirst, TesterRowCount = TesterAbFirst + int(::diagnostics::ab::Count) };
 constexpr uint32_t TesterPeriodsMs[]{250, 500, 1000, 2000};
 #endif
 std::vector<achievements_page::Item> achievementItems;
@@ -1355,6 +1358,14 @@ void Publish(uint8_t *base, uint32_t config)
         const std::wstring duration = std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") + std::to_wstring(seconds % 60);
         next.rows.push_back({Tr(L"Recording", L"記錄"), (recording ? Tr(L"Stop", L"停止") : Tr(L"Start", L"開始")) + std::wstring(L"  ") + duration, d.enabled.load(), {}, 0});
         addAction(L"Export diagnostics", L"匯出診斷", Tr(L"Export", L"匯出"));
+        for (size_t i = 0; i < ::diagnostics::ab::Count; ++i) {
+            const auto& definition = ::diagnostics::ab::Definitions[i];
+            const auto value = ::diagnostics::ab::Get(::diagnostics::ab::Switch(i));
+            if (definition.choices == 3)
+                addChoices(definition.label, definition.labelZh, {Tr(L"Auto", L"自動"), L"sysmem", L"GMEM"}, value);
+            else
+                addChoices(definition.label, definition.labelZh, onOff(), value);
+        }
     }
     else
 #endif
@@ -2564,7 +2575,7 @@ void PointerClick(float x, float y, bool reverse)
     mouseRow = int(hit);
     if (listPage) {
 #if LO_PLATFORM_ANDROID
-        if (testerOpen.load() && hit <= size_t(TesterThermal)) {
+        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit >= size_t(TesterAbFirst))) {
             if (x >= 386) mouseAction = reverse ? 4 : 8;
         }
         else
@@ -3432,6 +3443,13 @@ PPC_FUNC(sub_822F19B0)
                     : Tr(L"Finishing the previous recording. Try again.", L"正在完成上一段記錄，請稍後再試。");
             } else if (testerFocus == TesterExport && (input & 0x1000)) {
                 if (!SDL_SendAndroidMessage(0x8004, 0)) status = Tr(L"Could not open export.", L"無法開啟匯出。");
+            } else if (testerFocus >= TesterAbFirst && testerFocus < TesterRowCount) {
+                const auto which = ::diagnostics::ab::Switch(testerFocus - TesterAbFirst);
+                const auto choices = ::diagnostics::ab::Definitions[size_t(which)].choices;
+                const int delta = (input & 4) ? -1 : 1;
+                const auto value = uint32_t((int(::diagnostics::ab::Get(which)) + int(choices) + delta) % int(choices));
+                status = ::diagnostics::ab::Set(which, value) ? Tr(L"Applies after restarting.", L"重新啟動後生效。")
+                                                               : Tr(L"Could not save.", L"無法儲存。");
             }
         }
         Publish(base, config);
