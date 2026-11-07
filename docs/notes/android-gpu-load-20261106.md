@@ -558,3 +558,34 @@ pass go away.
   three full-screen passes on 1.4 MP (about 1 ms expected on Adreno 750).
   The `gpu passes:` profile covers the renderer's render passes, not
   SGSR2's isolated list; P4's per-class profile adds an SGSR2 bracket.
+
+## P4: per-class draw profile (2026-11-07, night)
+
+Goal: see where the ~10 µs per guest draw go before any further
+optimisation (P1: 1,400–2,000 draws, GPU time follows the draw count).
+
+- **What.** While the pass profile is on (Tester Advanced/Intensive, or
+  `LO_PASS_PROFILE=1`) the renderer samples one frame about every 300
+  frames. On that frame each command list gets a 4,097-entry timestamp
+  pool: index 0 at its start, then one bottom-of-pipe timestamp after every
+  guest draw. A draw is charged the time since the previous timestamp of
+  its list. Classes (`draw_class_profile.h`): `depth_only` (no colour
+  written), `shadow` (VS 99c2), `opaque`, `blend` (depth bound), and for
+  draws without depth `fullscreen` (a full-target quad, i.e.
+  post-processing) or `interface`. The SR path adds an `upscaler` bracket:
+  a timestamp when the continuation list opens charges SGSR2/FSR's isolated
+  list (with SMAA, G3) and the prefix tail to it.
+- **Log.** Each new sample writes the cumulative session line
+  `draw classes (session, …): frames= per_frame: draws= ms= us_per_draw=
+  untimed=; depth_only=…ms/N(…us) … upscaler=…; top: VS/PS class ms/N; …`
+  with the ten most expensive VS/PS pairs. The last such line in a
+  `runtime.log` is the session summary.
+- **Caveats** (also in the line's label): timestamps between draws can
+  change how Turnip schedules that one frame (it may render it in sysmem),
+  and overlapping draws are charged where they retire. The numbers rank
+  classes and shaders; they are not exact per-draw costs. Unused queries
+  are written at the end of each list so the pool always reads back
+  complete.
+- **Verification.** Host: `draw_class_profile_test` (classification,
+  accumulation, invalid/backwards timestamps, upscaler bracket, line
+  format); the real `renderer.cpp` compiles. No device data yet.

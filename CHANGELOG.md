@@ -29,6 +29,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - SGSR2: menus, loading screens and fades no longer change the render resolution (no more hitch at every transition); their interface is drawn at the display resolution over the enlarged background. The old switch remains as an option on the Android diagnostics page, now only after 1.5 s without a 3D scene.
 - Android diagnostics: A/B switches for the recent GPU changes, the Turnip render mode and the old menu behaviour; saved at once, applied after restarting and listed in the runtime log.
 - SGSR2 Quality: SMAA on the render-size image before the upscale for smoother edges; the SGSR2 sharpness setting and pass are removed (sharpening stays for FSR).
+- Android diagnostics: Tester recordings (Advanced/Intensive) time one frame every ~10 s draw by draw and log where GPU time goes by draw type (depth-only, shadows, opaque, blended, post-processing, interface, upscaler) and the ten most expensive shaders.
 
 ### 简体中文
 
@@ -52,6 +53,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - SGSR2：菜单、加载画面和淡入淡出不再改变渲染分辨率（每次过渡不再卡顿）；其界面以显示分辨率绘制在放大的背景之上。旧的切换方式保留为 Android 诊断页面中的选项，且仅在 1.5 秒无 3D 场景后触发。
 - Android 诊断：为近期 GPU 改动、Turnip 渲染模式和旧菜单行为提供 A/B 开关；立即保存，重启后生效，并记录在运行日志中。
 - SGSR2 品质模式：放大前在渲染尺寸图像上执行 SMAA，边缘更平滑；移除 SGSR2 锐化设置和锐化通道（FSR 仍保留锐化）。
+- Android 诊断：测试录制（进阶/密集）每约 10 秒逐个绘制计时一帧，按绘制类型（仅深度、阴影、不透明、混合、后处理、界面、超分）记录 GPU 时间分布及最耗时的十个着色器。
 
 ## [v1.5-steprant.20261104](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) — Steprant Android 1.5 — 2026-11-04
 

@@ -48,6 +48,7 @@
 #include "temporal_jitter.h"
 #include "render_target_parking.h"
 #include "idle_ui_promotion.h"
+#include "draw_class_profile.h"
 #include "temporal_suspect.h"
 #include "temporal_history.h"
 #include "sr_scene_input_policy.h"
@@ -643,6 +644,10 @@ namespace gpu::renderer
                 std::unique_ptr<RenderCommandFence> fence;
                 std::unique_ptr<RenderQueryPool> timingQueries;
                 uint64_t previousTimingEnd = 0;
+                // P4: per-draw timestamps on a sampled frame (draw_class_profile.h).
+                std::unique_ptr<RenderQueryPool> drawProfilePool;
+                std::vector<draw_profile::DrawRecord> drawProfileRecords;
+                bool drawProfileActive = false;
                 // This batch wrote both timestamps (LO_RENDER_TIMING or the
                 // Detailed performance overlay); only then are they read.
                 bool timed = false;
@@ -1587,6 +1592,10 @@ namespace gpu::renderer
             // VS 99c2 shadow projections: each PS and outcome logged once, and
             // per-frame counts for the periodic SGSR2 jitter line.
             temporal::JitterMissLog shadowProjectionLog;
+            // P4: the session's per-class draw profile and the next sampled frame.
+            draw_profile::Accumulator drawProfile;
+            uint64_t drawProfileFrame = ~0ull, drawProfileLastSample = 0, drawProfileCountedFrame = ~0ull;
+            bool drawProfileUnavailable = false;
             uint32_t temporalShadowCompensated=0,temporalShadowUncompensated=0;
             uint64_t temporalEpoch=1,temporalFramesLogged=0,temporalSubmittedFrame=~0ull;
             temporal::JitterSample actualRasterJitter{}, frameRasterJitter{};
@@ -3511,6 +3520,18 @@ namespace gpu::renderer
                         break;
                     }
                 frameResolveCount = 0;
+                // P4: count a sampled frame once it is presented, and sample the
+                // next one about every ten seconds (300 frames at 30 FPS) while
+                // the pass profile is on; each new sample logs the session so far.
+                if (drawProfileFrame == frame && drawProfileCountedFrame != frame) {
+                    drawProfile.EndFrame();
+                    drawProfileCountedFrame = frame;
+                }
+                if (pass_profile::Enabled() && !drawProfileUnavailable && frame >= drawProfileLastSample + 300) {
+                    if (drawProfile.Frames()) LOG_INFO("{}", drawProfile.Format());
+                    drawProfileLastSample = frame;
+                    drawProfileFrame = frame + 1;
+                }
                 const bool scene = depthDrawFrame == frame || srPromotionFrame == frame;
                 idleSceneFrames = idle_ui::NextIdleFrames(idleSceneFrames, scene);
             }
@@ -4126,6 +4147,11 @@ namespace gpu::renderer
                 }
                 Gpu().srIsolatedAccepted = accepted;
                 commandList = Gpu().srContinuation.get(); if (!video::BeginGpuCommands(commandList)) return false;
+                // P4: charge the isolated SR list (and the prefix tail) to "upscaler".
+                if (Gpu().drawProfileActive && Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
+                    commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
+                    Gpu().drawProfileRecords.push_back({0, 0, draw_profile::DrawClass::Upscaler});
+                }
 #if LO_PLATFORM_MACOS
                 if (!nativeVulkan) plume::EncodeMetalQueueWait(commandList);
 #endif
@@ -5065,6 +5091,12 @@ void main()
                 fgHandoffPool.Collect();
                 for (const auto& e : s.evaluateCaptures) if (e->checkedSubmit) e->completed = true;
                 s.evaluateCaptures.clear();
+                if (s.drawProfileActive) {
+                    s.drawProfileActive = false;
+                    s.drawProfilePool->queryResults();
+                    drawProfile.AddList(s.drawProfileRecords, s.drawProfilePool->getResults());
+                    s.drawProfileRecords.clear();
+                }
                 if (s.timed) {
                     s.timed = false;
                     s.timingQueries->queryResults();
@@ -5211,6 +5243,23 @@ void main()
                         commandList->resetQueryPool(timingQueries, 0, 2);
                         commandList->writeTimestamp(timingQueries, 0);
                     }
+                    Gpu().drawProfileActive = false;
+                    Gpu().drawProfileRecords.clear();
+                    if (drawProfileFrame == frame && !drawProfileUnavailable) {
+                        auto& pool = Gpu().drawProfilePool;
+                        if (!pool && device->getCapabilities().queryPools)
+                            pool = device->createQueryPool(draw_profile::MaxDrawsPerList + 1);
+                        if (pool && pool->getCount() != draw_profile::MaxDrawsPerList + 1) pool.reset();
+                        if (!pool) {
+                            drawProfileUnavailable = true;
+                            LOG_WARNING("draw classes: GPU timestamp queries unavailable");
+                        } else {
+                            commandList->resetQueryPool(pool.get(), 0, draw_profile::MaxDrawsPerList + 1);
+                            commandList->writeTimestamp(pool.get(), 0);
+                            Gpu().drawProfileActive = true;
+                            Gpu().drawProfileRecords.reserve(draw_profile::MaxDrawsPerList);
+                        }
+                    }
                     if (hostOcclusion) {
                         // Outside any render pass, before this batch's first query.
                         // Pools untouched since their last reset need none.
@@ -5279,6 +5328,10 @@ void main()
                 if (motionReplay) motionReplay->SealTimings(commandList);
                 if (!Gpu().srPrefixClosed) Gpu().drawProbe.End(commandList);
                 if (Gpu().timed) commandList->writeTimestamp(timingQueries, 1);
+                if (Gpu().drawProfileActive)
+                    // Every query of the pool must be written for its readback.
+                    for (uint32_t i = uint32_t(Gpu().drawProfileRecords.size()) + 1; i <= draw_profile::MaxDrawsPerList; ++i)
+                        commandList->writeTimestamp(Gpu().drawProfilePool.get(), i);
                 if (!video::EndGpuCommands(commandList)) {
 #if defined(LO_GPU_PLUME)
                     for (const auto& capture : Gpu().fgUiUses) {
@@ -12490,15 +12543,25 @@ void main()
                 if (skipReadOnlyDepthDraws && modeControl == 5 &&
                     (Reg(REG_RB_DEPTHCONTROL) & 5u) == 0 && !occlusion.Active())
                     ++readOnlyDepthDrawsSkipped;
-                else if (useIndices)
-                {
-                    RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset), uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                    commandList->setIndexBuffer(&view);
-                    commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                }
                 else
                 {
-                    commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                    if (useIndices) {
+                        RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset), uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
+                        commandList->setIndexBuffer(&view);
+                        commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
+                    } else {
+                        commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                    }
+                    if (Gpu().drawProfileActive && Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
+                        const bool blending = (key.blend & 0x1FFFu) != 1u || ((key.blend >> 16) & 0x1FFFu) != 1u;
+                        const bool fullTarget = indexCount <= 6 && color &&
+                            scissor.right - scissor.left + 1 >= int32_t(color->width) &&
+                            scissor.bottom - scissor.top + 1 >= int32_t(color->height);
+                        const auto drawClass = draw_profile::Classify(depthOnlyRaster || !(key.colorMask & 0xF),
+                            key.vs == temporal::ShadowProjectionVS, depth != nullptr, blending, fullTarget);
+                        commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
+                        Gpu().drawProfileRecords.push_back({key.vs, key.ps, drawClass});
+                    }
                 }
                 recordProbe.Enter(record_timing::Phase::Occlusion);
                 // A counted draw leaves its variant bound: the next draw binds and
