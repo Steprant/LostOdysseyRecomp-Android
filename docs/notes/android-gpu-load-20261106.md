@@ -622,3 +622,38 @@ site. Verified by the settings menu fixtures (15/15).
   is still open. M1 removes the menu-time resizes (one candidate cause);
   the next Tester recording of a menu, with the draw-class profile (P4),
   separates GPU from CPU/present stalls.
+
+## First device run of the night build (23:01 and 23:13 traces)
+
+- **M1 never fired.** No `interface promoted` line; the render size no
+  longer changed in menus (only on setting changes), but menus stayed at
+  the render size (1282×576 at 576p). Cause: the promotion required a frame
+  without depth-writing draws, and menu frames still issue them (57
+  depth-only draws per frame in the draw-class profile). Fix: a scene frame
+  is now one that SGSR2 upscaled; a menu is any presented frame SGSR2 did
+  not upscale. A promotion undone by a depth draw on the final target in
+  its own frame now blocks further promotions until SGSR2 runs again, so a
+  menu that draws depth there stays at one size instead of alternating.
+- **P4 classification.** `fullscreen=0` in every line: the full-screen test
+  compared the scissor with the EDRAM target, which is taller than the
+  screen. It now compares the viewport with the render size (≥80% of its
+  area, ≤6 indices).
+- **What the profile already says** (98 sampled frames, indicative):
+  gameplay frames ~24 ms when sampled, 718 draws; depth-only 363 draws
+  at ~17 µs (6.2 ms), opaque 188 at ~21 µs (4.0 ms), blend 107 at ~36 µs
+  (3.8 ms), large untextured/2D and post passes 52 at ~128 µs (6.7 ms),
+  upscaler bracket (SGSR2 + SMAA at 1780×800 → 2670×1200, plus the prefix
+  tail) ~3.1–3.3 ms. One pass, `8bbd4da701845d16/cda578aef1724fdc`, costs
+  1.3–1.8 ms per gameplay frame and 5.5 ms in menus: the next thing to
+  look at.
+- **G1.** Every VS 99c2 shader seen (`d55a…`, `67b1…`, `a195…`) is a
+  listed one and compensated; `shadow_uncompensated=0` throughout. A few
+  draws right after loads carry all-NaN c2–c5 (rejected, unjittered); a
+  candidate for the brief black patch seen at 576p, not confirmed.
+- **A1.** No `xma decode burst` line; cumulative XMA failures 313 (23:01)
+  and 1,005 (23:13) against 12–14 thousand per second before.
+- **Open: short white dashed lines on the ground in battle.** Most likely
+  temporal: tiny particles that move without their own motion vectors
+  leave a dotted trail in SGSR2's history. To confirm with SGSR1 (no
+  history) in the same battle; the fix would be a reactive mask for
+  blended draws, which SGSR2 does not have yet.

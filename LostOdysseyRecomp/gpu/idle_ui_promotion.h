@@ -14,9 +14,9 @@ struct DrawFacts
     bool finalTarget = false;      // this draw writes that target
     bool depth = false;            // depth bound: a 3D draw, never promoted
     bool sgsr2Upscaling = false;   // SGSR2 plan whose input is smaller than the output
-    bool sceneThisFrame = false;   // a depth-writing draw already happened in this frame
-    uint32_t idleFrames = 0;       // presented frames in a row without a 3D scene
-    bool blocked = false;          // back-off after a promotion undone in its frame
+    bool sceneThisFrame = false;   // SGSR2 already upscaled a scene in this frame
+    uint32_t idleFrames = 0;       // presented frames in a row that SGSR2 did not upscale
+    bool blocked = false;          // a promotion was undone in its frame; cleared by the next SGSR2 frame
     bool promotionBusy = false;    // a promotion is active or was already made this frame
     bool atOutputSize = false;     // the target already has the output size
     bool backgroundOnly = false;   // the draw samples only resolved surfaces, or nothing

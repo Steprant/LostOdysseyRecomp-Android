@@ -1713,8 +1713,12 @@ namespace gpu::renderer
             struct FrameResolve { uint32_t destBase; RenderTargetKey key; };
             std::array<FrameResolve, 8> frameResolves{};
             uint32_t frameResolveCount = 0;
-            uint64_t srPromotionFrame = ~0ull, idlePromotionBlockedUntil = 0;
+            uint64_t srPromotionFrame = ~0ull;
             uint32_t idleSceneFrames = 0, idlePromotionsLogged = 0;
+            // A promotion undone by a depth draw on the final target in its own
+            // frame: no more promotions until SGSR2 runs again (back in the 3D
+            // scene), so a menu that draws depth never flips between sizes.
+            bool idlePromotionBlocked = false;
             uint64_t srReconfigureFrame = ~0ull;
             std::unique_ptr<RenderShader> sceneCopyPromotionPs, sceneCopyPromotionRgbPs;
             std::map<uint32_t, std::unique_ptr<RenderPipeline>> sceneCopyPromotionPipelines, sceneCopyPromotionRgbPipelines;
@@ -3532,8 +3536,12 @@ namespace gpu::renderer
                     drawProfileLastSample = frame;
                     drawProfileFrame = frame + 1;
                 }
-                const bool scene = depthDrawFrame == frame || srPromotionFrame == frame;
+                // A scene frame is one SGSR2 upscaled. Menus still issue depth
+                // draws (57 depth-only draws a frame in the 23:01 trace), so
+                // depth writes cannot tell a menu from the 3D scene.
+                const bool scene = srPromotionFrame == frame;
                 idleSceneFrames = idle_ui::NextIdleFrames(idleSceneFrames, scene);
+                if (scene) idlePromotionBlocked = false;
             }
 
             // A draw that only composes a resolved surface (the paused scene,
@@ -3562,9 +3570,9 @@ namespace gpu::renderer
                 facts.depth = hasDepth;
                 facts.sgsr2Upscaling = activePlan.requestedUpscaler == upscaling::Upscaler::Sgsr2 &&
                     activePlan.output.width && activePlan.output.height && activePlan.output.width > activePlan.width;
-                facts.sceneThisFrame = depthDrawFrame == frame;
+                facts.sceneThisFrame = srPromotionFrame == frame;
                 facts.idleFrames = idleSceneFrames;
-                facts.blocked = frame < idlePromotionBlockedUntil;
+                facts.blocked = idlePromotionBlocked;
                 facts.promotionBusy = sceneCopyPromotion.activeMapping || sceneCopyPromotionFrame == frame || Gpu().srPrefixClosed;
                 facts.atOutputSize = color->resolutionSize.width == activePlan.output.width &&
                     color->resolutionSize.height == activePlan.output.height;
@@ -3651,8 +3659,9 @@ namespace gpu::renderer
                 // An interface promotion undone in its own frame (a depth draw on
                 // the final target): leave the next 60 frames at the render size.
                 if (promotion.idleUi && promotion.frame == frame) {
-                    idlePromotionBlockedUntil = frame + 60;
-                    LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused for 60 frames", frame, reason);
+                    if (!idlePromotionBlocked)
+                        LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused until the next SGSR2 frame", frame, reason);
+                    idlePromotionBlocked = true;
                 }
                 // The low-resolution target goes back into the map owing its
                 // pixels; the resample is drawn only when something needs them.
@@ -12564,9 +12573,12 @@ void main()
                 if (Gpu().drawProfileActive && readOnlyDepthDrawsSkipped == profileSkipsBefore &&
                     Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
                     const bool blending = (key.blend & 0x1FFFu) != 1u || ((key.blend >> 16) & 0x1FFFu) != 1u;
-                    const bool fullTarget = indexCount <= 6 && color &&
-                        scissor.right - scissor.left + 1 >= int32_t(color->width) &&
-                        scissor.bottom - scissor.top + 1 >= int32_t(color->height);
+                    // Full-screen pass: a quad whose viewport covers the render
+                    // size (EDRAM targets are taller than the screen, so the
+                    // target's own extent cannot be the reference).
+                    const bool fullTarget = indexCount <= 6 && activePlan.width && activePlan.height &&
+                        double(rasterViewport.width) * double(rasterViewport.height) >=
+                            0.8 * double(activePlan.width) * double(activePlan.height);
                     const auto drawClass = draw_profile::Classify(depthOnlyRaster || !(key.colorMask & 0xF),
                         key.vs == temporal::ShadowProjectionVS, depth != nullptr, blending, fullTarget);
                     commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
