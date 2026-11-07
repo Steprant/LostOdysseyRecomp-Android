@@ -26,6 +26,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - The runtime log and performance overlay show whether SGSR1 is active and, if not, why; the overlay shows SGSR1's render and display sizes.
 - SGSR2/TAA: no more grid of blocks in shadowed areas with jitter on: every shadow-projection pixel shader that rebuilds its receiver like the reviewed ones gets the same jitter correction, and any other one stays unjittered; the log lists each such shader and the jitter line counts corrected and uncorrected shadow draws.
 - Vulkan: after a render-resolution switch and back, the renderer reuses all its render targets (it kept only one size and discarded most of them).
+- SGSR2: menus, loading screens and fades no longer change the render resolution (no more hitch at every transition); their interface is drawn at the display resolution over the enlarged background. The old switch remains as an option on the Android diagnostics page, now only after 1.5 s without a 3D scene.
 
 ### 简体中文
 
@@ -46,6 +47,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - 运行日志和性能叠加层显示 SGSR1 是否启用，以及未启用的原因；叠加层显示 SGSR1 的渲染与显示尺寸。
 - SGSR2/TAA：开启抖动时阴影区域不再出现方块网格：与已审核着色器同样重建接收面的所有阴影投影像素着色器都获得相同的抖动补偿，其余保持不抖动；日志列出每个此类着色器，抖动行统计已补偿与未补偿的阴影绘制。
 - Vulkan：渲染分辨率切换并切回后，渲染器复用全部渲染目标（此前只保留一种尺寸，大部分被丢弃）。
+- SGSR2：菜单、加载画面和淡入淡出不再改变渲染分辨率（每次过渡不再卡顿）；其界面以显示分辨率绘制在放大的背景之上。旧的切换方式保留为 Android 诊断页面中的选项，且仅在 1.5 秒无 3D 场景后触发。
 
 ## [v1.5-steprant.20261104](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) — Steprant Android 1.5 — 2026-11-04
 

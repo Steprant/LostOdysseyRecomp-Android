@@ -445,3 +445,46 @@ counter instead of a host query, like draws without one.
   compiles in the motion-replay boundary. Device: after M1 the switch should
   no longer happen in menus; when it does (SGSR2 quality change, the Tester
   fallback switch), `reused R of T` should be close to T.
+
+## M1: menus and transitions keep one render size (2026-11-07, night)
+
+- **Evidence.** The 7/11 traces log an `internal resolution` change at
+  nearly every menu, loading screen and fade: the SGSR2 idle policy moved
+  the plan to 2670×1200 after 8 scene-less frames and back after 12 3D ones.
+  Each change cost a 40–300 ms frame (drain, allocations, M2), and menus
+  rendered entirely at 2670×1200 cost about 20 ms of GPU.
+- **Structural change.** The render size no longer changes. In a frame
+  without a 3D scene the renderer promotes only the *final* target — the
+  EDRAM target the frontbuffer is resolved from, learned at each present
+  (`renderer: frontbuffer target …`) — to the output size, at the first
+  draw on it that samples ordinary textures (fonts, windows, icons). What
+  the target held (the background: the paused scene and its blur are
+  resolved surfaces, and untextured fills, drawn at the render size) is
+  enlarged once with the bilinear promotion resample; the interface is then
+  rasterised at the output size, and the frontbuffer resolve and the
+  presentation take it 1:1 (SGSR1 stays inactive on those frames). It reuses
+  the scene-copy promotion of the SGSR2 path without the upscaler
+  (`sceneCopyPromotion.idleUi`), so the next frame gives the target back the
+  same way (lazy resample). Every other target, including the background
+  passes, stays at the render size.
+- **Conditions** (`idle_ui_promotion.h`): SGSR2 plan rendering below the
+  output, previous presented frame without a 3D scene, no depth-writing
+  draw yet in this frame, no depth on the draw, one promotion per frame.
+  A promotion undone in its own frame (a depth draw on the final target)
+  pauses the mechanism for 60 frames and logs it.
+- **Fallback.** The old switch (`Sgsr2IdlePolicy`) now runs only with
+  `LO_SGSR2_NATIVE_MENUS=1`, exposed on the Android diagnostics page
+  ("Menus: render-size switch (old)"); when on, the promotion is off. Its
+  entry threshold is 45 frames (~1.5 s at 30 FPS) instead of 8, so loading
+  screens and fades no longer trigger it; the return threshold stays 12.
+  `LO_SGSR2_UI_PROMOTION=0` disables the promotion alone (development).
+- **Cost.** Per scene-less frame: one bilinear pass at the output size and
+  one lazy pass back at the render size, plus the interface draws at the
+  output size. The background passes no longer run at the output size.
+- **Verification.** Host: `idle_ui_promotion_test` (conditions and idle
+  counter), `frame_plan_test` (the fallback policy with 45/12), the real
+  `renderer.cpp` compiles in the motion-replay boundary. Not run on a GPU
+  or phone. Device acceptance: no `internal resolution` line when opening
+  and closing a menu or during a loading screen; sharp menu text; no frame
+  above 50 ms from a switch; the log shows `interface promoted to
+  2670x1200` in menus.

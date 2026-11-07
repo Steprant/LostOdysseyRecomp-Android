@@ -52,11 +52,15 @@ namespace gpu::frame_plan
         std::mutex sgsr2IdleMutex;
         Sgsr2IdlePolicy sgsr2Idle;
         std::atomic<bool> sgsr2Native{false};
+        // The old menu policy (switch the render size to the output size) is
+        // now a fallback: the renderer promotes the interface of scene-less
+        // frames instead (M1). LO_SGSR2_NATIVE_MENUS=1, set from the Android
+        // diagnostics page, brings the switch back.
         bool Sgsr2NativeMenusEnabled()
         {
             static const bool enabled = [] {
                 const char* value = getenv("LO_SGSR2_NATIVE_MENUS");
-                return !(value && std::string_view(value) == "0");
+                return value && std::string_view(value) == "1";
             }();
             return enabled;
         }

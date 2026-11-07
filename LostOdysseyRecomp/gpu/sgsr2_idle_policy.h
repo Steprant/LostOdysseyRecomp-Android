@@ -3,6 +3,9 @@
 
 namespace gpu::frame_plan {
 
+// Fallback only (LO_SGSR2_NATIVE_MENUS=1): by default the renderer draws the
+// interface of scene-less frames at the output size without changing the
+// render size (renderer.cpp, IdleUiPromotionWanted).
 // SGSR2 upscales only a 3D scene. Menus, pause screens and transitions have
 // none (NoEligibleScene): they render at SGSR2's reduced input size and
 // SGSR1 or bilinear enlarges them, so their text is soft. After a run of
@@ -14,11 +17,12 @@ namespace gpu::frame_plan {
 // the first 3D frame). A cooldown after returning keeps a scene that flickers
 // between eligible and not from reallocating every few frames.
 struct Sgsr2IdlePolicy {
-    // 8 frames: a menu is sharp after ~0.27 s at 30 FPS (30 frames took a
-    // full second, the soft text the player saw); single black frames of a
-    // cut stay below it. The renderer keeps the other size's render targets
-    // and SGSR2's pipelines, so the switch no longer rebuilds them.
-    static constexpr uint32_t kEnterFrames = 8;
+    // 45 frames (~1.5 s at 30 FPS) in this fallback: with 8, every loading
+    // screen and fade switched the render size and back, a 40-300 ms frame
+    // each time (7/11 traces). Real menus still turn sharp; short transitions
+    // stay at one size. The renderer keeps the other size's render targets
+    // and SGSR2's pipelines, so the switch does not rebuild them.
+    static constexpr uint32_t kEnterFrames = 45;
     static constexpr uint32_t kReturnFrames = 12;    // ~0.4 s at 30 FPS, rendered at the output size
     static constexpr uint64_t kCooldownFrames = 90;  // ~3 s at 30 FPS
 

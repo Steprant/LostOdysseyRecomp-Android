@@ -47,6 +47,7 @@
 #include "temporal_scene.h"
 #include "temporal_jitter.h"
 #include "render_target_parking.h"
+#include "idle_ui_promotion.h"
 #include "temporal_suspect.h"
 #include "temporal_history.h"
 #include "sr_scene_input_policy.h"
@@ -1668,6 +1669,10 @@ namespace gpu::renderer
                 RenderDescriptorSet* rgbSet = nullptr;
                 uint64_t fallbackConstants = UINT64_MAX, rgbConstants = UINT64_MAX;
                 bool prepared = false, activeMapping = false, srApplied = false;
+                // M1: a promotion of a frame without a 3D scene (menu, loading,
+                // fade): no upscaler, only the bilinear resample of what the
+                // target held, so the interface after it is drawn at the output size.
+                bool idleUi = false;
                 // This frame's extended-gamma resolve of the input scene, borrowed
                 // for the promoted target's resolve (presentation highlight gain).
                 RenderTexture* hdrSource = nullptr;
@@ -1690,6 +1695,17 @@ namespace gpu::renderer
             static constexpr uint64_t kPromotionPoolIdleFrames = 120;
             SrDispatchOptions frameSrOptions{};
             uint64_t sceneCopyPromotionFrame = ~0ull;
+            // M1, idle UI promotion: the EDRAM target the presented frontbuffer
+            // was resolved from (learned at each present), how many presented
+            // frames in a row had no 3D scene, and a back-off after a promotion
+            // had to be undone by a depth draw on that target.
+            RenderTargetKey finalTargetKey{};
+            bool finalTargetKnown = false;
+            struct FrameResolve { uint32_t destBase; RenderTargetKey key; };
+            std::array<FrameResolve, 8> frameResolves{};
+            uint32_t frameResolveCount = 0;
+            uint64_t srPromotionFrame = ~0ull, idlePromotionBlockedUntil = 0;
+            uint32_t idleSceneFrames = 0, idlePromotionsLogged = 0;
             uint64_t srReconfigureFrame = ~0ull;
             std::unique_ptr<RenderShader> sceneCopyPromotionPs, sceneCopyPromotionRgbPs;
             std::map<uint32_t, std::unique_ptr<RenderPipeline>> sceneCopyPromotionPipelines, sceneCopyPromotionRgbPipelines;
@@ -3402,11 +3418,12 @@ namespace gpu::renderer
 
             bool ActivateSceneCopyDestination(HostTexture*& color, HostTexture*& rasterTarget,
                 RenderViewport& rasterViewport, RenderRect& physicalScissor,
-                const RenderViewport& guestViewport, const RenderRect& guestScissor, const float* replacedQuad)
+                const RenderViewport& guestViewport, const RenderRect& guestScissor, const float* replacedQuad,
+                bool reportFailure = true)
             {
                 auto& promotion = sceneCopyPromotion;
                 const auto reject = [&] {
-                    NoteDlssFrameFallback(frame_plan::DlssEffectReason::PromotionUnavailable);
+                    if (reportFailure) NoteDlssFrameFallback(frame_plan::DlssEffectReason::PromotionUnavailable);
                     return false;
                 };
                 if (!promotion.prepared || promotion.activeMapping || !promotion.preparedPromoted) return reject();
@@ -3452,6 +3469,115 @@ namespace gpu::renderer
                 physicalScissor.right = int32_t(color->ScaleX(uint32_t(guestScissor.right)));
                 physicalScissor.top = int32_t(color->ScaleY(uint32_t(guestScissor.top)));
                 physicalScissor.bottom = int32_t(color->ScaleY(uint32_t(guestScissor.bottom)));
+                return true;
+            }
+
+            // M1: SGSR2 menus and transitions no longer switch the render size.
+            // In a frame without a 3D scene the final target (the one the
+            // frontbuffer is resolved from) moves to the output size at its
+            // first interface draw: what it held (the background, drawn at the
+            // render size) is enlarged once, bilinearly, and the interface is
+            // drawn sharp at the output size. The next frame gives the target
+            // back like any promotion. LO_SGSR2_UI_PROMOTION=0, or the old
+            // render-size switch (LO_SGSR2_NATIVE_MENUS=1), turns it off.
+            static bool IdleUiPromotionEnabled()
+            {
+                static const bool enabled = [] {
+                    const char* promotion = getenv("LO_SGSR2_UI_PROMOTION");
+                    const char* nativeSwitch = getenv("LO_SGSR2_NATIVE_MENUS");
+                    return !(promotion && std::string_view(promotion) == "0") &&
+                        !(nativeSwitch && std::string_view(nativeSwitch) == "1");
+                }();
+                return enabled;
+            }
+
+            void NoteFrameResolve(uint32_t destBase, const RenderTargetKey& key)
+            {
+                if (frameResolveCount < frameResolves.size())
+                    frameResolves[frameResolveCount++] = {destBase & 0x1FFFFFFFu, key};
+            }
+
+            // At the swap: which target became the frontbuffer, and whether the
+            // frame had a 3D scene.
+            void NotePresentedFrame(uint32_t frontbuffer)
+            {
+                for (uint32_t i = frameResolveCount; i-- > 0;)
+                    if (frameResolves[i].destBase == (frontbuffer & 0x1FFFFFFFu)) {
+                        if (!finalTargetKnown || !(finalTargetKey == frameResolves[i].key))
+                            LOG_INFO("renderer: frontbuffer target base={:#x} pitch={} class={}",
+                                frameResolves[i].key.base, frameResolves[i].key.pitch, frameResolves[i].key.format);
+                        finalTargetKey = frameResolves[i].key;
+                        finalTargetKnown = true;
+                        break;
+                    }
+                frameResolveCount = 0;
+                const bool scene = depthDrawFrame == frame || srPromotionFrame == frame;
+                idleSceneFrames = idle_ui::NextIdleFrames(idleSceneFrames, scene);
+            }
+
+            // A draw that only composes a resolved surface (the paused scene,
+            // its blur) or fills without a texture is background; the first
+            // draw that samples ordinary textures (fonts, windows, icons) is
+            // where the interface begins.
+            bool DrawSamplesOnlyResolved(const Shader* ps)
+            {
+                const uint32_t mask = ps ? ps->info.textureSlotMask : 0u;
+                if (!mask) return true;
+                for (uint32_t pending = mask; pending; pending &= pending - 1) {
+                    const uint32_t slot = uint32_t(std::countr_zero(pending));
+                    const uint32_t f0 = Reg(REG_FETCH_CONSTANTS + slot * 6), f1 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 1);
+                    if (!((f0 & 3) == 2 && FindResolved((f1 >> 12) << 12, f1 & 0x3f))) return false;
+                }
+                return true;
+            }
+
+            bool IdleUiPromotionWanted(const RenderTargetKey& key, const HostTexture* color, bool hasDepth, const Shader* ps)
+            {
+                if (!color || !color->texture || !sceneCopyPromotionPs) return false;
+                idle_ui::DrawFacts facts;
+                facts.enabled = IdleUiPromotionEnabled();
+                facts.finalTargetKnown = finalTargetKnown;
+                facts.finalTarget = key == finalTargetKey;
+                facts.depth = hasDepth;
+                facts.sgsr2Upscaling = activePlan.requestedUpscaler == upscaling::Upscaler::Sgsr2 &&
+                    activePlan.output.width && activePlan.output.height && activePlan.output.width > activePlan.width;
+                facts.sceneThisFrame = depthDrawFrame == frame;
+                facts.idleFrames = idleSceneFrames;
+                facts.blocked = frame < idlePromotionBlockedUntil;
+                facts.promotionBusy = sceneCopyPromotion.activeMapping || sceneCopyPromotionFrame == frame || Gpu().srPrefixClosed;
+                facts.atOutputSize = color->resolutionSize.width == activePlan.output.width &&
+                    color->resolutionSize.height == activePlan.output.height;
+                // Cheap checks first; the texture scan only when it decides.
+                facts.backgroundOnly = false;
+                if (!idle_ui::Wanted(facts)) return false;
+                facts.backgroundOnly = DrawSamplesOnlyResolved(ps);
+                return idle_ui::Wanted(facts);
+            }
+
+            bool PrepareIdleUiPromotion(const RenderTargetKey& key, HostTexture& color)
+            {
+                const resolution::Size output{activePlan.output.width, activePlan.output.height};
+                if (!scene_copy_promotion::CanAppendConstants(Gpu().uploadOffset,
+                        kUploadRingSize, sizeof(SharedConstants))) return false;
+                auto promoted = CreatePromotedTarget(color, output);
+                if (!promoted) return false;
+                SharedConstants constants{};
+                constants.transfer[0] = std::bit_cast<uint32_t>(float(color.width) / float(promoted->width));
+                constants.transfer[1] = std::bit_cast<uint32_t>(float(color.height) / float(promoted->height));
+                const uint64_t offset = Upload(&constants, sizeof(constants));
+                auto* set = offset == UINT64_MAX ? nullptr : AcquireSet(1);
+                if (!set) { Gpu().retiredTextures.push_back(std::move(promoted)); return false; }
+                set->setTexture(0, color.texture.get(), RenderTextureLayout::SHADER_READ);
+                set->setTexture(1, dummyTexture2D.texture.get(), RenderTextureLayout::SHADER_READ);
+                for (auto* image : {&sceneCopyPromotion.preparedPromoted, &sceneCopyPromotion.scratch})
+                    if (*image) Gpu().retiredTextures.push_back(std::move(*image));
+                sceneCopyPromotion = {};
+                sceneCopyPromotion.key = key; sceneCopyPromotion.frame = frame; sceneCopyPromotion.epoch = activePlan.geometryEpoch;
+                sceneCopyPromotion.sourceAllocation = color.allocationSerial;
+                sceneCopyPromotion.fallbackSet = set; sceneCopyPromotion.fallbackConstants = offset;
+                sceneCopyPromotion.preparedPromoted = std::move(promoted);
+                sceneCopyPromotion.prepared = true;
+                sceneCopyPromotion.idleUi = true;
                 return true;
             }
 
@@ -3501,6 +3627,12 @@ namespace gpu::renderer
                 if (!promotion.active || !promotion.parkedLow) return fail();
                 auto it = renderTargets.find(promotion.key);
                 if (it == renderTargets.end() || it->second.get() != promotion.active) return fail();
+                // An interface promotion undone in its own frame (a depth draw on
+                // the final target): leave the next 60 frames at the render size.
+                if (promotion.idleUi && promotion.frame == frame) {
+                    idlePromotionBlockedUntil = frame + 60;
+                    LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused for 60 frames", frame, reason);
+                }
                 // The low-resolution target goes back into the map owing its
                 // pixels; the resample is drawn only when something needs them.
                 if (!SettleRestoreDebt()) return fail();
@@ -11963,9 +12095,23 @@ void main()
                 scissor.left = std::clamp(scissor.left, 0, int32_t(rasterTarget->guestWidth)); scissor.right = std::clamp(scissor.right, 0, int32_t(rasterTarget->guestWidth));
                 scissor.top = std::clamp(scissor.top, 0, int32_t(rasterTarget->guestHeight)); scissor.bottom = std::clamp(scissor.bottom, 0, int32_t(rasterTarget->guestHeight));
                 const RenderRect guestScissor = scissor;
-                bool scenePromotionActivated = false;
+                bool scenePromotionActivated = false, idleUiPromoted = false;
                 recordProbe.Enter(record_timing::Phase::Promote);
-                if (dlssSrRequested && dlssSceneCopyInputs && fullSceneCopy && !depth
+#if defined(LO_GPU_PLUME)
+                if (!(dlssSrRequested && dlssSceneCopyInputs && fullSceneCopy) && !depthOnlyRaster) {
+                    const RenderTargetKey idleKey{colorInfo & 0xFFF, ColorClassOf((colorInfo >> 16) & 0xF), pitch, 0, false};
+                    if (IdleUiPromotionWanted(idleKey, color, depth != nullptr, ps) && PrepareIdleUiPromotion(idleKey, *color)) {
+                        idleUiPromoted = scenePromotionActivated = ActivateSceneCopyDestination(color, rasterTarget,
+                            rasterViewport, scissor, viewport, guestScissor, nullptr, false);
+                        if (idleUiPromoted && idlePromotionsLogged < 4) {
+                            ++idlePromotionsLogged;
+                            LOG_INFO("renderer: interface promoted to {}x{} at draw {} of frame {} (no 3D scene for {} frames)",
+                                activePlan.output.width, activePlan.output.height, drawsThisFrame, frame, idleSceneFrames);
+                        }
+                    }
+                }
+#endif
+                if (!idleUiPromoted && dlssSrRequested && dlssSceneCopyInputs && fullSceneCopy && !depth
 #if defined(LO_GPU_PLUME)
                     && (dlssController || temporalUpscaler)
 #else
@@ -11983,6 +12129,7 @@ void main()
                             BlendOp((key.blend >> 21) & 7) == RenderBlendOperation::ADD;
                         scenePromotionActivated = ActivateSceneCopyDestination(color, rasterTarget, rasterViewport, scissor,
                             viewport, guestScissor, replacesAlpha ? fullCopyBounds : nullptr);
+                        if (scenePromotionActivated) srPromotionFrame = frame;
                     }
                 }
                 int32_t scissorLeft, scissorTop, scissorRight, scissorBottom;
@@ -13312,7 +13459,7 @@ void main()
                     }
                 }
                 recordProbe.Enter(record_timing::Phase::SceneDlss);
-                if (scenePromotionActivated)
+                if (scenePromotionActivated && !idleUiPromoted)
                     RecordSceneCopyDlss(color, rasterTarget);
                 if (video::GpuWorkStopped()) return;
  #endif
@@ -14805,6 +14952,7 @@ void main()
                 }
                 HostTexture* color = AcquireColorTarget(colorInfo & 0xFFF, (colorInfo >> 16) & 0xF, pitch, rtHeight, true);
                 if (!color || !color->texture) return;
+                NoteFrameResolve(destBase, RenderTargetKey{colorInfo & 0xFFF, ColorClassOf((colorInfo >> 16) & 0xF), pitch, 0, false});
                 if (!resolveReadback)
                 {
                     if (!ResolveOnGpu(*color, destBase, destFormat, destPitch, destHeight, x0, y0, copyWidth, copyHeight))
@@ -15574,6 +15722,7 @@ void main()
     {
         if (!g_renderer)
             return;
+        g_renderer->NotePresentedFrame(physicalAddress);
         if (g_renderer->PlanSuppressed())
             return;
         g_renderer->consecutiveResolveCopies.Invalidate();
