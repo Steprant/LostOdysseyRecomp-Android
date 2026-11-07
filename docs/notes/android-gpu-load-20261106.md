@@ -423,3 +423,25 @@ counter instead of a host query, like draws without one.
   zones of the twelve listed shaders unchanged. The log should list every
   99c2 shader of the area with its contract; any `unverified` one is a
   candidate for review.
+
+## M2: render-target parking keeps both sizes (2026-11-07, night)
+
+- **Evidence.** In the 17:16–18:45 traces the `resize parked … reused …`
+  lines show 2–5 reused targets out of 14–24 at each return.
+- **Cause.** The park held one target per key. At the output size,
+  `GetRenderTarget` found the parked quality-size target of the same key,
+  saw the wrong size and retired it; at the next switch the output-size
+  target took its place. Only keys never drawn at the other size survived.
+- **Change.** `render_target_parking.h`: up to two allocations per key, one
+  per size. Parking a target replaces the parked one of the same size, else
+  takes a free slot, else the older slot. A lookup takes back only a fitting
+  allocation and leaves the other size parked for the next switch. The
+  512 MB budget now evicts the oldest generations first instead of freeing
+  everything. The log reads `resize parked N render targets (M MB, E evicted
+  over the budget); the last size reused R of T new targets`.
+- **Verification.** Host: `render_target_parking_test` (quality → output →
+  quality → output reuses every target from the second switch on; a third
+  size drops the oldest; budget eviction order); the real `renderer.cpp`
+  compiles in the motion-replay boundary. Device: after M1 the switch should
+  no longer happen in menus; when it does (SGSR2 quality change, the Tester
+  fallback switch), `reused R of T` should be close to T.

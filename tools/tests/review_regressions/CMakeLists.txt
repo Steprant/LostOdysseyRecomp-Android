@@ -52,6 +52,7 @@ lo_review_test(LoSoftResetTest soft_reset_test.cpp)
 lo_review_test(LoAudioCallbackTest audio_callback_test.cpp)
 lo_review_test(LoAudioQueueRefillTest audio_queue_refill_test.cpp)
 lo_review_test(LoPerformanceHintPolicyTest performance_hint_policy_test.cpp)
+lo_review_test(LoRenderTargetParkingTest render_target_parking_test.cpp)
 # plume's interface header includes X11 on Linux.
 find_package(X11 QUIET)
 if(EXISTS "${LO_ROOT}/thirdparty/plume/plume_render_interface.h" AND (X11_FOUND OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux"))

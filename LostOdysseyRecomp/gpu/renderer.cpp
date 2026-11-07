@@ -46,6 +46,7 @@
 #include "bc_decode.h"
 #include "temporal_scene.h"
 #include "temporal_jitter.h"
+#include "render_target_parking.h"
 #include "temporal_suspect.h"
 #include "temporal_history.h"
 #include "sr_scene_input_policy.h"
@@ -1047,11 +1048,14 @@ namespace gpu::renderer
             // reuses their allocations instead of making 20-40 new ones on the
             // frame of the switch. GetRenderTarget takes one back only for the
             // same key and host size, under a new allocation serial; their
-            // pixels are stale like any target after a resize. Bounded by
-            // kParkedTargetBytes; LO_PARK_TARGETS=0 frees them at the resize.
-            std::unordered_map<RenderTargetKey, std::unique_ptr<HostTexture>, RenderTargetKeyHash> parkedTargets;
+            // pixels are stale like any target after a resize. Each key keeps
+            // up to two sizes (render_target_parking.h), so a lookup at one size
+            // never discards the other. Bounded by kParkedTargetBytes, oldest
+            // first; LO_PARK_TARGETS=0 frees them at the resize.
+            std::unordered_map<RenderTargetKey, parking::Pair<std::unique_ptr<HostTexture>>, RenderTargetKeyHash> parkedTargets;
             static constexpr uint64_t kParkedTargetBytes = 512ull << 20;
-            uint32_t parkedTargetReuses = 0;
+            uint32_t parkedTargetReuses = 0, parkedTargetMisses = 0;
+            uint64_t parkGeneration = 0;
             std::unordered_map<TextureKey, std::unique_ptr<HostTexture>, TextureKeyHash> textures;
             // Changes on every insert into or erase from `textures`; an iterator
             // remembered at an unchanged version is still valid.
@@ -7883,29 +7887,35 @@ void main()
                     const char* value = std::getenv("LO_PARK_TARGETS");
                     return !(value && std::string_view(value) == "0");
                 }();
-                const uint32_t reused = parkedTargetReuses;
-                parkedTargetReuses = 0;
+                const uint32_t reused = parkedTargetReuses, missed = parkedTargetMisses;
+                parkedTargetReuses = parkedTargetMisses = 0;
                 if (!parking) {
                     parkedTargets.clear();
                     renderTargets.clear();
                     return;
                 }
+                ++parkGeneration;
                 for (auto& [key, target] : renderTargets) {
                     // Scene-copy promotion images belong to their pool.
                     if (!target || !target->texture || target->poolFlags) continue;
-                    if (auto& slot = parkedTargets[key]) Gpu().retiredTextures.push_back(std::move(slot));
-                    parkedTargets[key] = std::move(target);
+                    auto& pair = parkedTargets[key];
+                    const HostTexture& current = *target;
+                    const size_t slot = parking::ChooseParkSlot(pair, [&](const std::unique_ptr<HostTexture>& parked) {
+                        return parked->resolutionSize == current.resolutionSize && parked->guestWidth == current.guestWidth &&
+                            parked->format == current.format;
+                    });
+                    if (pair[slot].Used()) Gpu().retiredTextures.push_back(std::move(pair[slot].target));
+                    pair[slot] = {std::move(target), parkGeneration};
                 }
                 renderTargets.clear();
-                uint64_t bytes = 0;
-                for (const auto& [key, target] : parkedTargets)
-                    bytes += uint64_t(target->width) * target->height * std::max(1u, RenderFormatSize(target->format));
-                if (bytes > kParkedTargetBytes) {
-                    LOG_INFO("renderer: {} parked render targets ({} MB) exceed the budget, freed", parkedTargets.size(), bytes >> 20);
-                    parkedTargets.clear();
-                    return;
-                }
-                LOG_INFO("renderer: resize parked {} render targets ({} MB); the last size reused {}", parkedTargets.size(), bytes >> 20, reused);
+                const auto bytesOf = [](const std::unique_ptr<HostTexture>& target) {
+                    return uint64_t(target->width) * target->height * std::max(1u, RenderFormatSize(target->format));
+                };
+                auto evicted = parking::EvictToBudget(parkedTargets, kParkedTargetBytes, bytesOf);
+                for (auto& target : evicted) Gpu().retiredTextures.push_back(std::move(target));
+                LOG_INFO("renderer: resize parked {} render targets ({} MB, {} evicted over the budget); the last size reused {} of {} new targets",
+                    parking::Count(parkedTargets), parking::TotalBytes(parkedTargets, bytesOf) >> 20, evicted.size(),
+                    reused, reused + missed);
             }
 
             void FailCurrentPlan(frame_plan::FailureReason reason = frame_plan::FailureReason::Unknown)
@@ -8011,12 +8021,19 @@ void main()
                 consecutiveResolveCopies.Invalidate();
                 if (!oldTarget) {
                     auto parked = parkedTargets.find(key);
-                    if (parked != parkedTargets.end()) {
-                        auto reused = std::move(parked->second);
-                        parkedTargets.erase(parked);
-                        if (reused && reused->texture && reused->resolutionSize == desiredSize &&
-                            reused->guestHeight >= effectiveHeight && reused->guestWidth == pitch &&
-                            reused->format == (depth ? RenderFormat::D32_FLOAT_S8_UINT : HostFormatForClass(colorClass))) {
+                    const RenderFormat wantedFormat = depth ? RenderFormat::D32_FLOAT_S8_UINT : HostFormatForClass(colorClass);
+                    const size_t slot = parked == parkedTargets.end() ? 2 :
+                        parking::FindReusableSlot(parked->second, [&](const std::unique_ptr<HostTexture>& candidate) {
+                            return candidate->texture && candidate->resolutionSize == desiredSize &&
+                                candidate->guestHeight >= effectiveHeight && candidate->guestWidth == pitch &&
+                                candidate->format == wantedFormat;
+                        });
+                    // A parked target of the other size stays parked for the next switch back.
+                    if (slot < 2) {
+                        auto reused = std::move(parked->second[slot].target);
+                        parked->second[slot] = {};
+                        if (!parked->second[0].Used() && !parked->second[1].Used()) parkedTargets.erase(parked);
+                        {
                             // Same allocation, new identity: no lineage, provenance or
                             // frame-generation state of its earlier life carries over.
                             auto fresh = std::make_unique<HostTexture>();
@@ -8036,8 +8053,8 @@ void main()
                             renderTargets.emplace(key, std::move(fresh));
                             return result;
                         }
-                        if (reused) Gpu().retiredTextures.push_back(std::move(reused));
                     }
+                    ++parkedTargetMisses;
                 }
                 auto tex = std::make_unique<HostTexture>();
                 tex->allocationSerial = ++nextTargetAllocation;
