@@ -28,6 +28,7 @@ enum class Switch : uint32_t
     TurnipMode,         // Turnip render mode: 0 auto, 1 sysmem, 2 gmem
     DiscardUndefined,   // passes skip loading attachments whose contents are undefined
     RenderArea,         // passes cover the draws' scissor instead of the whole target
+    PerformanceHints,   // Android Performance Hint session for guest main and render threads
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -55,6 +56,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"turnip_mode", L"Turnip render mode", L"Turnip 渲染模式", 0, 3, "TU_DEBUG"},
     {"discard_undefined", L"Skip loading undefined attachments", L"略過載入未定義的附件", 0, 2, "LO_VK_DISCARD_UNDEFINED"},
     {"render_area", L"Render passes limited to the scissor", L"渲染通道限於剪裁區域", 0, 2, "LO_VK_RENDER_AREA"},
+    {"performance_hints", L"CPU performance hints (ADPF)", L"CPU 效能提示 (ADPF)", 0, 2, "LO_ADPF"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset).
@@ -73,6 +75,7 @@ inline const char* VariableValue(Switch which, uint32_t value)
     case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
     case Switch::DiscardUndefined: return value == 1 ? "0" : nullptr;
     case Switch::RenderArea: return value == 1 ? "0" : nullptr;
+    case Switch::PerformanceHints: return value == 1 ? "1" : nullptr;
     case Switch::Count: break;
     }
     return nullptr;

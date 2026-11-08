@@ -174,3 +174,13 @@ The `gpu passes` line also names the layout transitions behind the barriers
 that end passes (`barrier_ends_per_frame:`, `own:` for the pass's own
 attachments, `other:` for other textures), to decide which barriers can move
 before their pass.
+
+## 5.2 Performance hints reachable from the Tester
+
+The Android Performance Hint session for the guest main and render threads
+(`os::scheduling::PerformanceHints`) existed but nothing ever enabled it:
+`SetPerformanceHints` was never called, so even `LO_ADPF=1` had no effect.
+The runtime now calls it at startup (off by default), and the Tester row
+"CPU performance hints (ADPF)" (`performance_hints`, `LO_ADPF=1`) turns it on,
+for an A/B in the city where the 8 November session showed the prime core
+held at 902 MHz during the stutter.

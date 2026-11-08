@@ -22,7 +22,7 @@ int main()
         for (size_t i = 0; i < Count; ++i) Check(std::getenv(Definitions[i].variable) == nullptr, "defaults set nothing");
         Check(summary.find("menu_native_switch=1") != std::string::npos, "summary lists every switch");
         Check(Set(Switch::PositionOnlyVs, 1) && Set(Switch::MenuNativeSwitch, 0) && Set(Switch::TurnipMode, 2) &&
-            Set(Switch::Sgsr2Smaa, 1) && Set(Switch::DiscardUndefined, 1) && Set(Switch::RenderArea, 1), "values saved");
+            Set(Switch::Sgsr2Smaa, 1) && Set(Switch::DiscardUndefined, 1) && Set(Switch::RenderArea, 1) && Set(Switch::PerformanceHints, 1), "values saved");
         Check(!Set(Switch::TurnipMode, 3), "out-of-range value refused");
         setenv("LO_SR_VIEWPORT_JITTER", "dev", 1);
         Set(Switch::ViewportJitter, 1);
@@ -35,6 +35,7 @@ int main()
         Check(std::string(std::getenv("LO_SGSR2_SMAA")) == "0", "SMAA off");
         Check(std::string(std::getenv("LO_VK_DISCARD_UNDEFINED")) == "0", "undefined attachments loaded again");
         Check(std::string(std::getenv("LO_VK_RENDER_AREA")) == "0", "whole-target render passes again");
+        Check(std::string(std::getenv("LO_ADPF")) == "1", "performance hints on");
         Check(std::string(std::getenv("LO_SR_VIEWPORT_JITTER")) == "dev" &&
             summary.find("(env LO_SR_VIEWPORT_JITTER=dev)") != std::string::npos, "environment wins and is logged");
         std::filesystem::remove_all(dir);
