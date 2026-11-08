@@ -129,3 +129,43 @@ side. While a Tester session records, every frame over 50 ms now logs one
   diagnostics of the previous frame).
 
 The first 300 slow frames are logged, then one in ten.
+
+## First census on the phone (8 November, 10:03-10:36)
+
+Heavy field frames at 2403x1080 (SGSR1): ~760 MB stored and ~630 MB loaded
+per frame. Where the stores went:
+
+| | colour | depth |
+|---|---|---|
+| read (sampled, copied, resolved) | 298 MB | 44 MB |
+| loaded again by the next pass on the target | 160 MB | 195 MB |
+| cleared unread | 75 MB | 1 MB |
+
+`load_undefined` was 0: the 1.2a change saves nothing on this game (the
+A/B sessions 10:30 and 10:36 agree within noise). Depth stores nobody reads
+are 1 MB, so 1.3 (depth store DONT_CARE) is dropped. The loads that follow a
+store on the same target (355 MB) come from passes that end and resume:
+26 per frame at a framebuffer change, 22 at a barrier on the pass's own
+attachment (EDRAM resolves), 14.5 at a barrier on another texture. The
+biggest are the scene colour and depth (2403x1104, ~110 MB each) and the
+shadow map (1760x1792 depth, 65-74 MB, 3.7-4.1 passes of 24 MB each for
+~25 draws).
+
+## 1.4a Render area
+
+Plume began every pass over the whole framebuffer, so a pass that draws
+into one cascade of the shadow map or a sub-rectangle of an EDRAM target
+still loaded and stored the whole attachment. A pass now begins over the
+rectangle its first draw or clear needs (the scissor the renderer already
+sets from the guest's), widened to the render pass granularity. A later
+draw or clear outside it ends the pass and the next one covers the union,
+so nothing is drawn outside the render area. Passes that start with a
+clear, draws with several or unknown scissors, and any caller that does
+not say what it needs use the whole framebuffer. An occlusion query's pass
+is fitted before the query begins.
+
+A/B: Tester row "Render passes limited to the scissor" (`render_area`,
+`LO_VK_RENDER_AREA=0` uses the whole target). Profile byte counts and the
+census follow the render area; `pass_ends_per_frame` gains `render_area`.
+Lavapipe test: a corner clear fits the pass to the corner, a clear of the
+opposite corner restarts it over both (both settings tested).

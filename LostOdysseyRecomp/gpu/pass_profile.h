@@ -179,7 +179,7 @@ public:
         top("stored_then_cleared", flowCleared);
         top("stored_then_loaded", flowLoaded);
         static constexpr const char* endNames[] = {"framebuffer", "barrier_attachment", "barrier_other", "barrier_buffer",
-            "copy", "resolve", "dispatch", "external", "query_reset", "list_end", "other"};
+            "copy", "resolve", "dispatch", "external", "query_reset", "list_end", "other", "render_area"};
         static_assert(std::size(endNames) == size_t(plume::RenderPassProfile::PassEnd::Count));
         line += " pass_ends_per_frame:";
         for (size_t i = 0; i < std::size(endNames); ++i)

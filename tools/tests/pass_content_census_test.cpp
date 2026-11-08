@@ -50,6 +50,11 @@ int main()
     commands->setFramebuffer(freshFb.get());
     const RenderRect corner{0, 0, 8, 8};
     commands->clearColor(0, RenderColor(1, 0, 0, 1), &corner, 1);
+    // With render areas (LO_VK_RENDER_AREA, default on) pass 3 covers only
+    // that corner; a clear of the opposite corner ends it and pass 4 covers
+    // both, loading what pass 3 stored.
+    const RenderRect farCorner{int32_t(size) - 8, int32_t(size) - 8, int32_t(size), int32_t(size)};
+    commands->clearColor(0, RenderColor(0, 1, 0, 1), &farCorner, 1);
     // Sampling a texture the pass does not render to still ends it, and
     // reads the colour pass 2 stored.
     commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(color.get(), RenderTextureLayout::SHADER_READ));
@@ -69,25 +74,32 @@ int main()
         (unsigned long long)f.storeRead[1], (unsigned long long)f.storeLoaded[1], (unsigned long long)f.storeCleared[1]);
     int failures = 0;
     auto expect = [&](bool ok, const char* what) { if (!ok) { std::printf("FAIL: %s\n", what); ++failures; } };
-    expect(profile.passes.size() == 3, "three passes");
+    const char* discardSetting = std::getenv("LO_VK_DISCARD_UNDEFINED");
+    const bool discard = !discardSetting || std::strcmp(discardSetting, "0") != 0;
+    const char* areaSetting = std::getenv("LO_VK_RENDER_AREA");
+    const bool area = !areaSetting || std::strcmp(areaSetting, "0") != 0;
+    const uint64_t cornerBytes = area ? 8 * 8 * 4 : bytes;
+    expect(profile.passes.size() == (area ? 4u : 3u), "pass count");
     expect(f.storeRead[0] == 2 * bytes, "both colour stores read by sampling barriers");
-    expect(f.loadValid[0] == bytes, "pass 2 loads written colour");
-    expect(f.storeLoaded[0] == 0, "the read already consumed that store");
+    expect(f.loadValid[0] == (area ? 2 * bytes : bytes), "pass 2 (and pass 4) load written colour");
     expect(f.storeCleared[1] == bytes, "depth store cleared unread");
     expect(f.storeRead[1] == 0 && f.storeLoaded[1] == 0, "depth never consumed");
     // Pass 3's texture left an unknown layout and nothing wrote it: Plume
-    // loads it with DONT_CARE (LO_VK_DISCARD_UNDEFINED=0 keeps LOAD).
-    const char* discardSetting = std::getenv("LO_VK_DISCARD_UNDEFINED");
-    const bool discard = !discardSetting || std::strcmp(discardSetting, "0") != 0;
-    expect(f.loadUndefined[0] == (discard ? 0 : bytes), "load of a never-written texture");
-    expect(profile.passes.size() == 3 && profile.passes[2].loadBytes == (discard ? 0 : bytes), "pass 3 load bytes");
-    expect(profile.passes.size() == 3 && profile.passes[1].loadBytes == bytes, "pass 2 still loads the defined colour");
-    expect(profile.flowEvents.size() == 1 && profile.flowEvents[0].depth && profile.flowEvents[0].width == size &&
-        profile.flowEvents[0].colors == 1 && profile.flowEvents[0].bucket == RenderPassProfile::FlowBucket::Cleared,
-        "the cleared depth store is charged to the 64x64 colour+depth pass");
+    // loads it with DONT_CARE (LO_VK_DISCARD_UNDEFINED=0 keeps LOAD), and
+    // only over its render area.
+    expect(f.loadUndefined[0] == (discard ? 0 : cornerBytes), "load of a never-written texture");
+    expect(profile.passes.size() >= 3 && profile.passes[2].loadBytes == (discard ? 0 : cornerBytes), "pass 3 load bytes");
+    expect(profile.passes.size() >= 3 && profile.passes[1].loadBytes == bytes, "pass 2 still loads the defined colour");
+    if (area) expect(profile.passes.size() == 4 && profile.passes[3].loadBytes == bytes && profile.passes[2].storeBytes == cornerBytes,
+        "pass 3 stores its corner, pass 4 loads the union");
+    size_t clearedDepth = 0;
+    for (const auto& event : profile.flowEvents)
+        clearedDepth += event.depth && event.width == size && event.colors == 1 && event.bucket == RenderPassProfile::FlowBucket::Cleared;
+    expect(clearedDepth == 1, "the cleared depth store is charged to the 64x64 colour+depth pass");
     using End = RenderPassProfile::PassEnd;
     expect(profile.passEnds[size_t(End::Framebuffer)] == 2, "passes 1 and 2 end at the framebuffer change");
-    expect(profile.passEnds[size_t(End::BarrierOther)] == 1, "pass 3 ends at a barrier on another texture");
+    expect(profile.passEnds[size_t(End::RenderArea)] == (area ? 1u : 0u), "pass 3 ends when a clear leaves its area");
+    expect(profile.passEnds[size_t(End::BarrierOther)] == 1, "the last pass ends at a barrier on another texture");
     if (failures) return 1;
     std::puts("PASS: content census buckets (read, loaded, cleared unread, undefined load)");
     return 0;
