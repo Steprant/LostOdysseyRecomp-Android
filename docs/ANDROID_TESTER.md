@@ -1,4 +1,4 @@
-# Android tester diagnostics — Steprant 1.5
+# Android tester diagnostics — Steprant 1.8
 
 On Android, open **Settings → System → Android diagnostics** with the ordinary
 settings controls (LB/RB change category). The separate LB+RB debug-overlay
@@ -7,6 +7,21 @@ chord is unchanged. Switch Tester mode on, choose a profile, then select
 Android's document picker asks where to save the ZIP. Export also works while
 recording or after an interrupted process, if a trace was already written.
 Tester mode starts off on every process start and its choices are not persisted.
+
+## Added by Steprant 1.8
+
+Advanced and Intensive recordings include per-render-pass GPU profiling,
+attachment load/store counts, reasons render passes end, and state commands per
+frame. About every ten seconds, a sampled frame is timed draw by draw, grouped
+by draw type, with the ten most expensive shaders reported. Slow frames over
+50 ms include a breakdown of guest idle, GPU wait, presentation stages and
+pacing. These sampled timings do not give continuous hardware utilization.
+
+Compare two exported recordings with `tools/android/compare-tester.py`.
+Use the same scene, settings, driver, profile and starting temperature. See the
+[1.8 release notes](notes/steprant-1.8-release.md) for the measured results and
+their limits. Intensive recording retains no fixed two-minute limit; rolling
+data and storage remain bounded as described below.
 
 ## Profiles and data
 
@@ -71,7 +86,11 @@ blocking presentation, with its dropped count in `session.json`. Recent context
 is also bounded to 16,384 samples. Files left by an interrupted process remain
 exportable; a session marked `recording: true` may have ended abruptly.
 
-## Validation still needed
+## Device coverage and further validation
+
+The 1.8 release notes include Tester measurements from one Xiaomi 14; they do
+not establish overhead or feature coverage on other devices. The implementation
+checks recorded below refer to the original 1.5 checkpoint.
 
 The host settings fixture, native recorder tests and JVM trace tests do not run
 the game, SDL lifecycle, an Android driver or a physical controller. The
@@ -81,9 +100,10 @@ navigation, start/stop/export, background/resume, a CGI, the intro boss and
 recordings longer than two minutes. Compare repeated identical scenes with
 the same build, graphics settings, temperature and diagnostic mode off versus
 each profile; report frame-time percentiles, sustained temperature and power.
-No device run or overhead measurement is claimed by this change.
+Those initial checks did not include a device run or overhead measurement;
+they are separate from the later 1.8 sessions.
 
-## Checks run during implementation
+## Initial implementation checks — Steprant 1.5
 
 - Standalone settings suite: 15 CTest cases passed, including the Android
   settings input fixture and the bounded native recorder.

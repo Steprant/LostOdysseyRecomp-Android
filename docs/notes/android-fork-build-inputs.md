@@ -17,11 +17,13 @@ Keep game inputs, private URLs, keys and keystores out of public commits, build 
 
 GitHub may separately suspend Actions on a fork because of usage volume. A repository maintainer must re-enable Actions before a push or manual dispatch can run. Provisioning an XEX does not remove that platform block.
 
-## Steprant Android 1.5 packaging
+## Steprant Android 1.8 packaging
 
-The integration branch `integration/v1.1.0-steprant-all` keeps its historical name, but `android-apk.yml` now passes **`v1.5`** to the Android build script. The resulting manifest uses **versionName `1.5` / versionCode `1050000`** and the Steprant package/icon. After the existing signature, 16 KB alignment and ARM64 checks, the CI artifact is named `LostOdyssey-Steprant-v1.5.apk`. A new CI build has its own checksum; it must not reuse the checksum of the already published, dated `LostOdyssey-Steprant-v1.5-20261104.apk`.
+The current default branch is `steprant/v1.8`. On this branch, `android-apk.yml` selects version **1.8** and the Steprant package, launcher label and icon; the CI artifact APK is `LostOdyssey-Steprant-v1.8.apk`. Historical integration and candidate branches retain their own 1.5, 1.6 and 1.7 build identities.
 
-The [published 1.5 APK and checksum](../STEPRANT_RELEASE_NOTES.md#apk-and-verification) were checked separately from hosted compilation. Missing private build inputs still fail the APK workflow. No game input or generated code is substituted and no build is reported as successful when it has not run.
+The [Android APK build 42482559698](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/42482559698) succeeded from commit `6b5fe4873dc03ca703a947477d8c32287ce0d3b2`. The [Steprant release workflow](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/42486130936) published it as `LostOdyssey-Steprant-v1.8-20261108.apk`; see the [1.8 release notes and checksum](steprant-1.8-release.md). The original signing identity is retained so the APK can update earlier Steprant builds. New builds have their own checksums.
+
+`steprant-draft-release.yml` is the Android-only Steprant publication flow: it takes a finished Android APK artifact, attaches it to the 1.8 release and uses `docs/notes/steprant-1.8-release.md` for its notes. Despite the historical filename, the current workflow publishes the release.
 
 `release.yml` is the inherited **complete multi-platform** release pipeline. Its `GH_REPO` now resolves to `github.repository`, so a fork cannot accidentally target Frank's releases. Automatic `v*-steprant.*` tags are excluded from this pipeline: Steprant Android releases contain a separately verified Android APK, rather than the pipeline's mandatory Windows/Linux/macOS/Android package set. Ordinary upstream version tags and explicit manual multi-platform rehearsals keep their existing builds and publication checks. This routing does not provide the fork with access to upstream private inputs.
 
@@ -29,9 +31,12 @@ Do not rerun the old tag's failed workflow expecting changed branch files: its c
 
 ## Workflow failures reviewed on 5 November 2026
 
+Historical checkpoint: the failures below remain failed runs. The successful
+8 November 1.8 build and publication above supersede the old missing-input block.
+
 | Workflow and evidence | Cause and current state |
 |---|---|
-| [Android APK run 41909714370](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41909714370) | Stops at **Select authorized private build input** because neither input secret is available. This is still unresolved; toolchain installation, generated game code and APK compilation did not run. |
+| [Android APK run 41909714370](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41909714370) | Stops at **Select authorized private build input** because neither input secret is available. At that checkpoint, toolchain installation, generated game code and APK compilation did not run. The 8 November 1.8 APK build succeeds; this earlier run remains failed. |
 | [Release run 41910592756](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41910592756) | Inherited `GH_REPO` pointed at upstream; release-note extraction also lacked an exact `v1.5-steprant.20261104` changelog heading. The repository target and heading are corrected. Android-only Steprant tags now use their separate release flow. No failed historical run is relabeled successful. |
 | [Integration run 41905980122](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41905980122) | Host tests lacked Pillow and NumPy. The existing dependency fix installs `python3-pil` and `python3-numpy`; the later [integration run 41909714384](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41909714384) succeeds. No further test removal or bypass is needed. |
 | [TV diagnostic run 41905461394](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41905461394) | Java compilation called private `wakePhone()`. The current probe uses the package-visible `phoneInteraction()` entry point instead; the later [TV run 41910592603](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/41910592603) succeeds. This task does not modify that runtime implementation. |

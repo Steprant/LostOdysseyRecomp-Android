@@ -1,3 +1,15 @@
+# Lost Odyssey Recomp — Steprant Android 1.8
+
+**[下载 Steprant Android 1.8 APK](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk)** · **[1.8 发布说明](docs/notes/steprant-1.8-release.md)** · **[Android 指南](docs/STEPRANT_ANDROID.md)** · **[English](README.md)**
+
+本仓库是 Steprant 维护的独立 Android 分支，基于 Frank / freefrank 及原社区的 Lost Odyssey Recomp v1.1.0。Steprant 1.8 是本分支的应用版本号。
+
+1.8 包含 Qualcomm SGSR2 时间性超分辨率（品质模式在放大前使用 SMAA）、SGSR1、帧节奏与 Vulkan 优化、音频修复、TV/HDMI 输出和扩展的游戏内诊断。全新安装默认使用 900p、SGSR2 品质模式、阴影 ×2 和 30 FPS；现有设置保持不变。测量结果来自一台 Xiaomi 14，详见发布说明中的条件与限制。
+
+需要 Android 8.0+、ARM64 和 Vulkan。APK 可覆盖更新旧版 Steprant，并可与官方应用共存；两者的存档和设置独立。游戏数据由玩家自行提供。
+
+> 下方保留原项目的平台参考、下载链接和社区署名。此 Android 分支请使用上方的 **Steprant 1.8 APK** 下载。
+
 <div align="center">
 
 <img src="assets/lost-odyssey-recomp.png" alt="Lost Odyssey Recomp 标志" width="112">

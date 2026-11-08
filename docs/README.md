@@ -4,7 +4,7 @@
 
 ## Steprant Android edition
 
-The current fork download is **[Steprant Android 1.5](STEPRANT_ANDROID.md)**. See its [release notes and checksum](STEPRANT_RELEASE_NOTES.md), [TV/HDMI guide](ANDROID_TV_HDMI.md), [Tester guide](ANDROID_TESTER.md) and [build-input requirements](notes/android-fork-build-inputs.md). Upstream platform references below retain their own version history.
+The current fork download is **[Steprant Android 1.8](STEPRANT_ANDROID.md)**: Qualcomm SGSR2 with SMAA in Quality, smoother frame pacing, Vulkan optimizations and audio fixes. See its [release notes, measurements and checksum](notes/steprant-1.8-release.md), [release history](STEPRANT_RELEASE_NOTES.md), [TV/HDMI guide](ANDROID_TV_HDMI.md), [Tester guide](ANDROID_TESTER.md) and [build-input requirements](notes/android-fork-build-inputs.md). Upstream platform references below retain their own version history.
 
 ## Start here
 

@@ -2,9 +2,13 @@
 
 [Documentation](README.md) · [Roadmap](ROADMAP.md) / [路线图](ROADMAP.zh-CN.md) · [Changelog](../CHANGELOG.md)
 
-## Steprant Android 1.5 — 2026-11-05
+## Steprant Android 1.8 — 2026-11-08
 
-The current Android fork package is **[Steprant 1.5](STEPRANT_ANDROID.md)**, based on upstream v1.1.0. The published APK was downloaded again and its SHA-256, signed package identity/version, ZIP/ARM64 structure and 16 KB alignment were verified. See the [release verification and remaining device/audio limits](STEPRANT_RELEASE_NOTES.md#apk-and-verification). Android Actions remains blocked without authorized private build input; the [CI record](notes/android-fork-build-inputs.md#workflow-failures-reviewed-on-5-november-2026) distinguishes that from APK validation.
+The current Android fork package is **[Steprant 1.8](STEPRANT_ANDROID.md)**, based on upstream v1.1.0 and published as the [latest release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108). It includes Qualcomm SGSR2 with SMAA in Quality, frame-pacing and Vulkan improvements, audio fixes, TV/HDMI and expanded Tester profiling. Fresh installs use 900p, SGSR2 Quality, shadows ×2 and 30 FPS; existing settings are retained.
+
+The [Android APK build 42482559698](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/42482559698) completed successfully from commit `6b5fe4873dc03ca703a947477d8c32287ce0d3b2`, followed by the successful [1.8 publication workflow](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/42486130936). The published asset is `LostOdyssey-Steprant-v1.8-20261108.apk`, SHA-256 `44dc2632220945e33926102ca92069f7239ddd57e6c8bd96a83c1cb177497de9`. The package and signing identity are retained for updates over earlier Steprant builds.
+
+See the [1.8 measurements, verification and known limits](notes/steprant-1.8-release.md). Gameplay measurements cover one Xiaomi 14 with Adreno 750 and Turnip; remaining slow frames, blocky low-resolution light effects, stable 60 FPS and other-device HDMI/audio behaviour are not established as resolved. The [5 November CI failures](notes/android-fork-build-inputs.md#workflow-failures-reviewed-on-5-november-2026) are historical checkpoints.
 
 ## Upstream historical publication records
 

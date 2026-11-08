@@ -8,7 +8,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 ### English
 
-Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/steprant-1.8-release.md`.
+Steprant 1.8 includes the 1.6 and 1.7 test builds; see the [full release notes, measurements and checksum](docs/notes/steprant-1.8-release.md). Entries below describe the final 1.8 behaviour.
 
 - Android defaults on a fresh install: 900p render resolution, Anti-aliasing → SGSR2 at Quality, shadow resolution x2.
 - Vulkan: render passes begin over the draws' scissor where they stay inside it; EDRAM resolve copies wait for the end of the render pass instead of splitting it when nothing in between touches the copied area; attachments with undefined contents are not loaded.
@@ -26,7 +26,7 @@ Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/ste
 - Android diagnostics: selectable audio buffer (43/64/85 ms) and audio/XMA timing peaks in the runtime log.
 - Android diagnostics: per-render-pass GPU profile in Tester recordings.
 - Vulkan: depth-only draws run their vertex shaders without the varyings nobody reads; SGSR2 menus turn sharp sooner and the switch back reuses its render targets and pipelines; SGSR2 Quality is smoother.
-- Android: experimental SGSR2 temporal upscaling (Anti-aliasing → SGSR2, with an SGSR2 quality row): renders at 1/1.5–1/2 of the output size and reconstructs it from jitter, depth and camera motion; scene textures keep their output-resolution detail (mip bias), a contrast-adaptive sharpen follows it, and the new 576p render resolution renders SGSR2 at 576 lines.
+- Android: Qualcomm SGSR2 temporal upscaling (Anti-aliasing → SGSR2, with an SGSR2 quality row): renders at 1/1.5–1/2 of the output size and reconstructs it from jitter, depth and camera motion; scene textures keep their output-resolution detail (mip bias). Quality applies SMAA before the upscale, without a separate sharpening pass; 576p can explicitly select a 576-line render size.
 - Vulkan: pixel shaders keep early depth rejection unless the game enables the alpha test (Adreno LRZ), so occluded pixels are no longer shaded; existing shader packs stay valid.
 - Android: compact 8-bit/10-bit render targets (half the bandwidth), display refresh matched to the game frame rate, and a 900p render resolution.
 - SGSR1 stays enabled after a swapchain format change.
@@ -44,6 +44,13 @@ Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/ste
 
 ### 简体中文
 
+Steprant 1.8 包含 1.6 和 1.7 测试版本的改动；完整说明、测量结果及校验和见[1.8 发布说明](docs/notes/steprant-1.8-release.md)。以下条目描述最终的 1.8 行为。
+
+- 全新安装的默认设置：900p、SGSR2 品质模式、阴影分辨率 ×2、30 FPS；保留现有设置。
+- Vulkan：在适用时按绘制区域开始渲染通道，将 EDRAM 解析复制延迟到通道结束，并跳过未定义附件内容的加载。
+- Xiaomi 14 实测中，超过 50 毫秒的帧较 1.7 测试版本降至约三分之一（城市）和一半（野外）；结果受设备、驱动和场景影响。
+- 标题画面使用 SGSR2 提升至显示分辨率；修复 SSAO 在天空和远景上的条纹；Android 运行时使用 ARMv8.2-A。
+- 新的 Steprant 启动图标；标题画面在上游署名之上标明 Steprant Android 版本。
 - Android：新增通过 MediaCodec 解码 H.264 MP4 替换视频的实验性支持，解码失败时保留原始视频。
 - 修复音频流等待时可能阻塞其他声音并错误结束未写入输出缓冲区的问题。
 - 调整内部或阴影分辨率时，保留暂停场景仍在读取的纹理，直到游戏重新绘制。
@@ -51,7 +58,7 @@ Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/ste
 - 音频：XMA 解码器不再在音频驱动等待时长时间持有锁，并以音频优先级运行在性能核心上。
 - Android 诊断：可选择音频缓冲（43/64/85 毫秒），运行日志记录音频与 XMA 时序峰值。
 - Android 诊断：测试录制包含每个渲染通道的 GPU 分析。
-- Android：实验性 SGSR2 时间性超分辨率（抗锯齿 → SGSR2，附 SGSR2 质量选项）：以输出尺寸的 1/1.5–1/2 渲染，并利用抖动、深度和相机运动重建；场景纹理按输出分辨率选择 mip（mip 偏移），其后进行对比度自适应锐化；新增 576p 渲染分辨率，SGSR2 以 576 行渲染。
+- Android：Qualcomm SGSR2 时间性超分辨率（抗锯齿 → SGSR2，附 SGSR2 质量选项）：以输出尺寸的 1/1.5–1/2 渲染，并利用抖动、深度和相机运动重建；场景纹理按输出分辨率选择 mip（mip 偏移）。品质模式在放大前应用 SMAA，不再使用单独的锐化通道；576p 可明确选择 576 行渲染尺寸。
 - Vulkan：仅在游戏启用 alpha 测试时像素着色器才包含 discard，其余保留提前深度剔除（Adreno LRZ），被遮挡的像素不再着色；现有着色器包仍然有效。
 - Android：精简 8/10 位渲染目标（带宽减半）、屏幕刷新率匹配游戏帧率，并新增 900p 渲染分辨率。
 - 交换链格式变化后 SGSR1 保持启用。
@@ -61,8 +68,8 @@ Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/ste
 - 运行日志和性能叠加层显示 SGSR1 是否启用，以及未启用的原因；叠加层显示 SGSR1 的渲染与显示尺寸。
 - SGSR2/TAA：开启抖动时阴影区域不再出现方块网格：与已审核着色器同样重建接收面的所有阴影投影像素着色器都获得相同的抖动补偿，其余保持不抖动；日志列出每个此类着色器，抖动行统计已补偿与未补偿的阴影绘制。
 - Vulkan：渲染分辨率切换并切回后，渲染器复用全部渲染目标（此前只保留一种尺寸，大部分被丢弃）。
-- SGSR2：菜单、加载画面和淡入淡出不再改变渲染分辨率（每次过渡不再卡顿）；其界面以显示分辨率绘制在放大的背景之上。旧的切换方式保留为 Android 诊断页面中的选项，且仅在 1.5 秒无 3D 场景后触发。
-- Android 诊断：为近期 GPU 改动、Turnip 渲染模式和旧菜单行为提供 A/B 开关；立即保存，重启后生效，并记录在运行日志中。
+- SGSR2：菜单、加载画面和淡入淡出不再改变渲染分辨率（每次过渡不再卡顿）；其界面以显示分辨率绘制在放大的背景之上。
+- Android 诊断：移除开发期间的 A/B 开关，将已确认的行为直接内置。测试录制新增附件加载/存储统计、渲染通道结束原因、每帧状态命令及超过 50 毫秒帧的分项记录；可使用 `tools/android/compare-tester.py` 对比录制。
 - SGSR2 品质模式：放大前在渲染尺寸图像上执行 SMAA，边缘更平滑；移除 SGSR2 锐化设置和锐化通道（FSR 仍保留锐化）。
 - Android 诊断：测试录制（进阶/密集）每约 10 秒逐个绘制计时一帧，按绘制类型（仅深度、阴影、不透明、混合、后处理、界面、超分）记录 GPU 时间分布及最耗时的十个着色器。
 - 音频：持续解码失败的 XMA 声部会在下一个数据包重新同步，随后输出静音，而不是每秒重试数千次；每次突发只记录一次其流与数据包。
