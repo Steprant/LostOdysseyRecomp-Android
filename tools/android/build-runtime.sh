@@ -34,12 +34,17 @@ apply_patch_once "$repo/thirdparty/plume" "$repo/tools/patches/plume-sdl3.patch"
 apply_patch_once "$repo/thirdparty/plume" "$repo/tools/patches/plume-android.patch"
 apply_patch_once "$repo/thirdparty/SDL" "$repo/tools/patches/sdl-android-surface-lock.patch"
 
+# ARMv8.2-A (every arm64 Snapdragon since the 845, Cortex-A55/A75 and later):
+# inline LSE atomics instead of the outlined runtime check on every atomic,
+# which the recompiled guest code and the renderer's queues use constantly.
+# LO_ANDROID_TARGET_ARCH=armv8-a builds for older cores.
 cmake -S "$repo" -B "$build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
     -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release \
     -DLO_BUILD_ANDROID_RUNTIME=ON -DLO_BUILD_RUNTIME=ON \
-    -DLO_BUILD_TOOLS=OFF -DLO_BUILD_RECOMP_LIB=ON -DLO_BUILD_GPU=ON "$@"
+    -DLO_BUILD_TOOLS=OFF -DLO_BUILD_RECOMP_LIB=ON -DLO_BUILD_GPU=ON \
+    -DLO_TARGET_ARCH="${LO_ANDROID_TARGET_ARCH:-armv8.2-a}" "$@"
 cmake --build "$build" --target LostOdysseyRecomp -j "${LO_BUILD_JOBS:-4}"
 
 stage="$repo/packaging/android/build/runtime-jni/arm64-v8a"

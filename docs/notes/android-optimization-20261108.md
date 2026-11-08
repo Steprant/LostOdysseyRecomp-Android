@@ -51,3 +51,14 @@ query reset or the end of the list. On a tiled GPU every pass that ends and
 later resumes on the same target stores and reloads it; `barrier_other` and
 `barrier_buffer` breaks are candidates for moving the barrier before the pass
 (roadmap 1.4).
+
+## 5.1 ARMv8.2-A build
+
+`tools/android/build-runtime.sh` now builds the Android runtime with
+`-march=armv8.2-a` (every arm64 Snapdragon since the 845; Cortex-A55/A75
+and later). The point is LSE atomics inline instead of the outlined
+runtime-dispatched helpers the arm64 baseline uses for every atomic
+operation, which the recompiled guest code (reservations, critical sections)
+and the renderer's queues execute constantly. `LO_ANDROID_TARGET_ARCH=armv8-a`
+builds for older cores. Nothing changes in behaviour; on the phone the effect
+shows as CPU time of the Guest Main and GPU CmdProc threads in `threads.csv`.
