@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Original fork mark: an immortal's medallion, sword, and a readable S. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#00000000" android:strokeColor="#DDBD75" android:strokeWidth="2" android:pathData="M54,25A29,29 0,1 1,54 83A29,29 0,1 1,54 25" />
-    <path android:fillColor="#F2DCA3" android:pathData="M54,19L57,27L55,78L54,88L53,78L51,27ZM44,75H64V78H44Z" />
-    <path android:fillColor="#071725" android:pathData="M69,32L73,37L68,44L51,44L48,47L51,50L63,50L72,59L72,68L62,78H38L34,72L40,65H58L61,62L58,59H46L36,49V41L46,32Z" />
-    <path android:fillColor="#60E0D5" android:pathData="M66,36L69,39L65,43H50L45,48L50,53H61L69,61V67L60,75H41L38,72L42,68H59L65,63L60,58H48L40,50V43L48,36Z" />
-    <path android:fillColor="#F7E9BD" android:pathData="M54,23L56,28L54,33L52,28ZM54,79L56,82L54,86L52,82Z" />
-</vector>

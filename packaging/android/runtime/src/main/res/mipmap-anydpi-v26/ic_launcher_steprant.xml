@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Steprant 1.8 icon: the sumi-e ensō, lily and title on rice paper, with the
+     fork's vermilion seal (S, STEPRANT) beside the falling petal. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/steprant_icon_background" />
-    <foreground android:drawable="@drawable/steprant_icon_foreground" />
-    <monochrome android:drawable="@drawable/steprant_icon_monochrome" />
+    <background android:drawable="@mipmap/ic_launcher_steprant_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_steprant_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_steprant_monochrome" />
 </adaptive-icon>
