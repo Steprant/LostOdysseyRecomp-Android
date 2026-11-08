@@ -269,7 +269,7 @@ pre-clear colour, and a resolve with nothing after it keeps the pass whole.
 
 ## Phone results, 8 November 13:20 (city) and 13:25 (field), APK d
 
-Same maps and settings (900p, SGSR1) as 11:56 and 11:47:
+Same maps and settings (900p, SGSR2 Quality) as 11:56 and 11:47:
 
 | | 11:56 city | 13:20 city | 11:47 field | 13:25 field |
 |---|---|---|---|---|

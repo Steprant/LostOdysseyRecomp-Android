@@ -32,7 +32,7 @@ This release collects everything since the first Steprant build. Measurements we
 
 ## Frame pacing
 
-Compared with the 1.7 test builds on the same maps and settings (900p, SGSR1):
+Compared with the 1.7 test builds on the same maps and settings (900p, SGSR2 Quality):
 
 | | before | 1.8 |
 |---|---|---|
