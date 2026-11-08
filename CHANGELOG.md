@@ -4,9 +4,19 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
-## Unreleased
+## [v1.8-steprant.20261108](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108) — Steprant Android 1.8 — 2026-11-08
 
 ### English
+
+Steprant 1.8 includes the 1.6 and 1.7 test builds; full notes in `docs/notes/steprant-1.8-release.md`.
+
+- Android defaults on a fresh install: 900p render resolution, Anti-aliasing → SGSR2 at Quality, shadow resolution x2.
+- Vulkan: render passes begin over the draws' scissor where they stay inside it; EDRAM resolve copies wait for the end of the render pass instead of splitting it when nothing in between touches the copied area; attachments with undefined contents are not loaded.
+- Frame pacing: frames over 50 ms fell to about a third (city) and half (field) of the 1.7 test builds on a Xiaomi 14.
+- The boot title screen is promoted to the display resolution with SGSR2; SSAO no longer draws stripes on the sky and distant terrain.
+- Android runtime built for ARMv8.2-A (inline LSE atomics).
+- Android diagnostics: attachment load/store census, why render passes end, state commands per frame and a breakdown of every frame over 50 ms in Tester recordings; `tools/android/compare-tester.py`. The device A/B rows are removed and the confirmed behaviour is built in.
+- New Steprant launcher icon; the title screen names the Steprant Android edition above the upstream credit.
 
 - Android: experimental H.264 MP4 replacement-movie decoding through MediaCodec, with the original video retained on failure.
 - Fixed an audio streaming wait that could block other voices and retire an unwritten output buffer.
@@ -26,8 +36,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 - The runtime log and performance overlay show whether SGSR1 is active and, if not, why; the overlay shows SGSR1's render and display sizes.
 - SGSR2/TAA: no more grid of blocks in shadowed areas with jitter on: every shadow-projection pixel shader that rebuilds its receiver like the reviewed ones gets the same jitter correction, and any other one stays unjittered; the log lists each such shader and the jitter line counts corrected and uncorrected shadow draws.
 - Vulkan: after a render-resolution switch and back, the renderer reuses all its render targets (it kept only one size and discarded most of them).
-- SGSR2: menus, loading screens and fades no longer change the render resolution (no more hitch at every transition); their interface is drawn at the display resolution over the enlarged background. The old switch remains as an option on the Android diagnostics page, now only after 1.5 s without a 3D scene.
-- Android diagnostics: A/B switches for the recent GPU changes, the Turnip render mode and the old menu behaviour; saved at once, applied after restarting and listed in the runtime log.
+- SGSR2: menus, loading screens and fades no longer change the render resolution (no more hitch at every transition); their interface is drawn at the display resolution over the enlarged background.
 - SGSR2 Quality: SMAA on the render-size image before the upscale for smoother edges; the SGSR2 sharpness setting and pass are removed (sharpening stays for FSR).
 - Android diagnostics: Tester recordings (Advanced/Intensive) time one frame every ~10 s draw by draw and log where GPU time goes by draw type (depth-only, shadows, opaque, blended, post-processing, interface, upscaler) and the ten most expensive shaders.
 - Audio: an XMA voice whose frames keep failing to decode resynchronises on the next packet and then plays silence instead of retrying thousands of times a second; each burst is logged once with its stream and packet.

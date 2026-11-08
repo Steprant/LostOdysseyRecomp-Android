@@ -1,7 +1,9 @@
-name: Steprant draft release
+name: Steprant release
 
-# Copies a finished Android APK workflow artifact into a DRAFT release, which
-# only repository collaborators can see. Publishing stays a manual decision.
+# Copies a finished Android APK workflow artifact into the Steprant 1.8
+# release and publishes it, with docs/notes/steprant-1.8-release.md as its
+# notes and the APK's SHA-256 appended. Run by hand (workflow_dispatch) with
+# the APK run id; an existing release keeps its tag and gets the new asset.
 on:
   workflow_dispatch:
     inputs:
@@ -9,16 +11,13 @@ on:
         description: Android APK workflow run whose artifact to attach
         required: true
         type: string
-  push:
-    branches: ['integration/v1.7-optimization-*']
-    paths: ['.github/workflows/steprant-draft-release.yml']
 permissions:
   contents: write
   actions: read
 env:
-  RUN_ID: ${{ inputs.run_id || '42480507347' }}
-  TAG: v1.7-steprant.20261108
-  TITLE: Lost Odyssey Steprant Android 1.7 (optimization test build)
+  RUN_ID: ${{ inputs.run_id }}
+  TAG: v1.8-steprant.20261108
+  TITLE: Lost Odyssey Steprant Android 1.8
 jobs:
   draft:
     runs-on: ubuntu-22.04
@@ -51,19 +50,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          src=out/apk/LostOdyssey-Steprant-v1.7.apk
-          apk=out/apk/LostOdyssey-Steprant-v1.7-20261108.apk
+          src=out/apk/LostOdyssey-Steprant-v1.8.apk
+          apk=out/apk/LostOdyssey-Steprant-v1.8-20261108.apk
           mv "$src" "$apk"
-          sha256sum "$apk"
+          sum=$(sha256sum "$apk" | cut -d' ' -f1)
+          echo "SHA-256 $sum"
           commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_sha)
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases" -q ".[] | select(.tag_name == \"$TAG\") | .draft" | head -n 1)
-          if [[ "$existing" == "false" ]]; then
-            echo "::error::$TAG is already published; not touching it"
-            exit 1
-          elif [[ "$existing" == "true" ]]; then
+          notes=out/notes.md
+          cp docs/notes/steprant-1.8-release.md "$notes"
+          printf '\n**APK SHA-256:** `%s` (`%s`, built from commit `%s`)\n' "$sum" "$(basename "$apk")" "$commit" >> "$notes"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$apk" --clobber -R "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file "$notes" --draft=false --latest -R "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" "$apk" --draft --target "$commit" --title "$TITLE" \
-              --notes-file docs/notes/steprant-1.7-draft-release.md -R "$GITHUB_REPOSITORY"
+            gh release create "$TAG" "$apk" --target "$commit" --title "$TITLE" \
+              --notes-file "$notes" --latest -R "$GITHUB_REPOSITORY"
           fi
           gh api "repos/$GITHUB_REPOSITORY/releases" -q ".[] | select(.tag_name == \"$TAG\") | {draft, html_url}"

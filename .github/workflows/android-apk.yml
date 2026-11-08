@@ -133,6 +133,7 @@ jobs:
             integration/v1.1.0-steprant-all) version=1.5 ;;
             integration/v1.6-candidate-*) version=1.6 ;;
             integration/v1.7-optimization-*) version=1.7 ;;
+            steprant/v1.8) version=1.8 ;;
             *) version= ;;
           esac
           if [[ -n "$version" ]]; then
