@@ -215,3 +215,25 @@ present's return (`FramePacer::Reanchor`), so the host cadence follows the
 display's phase instead of fighting it. Timing only: frames, their content
 and the cap are unchanged. `LO_DISPLAY_PACED=0` restores the old behaviour.
 ADPF (performance hints) did not change this: same pattern with it on.
+
+## Settings clean-up: A/B rows removed
+
+At Steprant's request the Android diagnostics page keeps only the Tester
+rows (mode, profile, sample period, slow-frame detection, thermal,
+recording, export). The device A/B rows and `ab_switches.ini` are gone; each
+switch keeps the value the phone sessions confirmed, as the built-in
+behaviour:
+
+| was | now |
+|---|---|
+| position-only depth VS, pixel shaders without discard, depth-only draws without PS, viewport jitter, render-target parking, SMAA in SGSR2 Quality, interface promotion instead of a menu size switch | always on (confirmed or no regression) |
+| Turnip render mode | driver default |
+| skip loading undefined attachments, render area | on |
+| ADPF performance hints | off (no effect on the city stutter) |
+
+An `ab_switches.ini` left on a device is no longer read. The development
+variables (`LO_VK_KEEP_VS_OUTPUTS`, `LO_ALPHATEST_SPEC`, `LO_KEEP_DEPTH_ONLY_PS`,
+`LO_SR_VIEWPORT_JITTER`, `LO_PARK_TARGETS`, `LO_SGSR2_SMAA`,
+`LO_SGSR2_NATIVE_MENUS`, `TU_DEBUG`, `LO_VK_DISCARD_UNDEFINED`,
+`LO_VK_RENDER_AREA`, `LO_ADPF`, `LO_DISPLAY_PACED`) still override them on
+development builds.

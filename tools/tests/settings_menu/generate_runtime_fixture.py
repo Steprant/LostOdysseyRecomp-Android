@@ -44,7 +44,6 @@ PREAMBLE = r'''
 #include <gpu/aspect_ratio.h>
 #if LO_PLATFORM_ANDROID
 #include <diagnostics/android_tester.h>
-#include <diagnostics/ab_switches.h>
 int androidMessage = 0;
 bool SDL_SendAndroidMessage(int command, int) { androidMessage = command; return true; }
 #endif

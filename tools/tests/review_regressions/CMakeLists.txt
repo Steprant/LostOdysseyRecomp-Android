@@ -57,7 +57,6 @@ lo_review_test(LoRenderTargetParkingTest render_target_parking_test.cpp)
 lo_review_test(LoIdleUiPromotionTest idle_ui_promotion_test.cpp)
 lo_review_test(LoDrawClassProfileTest draw_class_profile_test.cpp)
 if(NOT WIN32)
-    lo_review_test(LoAbSwitchesTest ab_switches_test.cpp)
 endif()
 # plume's interface header includes X11 on Linux.
 find_package(X11 QUIET)
