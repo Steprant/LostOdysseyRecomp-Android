@@ -20,14 +20,35 @@ An independent Android edition maintained by **Steprant**, based on the official
 
 ## Steprant Android 1.8
 
-Steadier frame pacing, sharper upscaling and less redundant GPU work on Android, measured on a Xiaomi 14 (Adreno 750, Turnip). Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-1.8-release.md) list every change since the first Steprant build with the measurements behind them.
+Steadier frame pacing, sharper upscaling and less redundant GPU work on Android, measured on a Xiaomi 14 (Adreno 750, Turnip, 30 FPS). Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-1.8-release.md) list every change since the first Steprant build, point by point, with the measurements behind them.
+
+### Measured improvements
+
+| What was measured | Before | 1.8 | Change |
+| :--- | ---: | ---: | ---: |
+| Frames over 50 ms per minute, city / open field | 18.2 / 20.7 | 6.2 / 10.0 | **−66% / −52%** |
+| 99th percentile frame time, city / open field | 48.5 / 51.2 ms | 37.5 / 39.0 ms | **−23% / −24%** |
+| GPU time per frame, native 2403×1080 → 1780×800 + SGSR2 | ~23 ms | 16–17 ms | **−26 to −30%** |
+| Render passes per frame (depth-only draws in the scene pass) | 100% | ~60% | **−40%** |
+| GPU time inside render passes (same change) | 100% | ~92% | **−8%** |
+| Render passes split by an EDRAM resolve, city / field | 14.7 / 15.0 | 7.1 / 8.6 | **−52% / −43%** |
+| Hitches at menus, loading screens and fades | 40–300 ms each | none | **−100%** |
+| GPU occupancy in menus | ~60% | 28–40% | **−33 to −53%** |
+| XMA audio decode errors | 12–14 thousand in a second, every session | 56–150 per session | **over −99%** |
+| Audio queue running empty | 74–91 per session | 0 | **−100%** |
+| Shadow casters with dynamic shadows on Low | 8 | 16 | **×2** |
+| Memory per pixel of 8-bit render targets | 8 bytes | 4 bytes | **−50%** |
+
+GPU occupancy in gameplay at the new defaults stays at about 60–65% at 30 FPS: 1.8 gains smoothness, image quality and less redundant work, not lower total GPU load.
+
+### What is in 1.8
 
 | Area | In 1.8 |
 | :--- | :--- |
 | **SGSR2** | Qualcomm's temporal upscaler (Anti-aliasing → SGSR2), with SMAA before the upscale in Quality. **Default on a fresh install: 900p, SGSR2 Quality, shadows ×2, 30 FPS.** Menus and loading screens keep the render size and draw their interface at display resolution. |
 | **SGSR1** | Optional spatial upscaling in the Vulkan SDR presentation path. |
 | **Rendering** | Compact render targets, depth-only draws kept in the scene pass, early depth rejection, render-target reuse, render passes limited to the drawn area, EDRAM resolve copies that no longer split render passes. Fixes for shadow blocks with jitter, SSAO stripes and the title screen. |
-| **Frame pacing** | Frames over 50 ms down to about a third (city) and half (field) of the 1.7 test builds; 99th percentile frame time under 40 ms in those scenes. GPU occupancy is not claimed to be lower. |
+| **Frame pacing** | Frames over 50 ms −66% (city) and −52% (field) against the 1.7 test builds; 99th percentile frame time under 40 ms in those scenes. |
 | **Audio** | AAudio reopen protection, XMA decoder on performance cores, XMA error bursts resolved, 64 ms buffer. |
 | **TV / HDMI** | Independent external output, 16:9 fitting, 720p/1080p requests and controller forwarding. [TV guide](docs/ANDROID_TV_HDMI.md). |
 | **Tester** | Bounded diagnostic recordings with GPU, pacing and memory profiling and ZIP export. [Tester guide](docs/ANDROID_TESTER.md). |
