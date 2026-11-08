@@ -4,7 +4,7 @@
 
 # Lost Odyssey Recomp — Steprant Android 1.8
 
-**Android-focused performance work, Vulkan graphics and TV/HDMI play.**
+**Android-focused performance work,SGSR2,Vulkan graphics and TV/HDMI play.**
 
 [![Download Android 1.8 APK](https://img.shields.io/badge/Download-Android_1.8_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk)
 
