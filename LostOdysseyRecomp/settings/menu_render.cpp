@@ -1,4 +1,5 @@
 #include "menu_render.h"
+#include "../os/platform.h"
 #include "menu.h"
 #include "menu_assets.h"
 #include "translations.h"
@@ -58,6 +59,14 @@ namespace
     // Share the legend's centred canvas and safe margin, leaving a gap before
     // its key. Both lines also clear the achievement toast's shadow above.
     constexpr int kCreditX = 64, kCreditY = 654, kCreditWidth = 948, kCreditLineHeight = 20;
+#if LO_PLATFORM_ANDROID
+    // Steprant's Android edition: one line above the upstream credit, on the
+    // title screen only.
+    constexpr const wchar_t* kForkCredit = L"Steprant Android 1.8 · github.com/Steprant/LostOdysseyRecomp-Android";
+    constexpr int kForkCreditLines = 1;
+#else
+    constexpr int kForkCreditLines = 0;
+#endif
     int FooterOffset(const Canvas &output)
     {
         return output.scale > 0 ? int(std::floor(output.offsetY / output.scale)) : 0;
@@ -569,7 +578,7 @@ settings::MenuRect settings::TitleHintBounds(uint32_t width, uint32_t height)
         return size_t(std::clamp(int(std::lround(value)), 0, int(limit)));
     };
     return {edge(c.offsetX + (kCreditX - 8) * c.scale, width),
-            edge(c.offsetY + std::min(kHintTop + footerOffset, creditY - 4) * c.scale, height),
+            edge(c.offsetY + std::min(kHintTop + footerOffset, creditY - kForkCreditLines * kCreditLineHeight - 4) * c.scale, height),
             edge(c.offsetX + kHintRight * c.scale, width),
             edge(c.offsetY + std::max(kHintBottom + footerOffset, creditY + 2 * kCreditLineHeight + 4) * c.scale, height)};
 }
@@ -1177,6 +1186,10 @@ bool settings::RasterizeMenu(const MenuSnapshot &current, uint32_t width, uint32
         const auto legend = [&](bool credit) {
             if (credit)
             {
+#if LO_PLATFORM_ANDROID
+                text(kCreditX, creditY - kCreditLineHeight, kCreditWidth, kCreditLineHeight, kForkCredit,
+                     14, face, false, 0, outline, 12, false, true);
+#endif
                 text(kCreditX, creditY, kCreditWidth, kCreditLineHeight,
                      L"Lost Odyssey Recomp · Free & open source · github.com/freefrank/LostOdysseyRecomp",
                      14, face, false, 0, outline, 12, false, true);
