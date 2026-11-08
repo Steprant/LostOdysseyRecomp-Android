@@ -17,6 +17,7 @@ Optimization only: no new features and no intended change to the image.
 - Frame pacing follows the display when the present blocks (the city stutter).
 - The render area grows at most once per framebuffer (the shadow map regressed with step-by-step growth).
 - The Tester's A/B rows are removed; the confirmed behaviour is built in.
+- EDRAM resolve copies wait for the end of the render pass instead of splitting it (same pixels, fewer reloads of colour and depth).
 
 Details: `docs/notes/android-optimization-20261108.md`.
 
