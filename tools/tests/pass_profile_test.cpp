@@ -18,6 +18,15 @@ int main()
     present.timed = true; present.listNs = 2'000'000;
     present.passes = {{2670, 1200, 1, false, false, 0, 1, 0, 2670ull * 1200 * 4, 1'500'000}};
 
+    // Content census: 1 MB of depth stored and cleared unread per scene list.
+    scene.flow.storeCleared[1] = 1u << 20;
+    scene.flow.storeRead[0] = 3u << 20;
+    scene.flow.loadUndefined[0] = 1u << 19;
+    plume::RenderPassProfile::FlowEvent cleared;
+    cleared.width = 1024; cleared.height = 1024; cleared.passDepth = true; cleared.depth = true;
+    cleared.bucket = plume::RenderPassProfile::FlowBucket::Cleared; cleared.bytes = 1u << 20;
+    scene.flowEvents = {cleared};
+
     Summary summary;
     for (int frame = 0; frame < 2; ++frame) { summary.Add(scene, false); summary.Add(present, true); }
     assert(summary.frames == 2 && summary.lists == 4 && summary.untimedLists == 0);
@@ -32,6 +41,9 @@ int main()
     assert(line.find("outside_ms=4.50") != std::string::npos);
     assert(line.find("2403x1080 cd passes=2.0 empty=1.0") != std::string::npos);
     assert(line.find("present: passes=1.0 ms=1.50") != std::string::npos);
+    assert(line.find("color store_read=3.0 store_loaded=0.0 store_cleared=0.0 load_valid=0.0 load_undefined=0.5;") != std::string::npos);
+    assert(line.find("depth store_read=0.0 store_loaded=0.0 store_cleared=1.0") != std::string::npos);
+    assert(line.find("stored_then_cleared: 1024x1024 -d depth=1.0;") != std::string::npos);
 
     Reporter reporter;
     const auto t0 = std::chrono::steady_clock::time_point(std::chrono::seconds(100));

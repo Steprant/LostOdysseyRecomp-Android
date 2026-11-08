@@ -46,3 +46,8 @@ add_test(NAME kill_free_modules COMMAND LoKillFreeModuleTest)
 set_tests_properties(kill_free_modules PROPERTIES TIMEOUT 120 ENVIRONMENT
     "LO_SHADER_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/shader-cache"
     ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${DEPS}/tools/XenosRecomp/thirdparty/dxc-bin/lib/x64")
+# Roadmap 1.1: Plume's attachment content census (RenderPassProfile::ContentFlow).
+add_executable(LoPassContentCensusTest ../pass_content_census_test.cpp)
+target_link_libraries(LoPassContentCensusTest PRIVATE plume X11::X11 Threads::Threads ${CMAKE_DL_LIBS})
+add_test(NAME pass_content_census COMMAND LoPassContentCensusTest)
+set_tests_properties(pass_content_census PROPERTIES TIMEOUT 60)

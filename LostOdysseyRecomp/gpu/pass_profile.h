@@ -88,6 +88,10 @@ public:
     uint64_t frames = 0, lists = 0, untimedLists = 0;
     uint64_t listNs = 0, passNs = 0;
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
+    plume::RenderPassProfile::ContentFlow flow;
+    // Stores loaded by the next pass ([0]) or cleared unread ([1]), by the
+    // pass that stored them and the attachment kind (colour, depth).
+    std::map<std::pair<TargetKey, bool>, uint64_t> flowLoaded, flowCleared;
 
     void Add(const plume::RenderPassProfile& profile, bool presentation)
     {
@@ -98,6 +102,20 @@ public:
         copies += profile.copyCalls;
         dispatches += profile.dispatches;
         drawsOutside += profile.drawsOutsidePasses;
+        for (int k = 0; k < 2; ++k)
+        {
+            flow.storeRead[k] += profile.flow.storeRead[k];
+            flow.storeLoaded[k] += profile.flow.storeLoaded[k];
+            flow.storeCleared[k] += profile.flow.storeCleared[k];
+            flow.loadValid[k] += profile.flow.loadValid[k];
+            flow.loadUndefined[k] += profile.flow.loadUndefined[k];
+        }
+        for (const auto& event : profile.flowEvents)
+        {
+            const auto key = std::make_pair(TargetKey{event.width, event.height, event.colors, event.passDepth}, event.depth);
+            if (event.bucket == plume::RenderPassProfile::FlowBucket::Loaded) flowLoaded[key] += event.bytes;
+            else if (event.bucket == plume::RenderPassProfile::FlowBucket::Cleared) flowCleared[key] += event.bytes;
+        }
         uint64_t inPasses = 0;
         for (const auto& pass : profile.passes)
         {
@@ -117,6 +135,40 @@ public:
             listNs += profile.listNs;
             passNs += std::min(inPasses, profile.listNs);
         }
+    }
+
+    // Roadmap 1.1: where the stored attachment bytes went (MB per frame).
+    // store_cleared is a store nothing read before the next pass cleared or
+    // discarded it; load_undefined loads a texture nothing had written.
+    std::string FormatFlow(double f) const
+    {
+        auto mb = [&](uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0) / f; };
+        std::string line = " content_mb:";
+        char buffer[256];
+        static constexpr const char* kinds[2] = {"color", "depth"};
+        for (int k = 0; k < 2; ++k)
+        {
+            std::snprintf(buffer, sizeof(buffer), " %s store_read=%.1f store_loaded=%.1f store_cleared=%.1f load_valid=%.1f load_undefined=%.1f;",
+                kinds[k], mb(flow.storeRead[k]), mb(flow.storeLoaded[k]), mb(flow.storeCleared[k]),
+                mb(flow.loadValid[k]), mb(flow.loadUndefined[k]));
+            line += buffer;
+        }
+        auto top = [&](const char* name, const std::map<std::pair<TargetKey, bool>, uint64_t>& map) {
+            std::vector<std::pair<std::pair<TargetKey, bool>, uint64_t>> sorted(map.begin(), map.end());
+            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+            line += std::string(" ") + name + ":";
+            for (size_t i = 0; i < sorted.size() && i < 6; ++i)
+            {
+                const auto& [key, bytesTotal] = sorted[i];
+                std::snprintf(buffer, sizeof(buffer), " %ux%u%s%s %s=%.1f;", key.first.width, key.first.height,
+                    key.first.colors ? (key.first.colors > 1 ? " mrt" : " c") : " -", key.first.depth ? "d" : "",
+                    key.second ? "depth" : "color", mb(bytesTotal));
+                line += buffer;
+            }
+        };
+        top("stored_then_cleared", flowCleared);
+        top("stored_then_loaded", flowLoaded);
+        return line;
     }
 
     // One log line: per-frame averages, then the most expensive targets.
@@ -143,6 +195,7 @@ public:
             barriers / f, copies / f, dispatches / f, drawsOutside / f,
             present.passes / f, ms(present.gpuNs), mb(present.loadBytes), mb(present.storeBytes));
         line += buffer;
+        line += FormatFlow(f);
         std::vector<std::pair<TargetKey, TargetStats>> sorted(targets.begin(), targets.end());
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
             return a.second.gpuNs != b.second.gpuNs ? a.second.gpuNs > b.second.gpuNs
