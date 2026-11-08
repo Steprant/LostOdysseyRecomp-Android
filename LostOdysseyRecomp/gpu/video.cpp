@@ -4,6 +4,9 @@
 #include <stdafx.h>
 #endif
 #include "video.h"
+#if !defined(LO_VIDEO_SUBMISSION_UNIT)
+#include <debug/frame_timing.h>
+#endif
 #include "frame_plan.h"
 #include "android_tv.h"
 #if defined(LO_GPU_PLUME) || defined(LO_VIDEO_SUBMISSION_UNIT)
@@ -1778,6 +1781,13 @@ namespace gpu::video
     }
     bool WaitForGpuFence(plume::RenderCommandFence* fence) {
         PresentScope progress(g_presentProgress, fence == g_fence.get() ? PresentStage::Fence : PresentStage::RendererFence);
+#if !defined(LO_VIDEO_SUBMISSION_UNIT)
+        // Slow-frame breakdown (frame_timing): time blocked on the GPU.
+        struct FenceWaitTimer {
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~FenceWaitTimer() { frame_timing::AddGpuFenceWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()); }
+        } fenceWaitTimer;
+#endif
         auto* queueHolder = ActiveSubmissionQueue();
         if (!queueHolder || !fence) { StopGpuWork(submission::VulkanState::InvalidState); return false; }
 #if LO_PLATFORM_MACOS

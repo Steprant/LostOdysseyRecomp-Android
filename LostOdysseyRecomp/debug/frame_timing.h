@@ -3,6 +3,16 @@
 namespace frame_timing
 {
 bool Enabled();
+// Enabled(), or an Android Tester recording: the cheap per-frame breakdown
+// behind the "slow frame" log lines runs whenever a session is recorded.
+bool Active();
+// Wall time a thread spent waiting on a GPU fence (video::WaitForGpuFence),
+// charged to the frame being presented.
+void AddGpuFenceWait(double milliseconds);
+// Wall time the command processor spent in PM4 WAIT_REG_MEM (the guest's
+// command stream waiting on a register or memory value, e.g. its vblank or
+// interrupt-handler handshakes).
+void AddWaitRegMem(double milliseconds);
 struct PacingSample
 {
     double requestedMs = 0, actualMs = 0, overshootMs = 0;

@@ -12,11 +12,23 @@
 #include <mutex>
 #include <atomic>
 
+#if defined(__ANDROID__)
+#include <diagnostics/android_tester.h>
+#endif
+
 namespace frame_timing
 {
 bool Enabled() { static const bool enabled = getenv("LO_FRAME_TIMING") != nullptr; return enabled || gpu::render_timing::Enabled(); }
+bool Active()
+{
+#if defined(__ANDROID__)
+    if (::diagnostics::android_tester::g_recorder.recording.load(std::memory_order_relaxed)) return true;
+#endif
+    return Enabled();
+}
 namespace
 {
+std::atomic<uint64_t> gpuFenceWaitUs{0}, waitRegMemUs{0};
 std::mutex mutex;
 std::atomic<uint64_t> inputTick{0};
 uint64_t ticks = 0, intervals = 0;
@@ -25,7 +37,35 @@ uint32_t requested = 0, encoded = 0;
 double cpIdleMs = 0;
 double cpPresentIdleMs = 0;
 }
-void CpIdle(double milliseconds) { if (Enabled()) { cpIdleMs += milliseconds; cpPresentIdleMs += milliseconds; } }
+void CpIdle(double milliseconds) { if (Active()) { cpIdleMs += milliseconds; cpPresentIdleMs += milliseconds; } }
+void AddGpuFenceWait(double milliseconds)
+{
+    if (milliseconds > 0 && Active()) gpuFenceWaitUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
+}
+void AddWaitRegMem(double milliseconds)
+{
+    if (milliseconds > 0 && Active()) waitRegMemUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
+}
+
+// Roadmap 0.4 / P6: one line per frame over 50 ms while a session is
+// recorded, splitting the time since the previous present: the command
+// processor idle (waiting for the guest to submit), busy (executing PM4 and
+// recording, which includes GPU fence waits and WAIT_REG_MEM), then flush,
+// pacing sleep and present. Rate-limited: the first 300, then one in ten.
+static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double presentMs,
+    const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs)
+{
+    if (!pacing.hasPrevious || !pacing.presentAccepted || !std::isfinite(pacing.betweenMs)) return;
+    const double total = pacing.betweenMs + flushMs + waitMs + presentMs;
+    if (!(total > 50.0)) return;
+    static uint32_t reported = 0;
+    const uint32_t n = reported++;
+    if (n >= 300 && n % 10 != 0) return;
+    LOG_INFO("slow frame swap={} total={:.1f}ms between={:.1f}ms cp_idle={:.1f}ms cp_busy={:.1f}ms gpu_fence_wait={:.1f}ms "
+        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms previous_post={:.1f}ms n={}",
+        swap, total, pacing.betweenMs, idleMs, std::max(0.0, pacing.betweenMs - idleMs), fenceMs, regMemMs,
+        flushMs, waitMs, presentMs, pacing.previousSwapPostMs, n + 1);
+}
 void EngineTick(double delta)
 {
     static const bool inputTicks = [] { const char* value = getenv("LO_TEST_INPUT_TICKS"); return value && strcmp(value, "1") == 0; }();
@@ -45,9 +85,13 @@ void GuestInterval(uint32_t request, uint32_t encode)
 void Present(uint32_t swap, uint32_t fps, double flushMs, double waitMs, double presentMs,
     const PacingSample& pacing)
 {
-    if (!Enabled()) return;
+    if (!Active()) return;
     const double presentIdleMs = cpPresentIdleMs;
     cpPresentIdleMs = 0;
+    const double fenceMs = double(gpuFenceWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
+    const double regMemMs = double(waitRegMemUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
+    ReportSlowFrame(swap, flushMs, waitMs, presentMs, pacing, presentIdleMs, fenceMs, regMemMs);
+    if (!Enabled()) return;
     if (gpu::render_timing::Enabled())
     {
         // These adjacent intervals cover previous completed-present end through

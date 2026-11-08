@@ -110,3 +110,22 @@ During loads the runtime asks for immediate presentation. Turnip on the
 Xiaomi 14 offers only FIFO, so Plume keeps FIFO, the swapchain is not
 rebuilt and nothing waits; the "immediate mode unavailable" line is only
 the report. Not a cause of the load stutters.
+
+## 0.4 Slow-frame breakdown
+
+The 8 November city session had dozens of 55-97 ms frames every ten seconds
+while the GPU spent its usual ~21 ms per frame on them and the present
+thread 0.3 ms; the GPU timeline and the big-core frequencies (cores 2-6 at
+1.0-2.1 GHz, the prime core held at 902 MHz) say the time is lost on the CPU
+side. While a Tester session records, every frame over 50 ms now logs one
+`slow frame` line splitting the time since the previous present:
+
+- `cp_idle`: the command processor had nothing to execute (the guest had not
+  submitted yet);
+- `cp_busy`: executing PM4 and recording, of which `gpu_fence_wait` (blocked on
+  a GPU fence) and `wait_reg_mem` (PM4 WAIT_REG_MEM: the guest's command stream
+  waiting on a register or memory value);
+- `flush`, `pace_sleep`, `present`, and `previous_post` (post-present
+  diagnostics of the previous frame).
+
+The first 300 slow frames are logged, then one in ten.

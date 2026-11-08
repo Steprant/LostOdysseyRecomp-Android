@@ -678,7 +678,6 @@ namespace gpu
     {
         os::SetCurrentThreadName("GPU CmdProc");
         os::scheduling::PreferPerformanceCores();
-        const bool timingEnabled = frame_timing::Enabled();
         auto idleStart = std::chrono::steady_clock::time_point{};
         bool timingIdle = false;
         while (m_running)
@@ -703,7 +702,7 @@ namespace gpu
             if (writePtr == 0xBAADF00D || m_readPtrIndex == writePtr || m_primaryBufferSize == 0)
             {
                 g_workerStage.store("idle/event pump", std::memory_order_relaxed);
-                if (timingEnabled && !timingIdle)
+                if (!timingIdle && frame_timing::Active())
                 {
                     idleStart = std::chrono::steady_clock::now();
                     timingIdle = true;
@@ -1093,7 +1092,7 @@ namespace gpu
             const auto timingPace = std::chrono::steady_clock::now();
             const auto fpsCap = loading::Active() ? loading::Target(GetFrameRateTarget())
                 : video::GetFramePacingTarget(GetFrameRateTarget());
-            const bool timingEnabled = frame_timing::Enabled();
+            const bool timingEnabled = frame_timing::Active();
             frame_timing::PacingSample pacing;
             {
                 static FramePacer pacer;
@@ -1283,7 +1282,8 @@ namespace gpu
                 LOG_INFO("WAIT_REG_MEM {} {:#x} op={} ref={:#x} mask={:#x} value now {:#x} swap #{}", isMemory ? "mem" : "reg", pollRegAddr, waitInfo & 7, ref, mask,
                     isMemory ? GpuSwap(*reinterpret_cast<uint32_t*>(TranslatePhysical(pollRegAddr & ~3u)), pollRegAddr & 3) : 0, g_swapCount.load());
             g_workerStage.store("WAIT_REG_MEM", std::memory_order_relaxed);
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            const auto waitStart = std::chrono::steady_clock::now();
+            auto deadline = waitStart + std::chrono::seconds(5);
             while (m_running)
             {
                 // Snapshot before reading, so a handler finishing after the read
@@ -1345,6 +1345,7 @@ namespace gpu
                 else
                     std::this_thread::yield();
             }
+            frame_timing::AddWaitRegMem(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count());
             // Guest writes made before the waited-for value are visible from here.
             AdvanceSyncEpoch(SyncSource::WaitRegMem);
             return true;
