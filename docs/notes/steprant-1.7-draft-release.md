@@ -10,6 +10,11 @@ Optimization only: no new features and no intended change to the image.
 - Render passes no longer load attachments whose contents are undefined (Tester A/B row "Skip loading undefined attachments").
 - Diagnostics: the Tester's GPU profile now says what became of each pass's stored attachments (read, loaded again, or cleared unread), why passes end, and how many state commands each frame records. `tools/android/compare-tester.py` compares two Tester sessions.
 
+- Render passes begin over the draws' scissor instead of the whole target, so partial passes (shadow cascades, sub-rectangles of EDRAM targets) load and store only that part (Tester A/B row "Render passes limited to the scissor").
+- The boot title screen is promoted to the output size with SGSR2 again; SSAO no longer draws stripes on the sky and distant terrain.
+- Diagnostics: slow frames (over 50 ms) are broken down in the log while the Tester records; the GPU profile names the transitions of barriers that end passes; the existing CPU performance hints (ADPF) can be turned on from the Tester.
+- Android build fetches nlohmann/json by git tag (the release archive CDN was failing).
+
 Details: `docs/notes/android-optimization-20261108.md`.
 
 Game data is supplied by the player; this APK contains no game executable or assets. GPL-3.0; dependency notices are included in the app.
