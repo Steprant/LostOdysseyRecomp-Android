@@ -46,6 +46,13 @@ float3 normalAt(int2 pixel, float3 p) {
 }
 float noise(int2 p) { return frac(52.9829189 * frac(dot(float2(p),float2(.06711056,.00583715)))); }
 float ssao(int2 pixel, float3 p, float3 n) {
+    // Like gtao(): a radius under one pixel has no detail to find. Far
+    // surfaces (sky dome, distant cliffs) only have terraced depth there,
+    // which read as diagonal stripes of occlusion.
+    if(radius*extent.y/(2*projection.w*p.z)<1) return 1;
+    // Depth stored in 24 bits of precision steps the view depth by about
+    // z^2/|q| * 2^-24 (z = q/(d-pole)); keep the bias above a few steps.
+    float depthStep=p.z*p.z/max(abs(projection.x),1e-20)*exp2(-24.0);
     float3 axis = abs(n.z)<.9 ? float3(0,0,1) : float3(0,1,0);
     float3 tangent=normalize(cross(axis,n)), bitangent=cross(n,tangent);
     float blocked=0;
@@ -61,7 +68,7 @@ float ssao(int2 pixel, float3 p, float3 n) {
         float3 scene;
         if(!positionAt(q,scene)) continue;
         float dist=length(scene-p);
-        float bias=max(radius*.025,p.z*1e-5);
+        float bias=max(max(radius*.025,p.z*1e-5),4*depthStep);
         if(scene.z<samplePos.z-bias) blocked+=saturate(2-2*dist/radius);
     }
     return saturate(1-blocked/12);
