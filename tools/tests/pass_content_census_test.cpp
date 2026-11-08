@@ -4,6 +4,8 @@
 // in the matching RenderPassProfile::ContentFlow bucket.
 #include <plume_render_interface.h>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 namespace plume { std::unique_ptr<RenderInterface> CreateVulkanInterface(); }
 
@@ -73,7 +75,13 @@ int main()
     expect(f.storeLoaded[0] == 0, "the read already consumed that store");
     expect(f.storeCleared[1] == bytes, "depth store cleared unread");
     expect(f.storeRead[1] == 0 && f.storeLoaded[1] == 0, "depth never consumed");
-    expect(f.loadUndefined[0] == bytes, "load of a never-written texture");
+    // Pass 3's texture left an unknown layout and nothing wrote it: Plume
+    // loads it with DONT_CARE (LO_VK_DISCARD_UNDEFINED=0 keeps LOAD).
+    const char* discardSetting = std::getenv("LO_VK_DISCARD_UNDEFINED");
+    const bool discard = !discardSetting || std::strcmp(discardSetting, "0") != 0;
+    expect(f.loadUndefined[0] == (discard ? 0 : bytes), "load of a never-written texture");
+    expect(profile.passes.size() == 3 && profile.passes[2].loadBytes == (discard ? 0 : bytes), "pass 3 load bytes");
+    expect(profile.passes.size() == 3 && profile.passes[1].loadBytes == bytes, "pass 2 still loads the defined colour");
     expect(profile.flowEvents.size() == 1 && profile.flowEvents[0].depth && profile.flowEvents[0].width == size &&
         profile.flowEvents[0].colors == 1 && profile.flowEvents[0].bucket == RenderPassProfile::FlowBucket::Cleared,
         "the cleared depth store is charged to the 64x64 colour+depth pass");

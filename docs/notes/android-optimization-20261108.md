@@ -80,3 +80,18 @@ The `gc render flush` lines come from the Issue #12 crash fix: before the
 engine's garbage collection the guest render thread is drained (what later
 UE3 versions do themselves). It runs at loads, waits for the guest render
 thread, not for the GPU, and removing it brings back a crash. Left as is.
+
+## 1.2a No load of undefined contents
+
+A barrier out of an unknown layout transitions from `VK_IMAGE_LAYOUT_UNDEFINED`,
+which discards the image's contents. If such a texture then becomes an
+attachment before anything wrote it, its pass used to load it anyway:
+bandwidth for garbage. Plume now marks the texture (`undefinedContent`) and
+the next pass loads that attachment with `DONT_CARE` (a render pass variant
+next to the clear variants; load and store ops do not affect compatibility,
+so framebuffers and pipelines are shared). By the Vulkan rules the result is
+the same undefined contents, so the image cannot change.
+
+A/B: Tester row "Skip loading undefined attachments" (`discard_undefined`,
+`LO_VK_DISCARD_UNDEFINED=0` loads again). In the census these loads leave
+`load_undefined`.

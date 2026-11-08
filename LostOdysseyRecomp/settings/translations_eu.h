@@ -81,6 +81,8 @@ inline constexpr EuropeanText EuropeanTexts[] = {
      L"Jitter de viewport pour les rendus inconnus", L"Viewport-Jitter für unbekannte Draws", L"Jitter del viewport per i disegni ignoti"},
     {L"Keep render targets across resizes", L"Conservar destinos al cambiar de tamaño",
      L"Garder les cibles lors des redimensionnements", L"Renderziele bei Größenwechsel behalten", L"Conserva i render target ai cambi di dimensione"},
+    {L"Skip loading undefined attachments", L"No cargar adjuntos sin contenido definido",
+     L"Ne pas charger les attachements au contenu indéfini", L"Undefinierte Anhänge nicht laden", L"Non caricare gli allegati senza contenuto"},
     {L"SMAA in SGSR2 Quality", L"SMAA en SGSR2 Calidad", L"SMAA en SGSR2 Qualité", L"SMAA in SGSR2 Qualität", L"SMAA in SGSR2 Qualità"},
     {L"Menus: render-size switch (old)", L"Menús: cambio de resolución (antiguo)",
      L"Menus : changement de résolution (ancien)", L"Menüs: Auflösungswechsel (alt)", L"Menu: cambio di risoluzione (vecchio)"},

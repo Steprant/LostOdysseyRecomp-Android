@@ -26,6 +26,7 @@ enum class Switch : uint32_t
     Sgsr2Smaa,          // SMAA on SGSR2's input in Quality
     MenuNativeSwitch,   // menus switch the render size (old) instead of promoting the UI
     TurnipMode,         // Turnip render mode: 0 auto, 1 sysmem, 2 gmem
+    DiscardUndefined,   // passes skip loading attachments whose contents are undefined
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -51,6 +52,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"sgsr2_smaa", L"SMAA in SGSR2 Quality", L"SGSR2 品質模式中的 SMAA", 0, 2, "LO_SGSR2_SMAA"},
     {"menu_native_switch", L"Menus: render-size switch (old)", L"選單：切換渲染尺寸（舊）", 1, 2, "LO_SGSR2_NATIVE_MENUS"},
     {"turnip_mode", L"Turnip render mode", L"Turnip 渲染模式", 0, 3, "TU_DEBUG"},
+    {"discard_undefined", L"Skip loading undefined attachments", L"略過載入未定義的附件", 0, 2, "LO_VK_DISCARD_UNDEFINED"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset).
@@ -67,6 +69,7 @@ inline const char* VariableValue(Switch which, uint32_t value)
     // On (0): the old switch; Off (1, the default): UI promotion.
     case Switch::MenuNativeSwitch: return value == 0 ? "1" : nullptr;
     case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
+    case Switch::DiscardUndefined: return value == 1 ? "0" : nullptr;
     case Switch::Count: break;
     }
     return nullptr;
