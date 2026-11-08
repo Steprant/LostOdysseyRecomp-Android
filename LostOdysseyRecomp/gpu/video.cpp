@@ -4957,9 +4957,23 @@ namespace gpu::video
 #endif
     }
 
+    // Wait for swapchain images since the last TakeAcquireWait (P6 pacing).
+    static std::atomic<uint64_t> g_lastAcquireWaitUs{0};
+    double TakeAcquireWaitMs() { return double(g_lastAcquireWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0; }
+
     static bool AcquirePresentTexture(uint32_t* index)
     {
         PresentScope progress(g_presentProgress, PresentStage::Acquire);
+#if !defined(LO_VIDEO_SUBMISSION_UNIT)
+        struct AcquireTimer {
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~AcquireTimer() {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                frame_timing::AddPresentAcquire(ms);
+                g_lastAcquireWaitUs.fetch_add(uint64_t(ms * 1000.0), std::memory_order_relaxed);
+            }
+        } acquireTimer;
+#endif
         g_presentProgress.Image(presentation_progress::NoImage);
         if (!loading::Active() || !g_vulkan) {
             const bool acquired = g_swapChain->acquireTexture(g_acquireSemaphore.get(), index);

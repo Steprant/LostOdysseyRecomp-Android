@@ -146,5 +146,23 @@ int main()
         }
         Require(MapPresentInterval(flags | 0x200, 0x827B4A4C, 59) == (flags | 0x200), "sub-60 diagnostic preserves baseline");
     }
+    {
+        // P6: a present the display held back re-anchors the cadence there.
+        FramePacer pacer;
+        const auto t0 = FramePacer::Clock::time_point{} + std::chrono::seconds(10);
+        const auto period = std::chrono::nanoseconds(1000000000ull / 30);
+        const auto first = pacer.Schedule(t0, 30);
+        Require(first == t0 + period, "first deadline one period out");
+        const auto presented = first + std::chrono::milliseconds(12);
+        pacer.Reanchor(presented);
+        Require(pacer.Schedule(presented + std::chrono::milliseconds(20), 30) == presented + period,
+            "next deadline counts from the blocked present's return");
+        FramePacer early, plain;
+        const auto d = early.Schedule(t0, 30);
+        plain.Schedule(t0, 30);
+        early.Reanchor(d - std::chrono::milliseconds(5));
+        const auto later = t0 + std::chrono::milliseconds(40);
+        Require(early.Schedule(later, 30) == plain.Schedule(later, 30), "an earlier time never pulls the anchor back");
+    }
     std::puts("native 30/60/90/120 policy, frame pacer and guest interval checks passed");
 }

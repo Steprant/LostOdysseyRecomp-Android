@@ -166,6 +166,9 @@ namespace gpu::video
     // Monotonic successful swap-chain present calls; read on the command thread.
     // Early returns and failed presents do not advance this counter.
     uint64_t CompletedPresentCount();
+    // Milliseconds the presenting thread waited for swapchain images since the
+    // previous call (the display holding the host back; P6 pacing).
+    double TakeAcquireWaitMs();
 
     // Writes the last untiled frontbuffer as a binary PPM (for offline inspection).
     bool SaveScreenshot(const char* path);

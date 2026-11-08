@@ -194,3 +194,24 @@ the pass and reloaded the union each time. A pass that has to grow now
 restarts once over the whole framebuffer, and that framebuffer's later
 passes begin whole (`renderAreaGrew`): at worst one extra restart per
 framebuffer, the gain kept where scissors are stable.
+
+## P6: the city stutter is the present blocking
+
+The 11:47 and 11:56 sessions (city) logged 115 and 160 `slow frame` lines.
+In the typical one the command processor is idle for 0 ms and busy for
+10-15 ms, the pacing sleep takes 3-20 ms, and then the present takes
+40-55 ms (median 44-48 ms): the GPU fence wait is 0.2 ms, so the present
+waits on the display. The host frame pacer keeps its own 30 FPS cadence on
+the steady clock while FIFO presentation follows the panel; when the two
+phases drift apart, a frame sleeps for the host cadence and then blocks
+another display period. The other kind of slow frame (40 ms in PM4
+WAIT_REG_MEM, 13-15 ms present) is the guest waiting for its vblank after
+such a frame.
+
+Now the time spent acquiring the swapchain image is measured
+(`present_acquire` in the slow-frame line). When it exceeds 4 ms the display
+held the host back, and the pacer counts its next period from the
+present's return (`FramePacer::Reanchor`), so the host cadence follows the
+display's phase instead of fighting it. Timing only: frames, their content
+and the cap are unchanged. `LO_DISPLAY_PACED=0` restores the old behaviour.
+ADPF (performance hints) did not change this: same pattern with it on.

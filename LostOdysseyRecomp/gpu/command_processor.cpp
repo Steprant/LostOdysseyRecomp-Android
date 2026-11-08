@@ -1094,8 +1094,8 @@ namespace gpu
                 : video::GetFramePacingTarget(GetFrameRateTarget());
             const bool timingEnabled = frame_timing::Active();
             frame_timing::PacingSample pacing;
+            static FramePacer pacer;
             {
-                static FramePacer pacer;
                 static OutputFramePacer outputPacer;
                 static DeadlineWait pacingWait;
                 // Preserve the original schedule anchor; sleep without millisecond rounding.
@@ -1132,6 +1132,20 @@ namespace gpu
             renderer::CompleteDebugCaptureFrame(captureResult);
             renderer::PollDebugCapture();
             pacing.presentAccepted = video::CompletedPresentCount() > presentsBefore;
+            {
+                // P6: the city stutter of 8 November was the present blocking
+                // 40-55 ms on top of the pacing sleep: the host cadence and
+                // the display's drifted apart. When acquiring the swapchain
+                // image blocks, start the next period from the present's
+                // return (LO_DISPLAY_PACED=0: off).
+                static const bool displayPaced = [] {
+                    const char* value = getenv("LO_DISPLAY_PACED");
+                    return !value || std::strcmp(value, "0") != 0;
+                }();
+                const double acquireMs = video::TakeAcquireWaitMs();
+                if (displayPaced && acquireMs > 4.0)
+                    pacer.Reanchor(std::chrono::steady_clock::now());
+            }
             g_workerStage.store("window event pump", std::memory_order_relaxed);
             video::PumpEvents();
             g_completedSwaps = swaps;

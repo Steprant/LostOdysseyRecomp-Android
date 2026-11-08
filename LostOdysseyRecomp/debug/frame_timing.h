@@ -13,6 +13,9 @@ void AddGpuFenceWait(double milliseconds);
 // command stream waiting on a register or memory value, e.g. its vblank or
 // interrupt-handler handshakes).
 void AddWaitRegMem(double milliseconds);
+// Wall time the presenting thread waited for a swapchain image
+// (vkAcquireNextImageKHR): the display holding the host back.
+void AddPresentAcquire(double milliseconds);
 struct PacingSample
 {
     double requestedMs = 0, actualMs = 0, overshootMs = 0;

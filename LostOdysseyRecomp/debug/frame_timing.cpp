@@ -28,7 +28,7 @@ bool Active()
 }
 namespace
 {
-std::atomic<uint64_t> gpuFenceWaitUs{0}, waitRegMemUs{0};
+std::atomic<uint64_t> gpuFenceWaitUs{0}, waitRegMemUs{0}, acquireUs{0};
 std::mutex mutex;
 std::atomic<uint64_t> inputTick{0};
 uint64_t ticks = 0, intervals = 0;
@@ -42,6 +42,10 @@ void AddGpuFenceWait(double milliseconds)
 {
     if (milliseconds > 0 && Active()) gpuFenceWaitUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
 }
+void AddPresentAcquire(double milliseconds)
+{
+    if (milliseconds > 0 && Active()) acquireUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
+}
 void AddWaitRegMem(double milliseconds)
 {
     if (milliseconds > 0 && Active()) waitRegMemUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
@@ -53,7 +57,7 @@ void AddWaitRegMem(double milliseconds)
 // recording, which includes GPU fence waits and WAIT_REG_MEM), then flush,
 // pacing sleep and present. Rate-limited: the first 300, then one in ten.
 static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double presentMs,
-    const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs)
+    const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs, double acquireMs)
 {
     if (!pacing.hasPrevious || !pacing.presentAccepted || !std::isfinite(pacing.betweenMs)) return;
     const double total = pacing.betweenMs + flushMs + waitMs + presentMs;
@@ -62,9 +66,9 @@ static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double
     const uint32_t n = reported++;
     if (n >= 300 && n % 10 != 0) return;
     LOG_INFO("slow frame swap={} total={:.1f}ms between={:.1f}ms cp_idle={:.1f}ms cp_busy={:.1f}ms gpu_fence_wait={:.1f}ms "
-        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms previous_post={:.1f}ms n={}",
+        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms previous_post={:.1f}ms n={}",
         swap, total, pacing.betweenMs, idleMs, std::max(0.0, pacing.betweenMs - idleMs), fenceMs, regMemMs,
-        flushMs, waitMs, presentMs, pacing.previousSwapPostMs, n + 1);
+        flushMs, waitMs, presentMs, acquireMs, pacing.previousSwapPostMs, n + 1);
 }
 void EngineTick(double delta)
 {
@@ -90,7 +94,8 @@ void Present(uint32_t swap, uint32_t fps, double flushMs, double waitMs, double 
     cpPresentIdleMs = 0;
     const double fenceMs = double(gpuFenceWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
     const double regMemMs = double(waitRegMemUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
-    ReportSlowFrame(swap, flushMs, waitMs, presentMs, pacing, presentIdleMs, fenceMs, regMemMs);
+    const double acquireMs = double(acquireUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
+    ReportSlowFrame(swap, flushMs, waitMs, presentMs, pacing, presentIdleMs, fenceMs, regMemMs, acquireMs);
     if (!Enabled()) return;
     if (gpu::render_timing::Enabled())
     {

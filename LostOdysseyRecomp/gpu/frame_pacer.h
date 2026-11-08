@@ -25,6 +25,13 @@ public:
         m_fps = fps;
         return m_next;
     }
+    // The display paced this frame (the swapchain blocked the present):
+    // count the next period from when the present returned, so the host
+    // cadence follows the display's phase instead of drifting against it.
+    void Reanchor(Clock::time_point presented)
+    {
+        if (m_fps && presented > m_next) m_next = presented;
+    }
 private:
     uint32_t m_fps = 0;
     Clock::time_point m_next{};
