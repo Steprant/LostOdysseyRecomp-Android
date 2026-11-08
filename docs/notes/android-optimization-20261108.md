@@ -95,3 +95,18 @@ the same undefined contents, so the image cannot change.
 A/B: Tester row "Skip loading undefined attachments" (`discard_undefined`,
 `LO_VK_DISCARD_UNDEFINED=0` loads again). In the census these loads leave
 `load_undefined`.
+
+## 2.2 State commands per frame
+
+The `gpu passes` line also counts, per frame, the native graphics state
+commands Plume records: pipeline binds and the ones skipped as unchanged,
+descriptor set binds, push constant writes, vertex and index buffer binds
+(`state_per_frame:`). Together with the draw classes they show whether the
+~12 µs per depth-only draw is state churn.
+
+## 5.3 Present mode during loads: not a stall
+
+During loads the runtime asks for immediate presentation. Turnip on the
+Xiaomi 14 offers only FIFO, so Plume keeps FIFO, the swapchain is not
+rebuilt and nothing waits; the "immediate mode unavailable" line is only
+the report. Not a cause of the load stutters.

@@ -89,6 +89,7 @@ public:
     uint64_t frames = 0, lists = 0, untimedLists = 0;
     uint64_t listNs = 0, passNs = 0;
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
+    uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
     // Stores loaded by the next pass ([0]) or cleared unread ([1]), by the
@@ -104,6 +105,12 @@ public:
         copies += profile.copyCalls;
         dispatches += profile.dispatches;
         drawsOutside += profile.drawsOutsidePasses;
+        pipelineBinds += profile.pipelineBinds;
+        pipelineBindsSkipped += profile.pipelineBindsSkipped;
+        descriptorBinds += profile.descriptorBinds;
+        pushConstants += profile.pushConstants;
+        vertexBinds += profile.vertexBinds;
+        indexBinds += profile.indexBinds;
         for (int k = 0; k < 2; ++k)
         {
             flow.storeRead[k] += profile.flow.storeRead[k];
@@ -182,6 +189,11 @@ public:
             line += buffer;
         }
         line += ";";
+        std::snprintf(buffer, sizeof(buffer),
+            " state_per_frame: pipeline_binds=%.1f pipeline_skipped=%.1f descriptor_binds=%.1f push_constants=%.1f vertex_binds=%.1f index_binds=%.1f;",
+            double(pipelineBinds) / f, double(pipelineBindsSkipped) / f, double(descriptorBinds) / f,
+            double(pushConstants) / f, double(vertexBinds) / f, double(indexBinds) / f);
+        line += buffer;
         return line;
     }
 

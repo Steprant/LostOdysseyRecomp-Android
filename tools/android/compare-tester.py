@@ -85,6 +85,10 @@ def pass_fields(text):
     if formats:
         for key, value in re.findall(r"(\w+)=([0-9.]+)", formats.group(1)):
             fields[f"draws_{key}"] = float(value)
+    state = re.search(r"state_per_frame:(.*?);", text)
+    if state:
+        for key, value in re.findall(r"(\w+)=([0-9.]+)", state.group(1)):
+            fields[f"state_{key}"] = float(value)
     ends = re.search(r"pass_ends_per_frame:(.*?);", text)
     if ends:
         for key, value in re.findall(r"(\w+)=([0-9.]+)", ends.group(1)):
