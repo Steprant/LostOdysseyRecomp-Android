@@ -126,11 +126,13 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          # Steprant fork builds: the 1.5 integration branch and the 1.6
-          # candidate branches share the fork's package, label and icon.
+          # Steprant fork builds: the 1.5 integration branch, the 1.6
+          # candidate and 1.7 optimization branches share the fork's package,
+          # label and icon.
           case "$REF_NAME" in
             integration/v1.1.0-steprant-all) version=1.5 ;;
             integration/v1.6-candidate-*) version=1.6 ;;
+            integration/v1.7-optimization-*) version=1.7 ;;
             *) version= ;;
           esac
           if [[ -n "$version" ]]; then
