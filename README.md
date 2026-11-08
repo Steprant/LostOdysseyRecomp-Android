@@ -2,46 +2,48 @@
 
 <img src="assets/steprant-android-logo.webp" alt="Lost Odyssey Recomp Android — Steprant logo" width="360">
 
-# Lost Odyssey Recomp — Steprant Android 1.5
+# Lost Odyssey Recomp — Steprant Android 1.8
 
 **Android-focused performance work, Vulkan graphics and TV/HDMI play.**
 
-[![Download Android 1.5 APK](https://img.shields.io/badge/Download-Android_1.5_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.5-steprant.20261104/LostOdyssey-Steprant-v1.5-20261104.apk)
+[![Download Android 1.8 APK](https://img.shields.io/badge/Download-Android_1.8_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk)
 
-**[Download APK 1.5](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.5-steprant.20261104/LostOdyssey-Steprant-v1.5-20261104.apk) · [Release notes](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.5-steprant.20261104) · [Android guide](docs/STEPRANT_ANDROID.md)**
+**[Download APK 1.8](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk) · [Release notes](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108) · [Android guide](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/STEPRANT_ANDROID.md)**
 
 ![Android ARM64](https://img.shields.io/badge/Android-8.0%2B_ARM64-3DDC84?logo=android&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/Graphics-Vulkan-AC162C)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/LICENSE)
 
-An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 1.5 is this fork's version, separate from upstream's release numbering.
+An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 1.8 is this fork's version, separate from upstream's release numbering.
 
 </div>
 
-## Steprant Android 1.5
+> **Steprant 1.8 is developed on the [`steprant/v1.8`](https://github.com/Steprant/LostOdysseyRecomp-Android/tree/steprant/v1.8) branch.** This branch keeps the 1.5 sources and history.
 
-The work targets steadier frame pacing, lower redundant CPU/GPU work and sustained Android performance, with lower heat and battery use as optimization goals. **No measured FPS uplift, temperature reduction or battery-life gain is claimed for 1.5.** Results depend on the device, driver, scene and settings.
+## Steprant Android 1.8
 
-| Feature | Included behavior |
+Steadier frame pacing, sharper upscaling and less redundant GPU work on Android, measured on a Xiaomi 14 (Adreno 750, Turnip). Results depend on device, driver, scene and settings; the [release notes](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/notes/steprant-1.8-release.md) list every change since the first Steprant build with the measurements behind them.
+
+| Area | In 1.8 |
 | :--- | :--- |
-| **Qualcomm SGSR1** | Optional spatial reconstruction in the Vulkan SDR presentation path. Select **Settings → Graphics → SGSR1 → On**, **High** scaling filter and a render resolution below output, such as 720p → 1080p; save and restart. Native-size output, downscaling, HDR and temporal-upscaler output retain their normal paths. [Details](docs/notes/sgsr1-presentation.md). |
-| **TV / HDMI** | Independent external output, 16:9 fitting, 720p/1080p requests and controller forwarding. With phone blackout enabled, touching wakes the phone and **blackout returns 10 seconds after the last touch**, without covering TV output. The phone panel remains powered. [TV guide](docs/ANDROID_TV_HDMI.md). |
-| **Extreme Tester** | The **Intensive** diagnostic profile records until manually stopped or an I/O/storage error, with **no two-minute time limit**. Selectable 250–2000 ms process sampling, CPU/audio/frame intervals, available thermal/battery data, memory samples and ZIP export; storage and memory remain bounded. [Tester guide](docs/ANDROID_TESTER.md). |
-| **EXP ×2 and SP ×2** | Independent, saved switches in **LB+RB → Cheats → Quick tools**. EXP retains the game's per-battle cap; SP doubles the victory award before skill learning. Gold is unchanged. |
-| **Audio fixes** | Queue-reserve recovery, protection against unnecessary AAudio reopening and XMA scheduling corrections. **Some crackling/disturbances remain; A/V synchronization still needs device testing.** The 1.5 diagnostic correction does not establish a new audio root-cause fix. |
-| **Renderer and CPU work** | Changes address redundant resolve barriers, covered clears, read-only depth work, descriptor/pipeline lookups and shadow bookkeeping. Their presence is verified in source; sustained performance, thermals and energy savings need comparable device runs. |
+| **SGSR2** | Qualcomm's temporal upscaler (Anti-aliasing → SGSR2), with SMAA before the upscale in Quality. **Default on a fresh install: 900p, SGSR2 Quality, shadows ×2, 30 FPS.** Menus and loading screens keep the render size and draw their interface at display resolution. |
+| **SGSR1** | Optional spatial upscaling in the Vulkan SDR presentation path. |
+| **Rendering** | Compact render targets, depth-only draws kept in the scene pass, early depth rejection, render-target reuse, render passes limited to the drawn area, EDRAM resolve copies that no longer split render passes. Fixes for shadow blocks with jitter, SSAO stripes and the title screen. |
+| **Frame pacing** | Frames over 50 ms down to about a third (city) and half (field) of the 1.7 test builds; 99th percentile frame time under 40 ms in those scenes. GPU occupancy is not claimed to be lower. |
+| **Audio** | AAudio reopen protection, XMA decoder on performance cores, XMA error bursts resolved, 64 ms buffer. |
+| **TV / HDMI** | Independent external output, 16:9 fitting, 720p/1080p requests and controller forwarding. [TV guide](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/ANDROID_TV_HDMI.md). |
+| **Tester** | Bounded diagnostic recordings with GPU, pacing and memory profiling and ZIP export. [Tester guide](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/ANDROID_TESTER.md). |
+| **Extras** | EXP ×2 and SP ×2 quick tools, MediaCodec replacement movies, new launcher icon. |
 
-**Install:** Android 8.0+, ARM64 and Vulkan. The APK is `LostOdyssey-Steprant-v1.5-20261104.apk` (47,694,826 bytes). Its launcher name is **Lost Odyssey Steprant**, with the Steprant icon and package `io.github.freefrank.lostodyssey.steprant`. It can coexist with the official app; saves/settings are separate. Keep the same signing key for future Steprant updates.
+**Install:** Android 8.0+, ARM64 and Vulkan. The APK is `LostOdyssey-Steprant-v1.8-20261108.apk`, launcher **Lost Odyssey Steprant**, package `io.github.freefrank.lostodyssey.steprant`. It installs over earlier Steprant builds and coexists with the official app; saves and settings are separate.
 
-**Verification:** the published APK was downloaded again on 5 November 2026 and passed SHA-256, signature, ZIP/ARM64 and 16 KB alignment checks. Its manifest reports version **1.5**, code **1050000**. See [checksum and validation limits](docs/STEPRANT_RELEASE_NOTES.md#apk-and-verification). Build and synthetic tests do not establish complete gameplay, stable 60 FPS, HDMI compatibility or power savings on every device.
+[Installation](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/STEPRANT_ANDROID.md#installation) · [All Steprant releases](https://github.com/Steprant/LostOdysseyRecomp-Android/releases) · [Changelog](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/CHANGELOG.md) · [Optimization notes](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/docs/notes/android-optimization-20261108.md)
 
-[Installation](docs/STEPRANT_ANDROID.md#installation) · [All Steprant releases](https://github.com/Steprant/LostOdysseyRecomp-Android/releases) · [Fork history](docs/audit/STORICO_20261026_20261104.md) · [Changelog](CHANGELOG.md) · [Build inputs and CI](docs/notes/android-fork-build-inputs.md)
-
-Supply supported game data from your own discs. Game assets, executables, private inputs and generated game sources are not distributed in this repository. The runtime remains [GPL-3.0](LICENSE); dependencies retain their licenses, including [Qualcomm SGSR1](thirdparty/licenses/SnapdragonGSR.txt).
+Supply supported game data from your own discs. Game assets, executables, private inputs and generated game sources are not distributed in this repository. The runtime remains [GPL-3.0](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/LICENSE); dependencies retain their licenses, including [Qualcomm SGSR](https://github.com/Steprant/LostOdysseyRecomp-Android/blob/steprant/v1.8/thirdparty/licenses/SnapdragonGSR.txt).
 
 Thanks to **Frank / freefrank**, the upstream contributors and the original community for Lost Odyssey Recomp and its platform support. [Official project](https://github.com/freefrank/LostOdysseyRecomp) · [Official downloads](https://github.com/freefrank/LostOdysseyRecomp/releases/latest) · [Upstream Discord](https://discord.gg/z2yPct6z2w) · [Support Frank](https://ko-fi.com/dotslash).
 
-> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the prominent **Steprant APK 1.5** download above for this Android edition.
+> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the **Steprant APK 1.8** download above for this Android edition.
 
 ## Contents
 
