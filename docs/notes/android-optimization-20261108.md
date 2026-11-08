@@ -62,3 +62,21 @@ operation, which the recompiled guest code (reservations, critical sections)
 and the renderer's queues execute constantly. `LO_ANDROID_TARGET_ARCH=armv8-a`
 builds for older cores. Nothing changes in behaviour; on the phone the effect
 shows as CPU time of the Guest Main and GPU CmdProc threads in `threads.csv`.
+
+## 0.2 Comparing two Tester sessions
+
+`tools/android/compare-tester.py before.zip after.zip [--from S --to S]`
+prints, per session and as a percentage change: frame pacing (median, p95,
+p99, max, frames over 50 and 100 ms), GPU occupancy from `gpu.csv`, battery
+temperature, CPU of the main threads, and the averages of the ten-second
+`gpu passes` lines (passes, barriers, copies, load/store MB, content census,
+pass ends, draws per Xenos format) plus each session's last `draw classes`
+line. The window options keep the same stretch of a repeated route.
+Test: `tools/tests/compare_tester_test.py`.
+
+## 6.1 gc render flush: not a target
+
+The `gc render flush` lines come from the Issue #12 crash fix: before the
+engine's garbage collection the guest render thread is drained (what later
+UE3 versions do themselves). It runs at loads, waits for the guest render
+thread, not for the GPU, and removing it brings back a crash. Left as is.

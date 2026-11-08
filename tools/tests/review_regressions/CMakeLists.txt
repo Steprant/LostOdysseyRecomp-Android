@@ -32,6 +32,7 @@ endfunction()
 lo_review_test(LoCheatsSkillTest cheats_skill_test.cpp)
 add_test(NAME LoCheatCatalogTest COMMAND "${Python3_EXECUTABLE}" -B "${LO_TESTS}/cheat_catalog_test.py")
 add_test(NAME LoAndroidBuildInputTest COMMAND "${Python3_EXECUTABLE}" -B "${LO_TESTS}/android_build_input_test.py")
+add_test(NAME LoCompareTesterTest COMMAND "${Python3_EXECUTABLE}" -B "${LO_TESTS}/compare_tester_test.py")
 set_tests_properties(LoCheatCatalogTest PROPERTIES TIMEOUT 30)
 
 lo_review_test(LoTextureKeyTest texture_key_test.cpp)
