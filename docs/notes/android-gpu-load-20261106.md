@@ -657,3 +657,13 @@ site. Verified by the settings menu fixtures (15/15).
   leave a dotted trail in SGSR2's history. To confirm with SGSR1 (no
   history) in the same battle; the fix would be a reactive mask for
   blended draws, which SGSR2 does not have yet.
+
+### M1 follow-up (8 November): title screen stayed at the render size
+
+On the phone the boot title screen stayed at 1282x576. The renderer promoted
+it at frame 60, but the plan changed in that same frame (the boot switches
+plans twice in its first 70 frames), the promotion was undone and promotions
+stayed paused "until the next SGSR2 frame", which the title screen never
+has. An undo caused by a plan change (`plan_epoch`) no longer pauses; any
+other undo pauses only within its plan geometry epoch
+(`idle_ui::Pause`/`Paused`), and the log says when promotions resume.

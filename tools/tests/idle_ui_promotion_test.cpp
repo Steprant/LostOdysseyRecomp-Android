@@ -34,6 +34,9 @@ int main()
         Check(!Wanted(f), "the back-off after an undone promotion holds");
         f = menu; f.enabled = false;
         Check(!Wanted(f), "the fallback switch disables it");
+        Check(!Paused(Pause{}, 3), "no pause by default");
+        Check(Paused(Pause{true, 1}, 1), "an undo pauses promotions within its plan epoch");
+        Check(!Paused(Pause{true, 1}, 2), "a later plan epoch (the boot title's plan switches) resumes them");
         Check(NextIdleFrames(0, false) == 1 && NextIdleFrames(5, false) == 6 && NextIdleFrames(5, true) == 0 &&
             NextIdleFrames(1u << 30, false) == 1u << 30, "idle counter");
         std::printf("PASS: %u idle UI promotion checks\n", checks);

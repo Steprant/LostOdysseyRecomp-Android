@@ -1717,8 +1717,9 @@ namespace gpu::renderer
             uint32_t idleSceneFrames = 0, idlePromotionsLogged = 0;
             // A promotion undone by a depth draw on the final target in its own
             // frame: no more promotions until SGSR2 runs again (back in the 3D
-            // scene), so a menu that draws depth never flips between sizes.
-            bool idlePromotionBlocked = false;
+            // scene) or the plan's geometry epoch changes, so a menu that draws
+            // depth never flips between sizes.
+            idle_ui::Pause idlePromotionPause;
             uint64_t srReconfigureFrame = ~0ull;
             std::unique_ptr<RenderShader> sceneCopyPromotionPs, sceneCopyPromotionRgbPs;
             std::map<uint32_t, std::unique_ptr<RenderPipeline>> sceneCopyPromotionPipelines, sceneCopyPromotionRgbPipelines;
@@ -3541,7 +3542,7 @@ namespace gpu::renderer
                 // depth writes cannot tell a menu from the 3D scene.
                 const bool scene = srPromotionFrame == frame;
                 idleSceneFrames = idle_ui::NextIdleFrames(idleSceneFrames, scene);
-                if (scene) idlePromotionBlocked = false;
+                if (scene) idlePromotionPause.active = false;
             }
 
             // A draw that only composes a resolved surface (the paused scene,
@@ -3572,7 +3573,11 @@ namespace gpu::renderer
                     activePlan.output.width && activePlan.output.height && activePlan.output.width > activePlan.width;
                 facts.sceneThisFrame = srPromotionFrame == frame;
                 facts.idleFrames = idleSceneFrames;
-                facts.blocked = idlePromotionBlocked;
+                if (idlePromotionPause.active && !idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch)) {
+                    idlePromotionPause.active = false;
+                    LOG_INFO("renderer: interface promotion resumed in frame {} (plan epoch {})", frame, activePlan.geometryEpoch);
+                }
+                facts.blocked = idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch);
                 facts.promotionBusy = sceneCopyPromotion.activeMapping || sceneCopyPromotionFrame == frame || Gpu().srPrefixClosed;
                 facts.atOutputSize = color->resolutionSize.width == activePlan.output.width &&
                     color->resolutionSize.height == activePlan.output.height;
@@ -3658,10 +3663,10 @@ namespace gpu::renderer
                 if (it == renderTargets.end() || it->second.get() != promotion.active) return fail();
                 // An interface promotion undone in its own frame (a depth draw on
                 // the final target): leave the next 60 frames at the render size.
-                if (promotion.idleUi && promotion.frame == frame) {
-                    if (!idlePromotionBlocked)
-                        LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused until the next SGSR2 frame", frame, reason);
-                    idlePromotionBlocked = true;
+                if (promotion.idleUi && promotion.frame == frame && std::strcmp(reason, "plan_epoch") != 0) {
+                    if (!idlePromotionPause.active)
+                        LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused until the next SGSR2 frame or plan change", frame, reason);
+                    idlePromotionPause = {true, activePlan.geometryEpoch};
                 }
                 // The low-resolution target goes back into the map owing its
                 // pixels; the resample is drawn only when something needs them.
@@ -3702,7 +3707,9 @@ namespace gpu::renderer
                 if (!scene_copy_promotion::MustRestore(key == promotion.key, promotion.frame == frame,
                         promotion.epoch == activePlan.geometryEpoch, needsDepthStencil,
                         height, promotion.active->guestHeight)) return true;
-                return RestoreSceneCopyDestination("target_depth_extent_or_epoch");
+                // A plan change is not a reason to stop promoting (see
+                // RestoreSceneCopyDestination); name it apart.
+                return RestoreSceneCopyDestination(promotion.epoch != activePlan.geometryEpoch ? "plan_epoch" : "target_depth_extent_or_epoch");
             }
 
 #if defined(LO_GPU_PLUME)

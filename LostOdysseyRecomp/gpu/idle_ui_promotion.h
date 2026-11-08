@@ -16,7 +16,7 @@ struct DrawFacts
     bool sgsr2Upscaling = false;   // SGSR2 plan whose input is smaller than the output
     bool sceneThisFrame = false;   // SGSR2 already upscaled a scene in this frame
     uint32_t idleFrames = 0;       // presented frames in a row that SGSR2 did not upscale
-    bool blocked = false;          // a promotion was undone in its frame; cleared by the next SGSR2 frame
+    bool blocked = false;          // a promotion was undone in its frame (Paused): until the next SGSR2 frame or plan epoch
     bool promotionBusy = false;    // a promotion is active or was already made this frame
     bool atOutputSize = false;     // the target already has the output size
     bool backgroundOnly = false;   // the draw samples only resolved surfaces, or nothing
@@ -27,6 +27,22 @@ inline bool Wanted(const DrawFacts& f)
     return f.enabled && f.finalTargetKnown && f.finalTarget && !f.depth && f.sgsr2Upscaling &&
         !f.sceneThisFrame && f.idleFrames > 0 && !f.blocked && !f.promotionBusy && !f.atOutputSize &&
         !f.backgroundOnly;
+}
+
+// A promotion undone in its own frame pauses promotions until SGSR2 runs
+// again, but only within the plan geometry epoch it happened in: an undo
+// caused by the plan changing under it (the boot title screen switches plans
+// in its first frames) must not keep a screen without a 3D scene, like the
+// title, at the render size for good.
+struct Pause
+{
+    bool active = false;
+    uint64_t epoch = 0;
+};
+
+inline bool Paused(const Pause& pause, uint64_t currentEpoch)
+{
+    return pause.active && pause.epoch == currentEpoch;
 }
 
 inline uint32_t NextIdleFrames(uint32_t previous, bool sceneFrame)
