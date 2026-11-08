@@ -40,3 +40,14 @@ takes a mutex per attachment and per barrier, only on profiled lists.
 Tests: `tools/tests/pass_content_census_test.cpp` records three passes on a
 real Vulkan device (lavapipe in CI, `SGSR2 Vulkan readbacks` workflow) and
 checks each bucket; `pass_profile_test.cpp` checks the log line.
+
+### Why passes end
+
+The same line gains `pass_ends_per_frame:`: how many passes ended at a
+framebuffer change, a barrier on one of the pass's attachments
+(`barrier_attachment`), a barrier on some other texture (`barrier_other`) or a
+buffer (`barrier_buffer`), a copy, a resolve, a dispatch, external commands, a
+query reset or the end of the list. On a tiled GPU every pass that ends and
+later resumes on the same target stores and reloads it; `barrier_other` and
+`barrier_buffer` breaks are candidates for moving the barrier before the pass
+(roadmap 1.4).

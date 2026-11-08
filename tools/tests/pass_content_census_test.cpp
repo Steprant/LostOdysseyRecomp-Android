@@ -48,6 +48,9 @@ int main()
     commands->setFramebuffer(freshFb.get());
     const RenderRect corner{0, 0, 8, 8};
     commands->clearColor(0, RenderColor(1, 0, 0, 1), &corner, 1);
+    // Sampling a texture the pass does not render to still ends it, and
+    // reads the colour pass 2 stored.
+    commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(color.get(), RenderTextureLayout::SHADER_READ));
     commands->setFramebuffer(nullptr);
     commands->end();
     const RenderCommandList* lists[] = {commands.get()};
@@ -65,7 +68,7 @@ int main()
     int failures = 0;
     auto expect = [&](bool ok, const char* what) { if (!ok) { std::printf("FAIL: %s\n", what); ++failures; } };
     expect(profile.passes.size() == 3, "three passes");
-    expect(f.storeRead[0] == bytes, "colour store read by the sampling barrier");
+    expect(f.storeRead[0] == 2 * bytes, "both colour stores read by sampling barriers");
     expect(f.loadValid[0] == bytes, "pass 2 loads written colour");
     expect(f.storeLoaded[0] == 0, "the read already consumed that store");
     expect(f.storeCleared[1] == bytes, "depth store cleared unread");
@@ -74,6 +77,9 @@ int main()
     expect(profile.flowEvents.size() == 1 && profile.flowEvents[0].depth && profile.flowEvents[0].width == size &&
         profile.flowEvents[0].colors == 1 && profile.flowEvents[0].bucket == RenderPassProfile::FlowBucket::Cleared,
         "the cleared depth store is charged to the 64x64 colour+depth pass");
+    using End = RenderPassProfile::PassEnd;
+    expect(profile.passEnds[size_t(End::Framebuffer)] == 2, "passes 1 and 2 end at the framebuffer change");
+    expect(profile.passEnds[size_t(End::BarrierOther)] == 1, "pass 3 ends at a barrier on another texture");
     if (failures) return 1;
     std::puts("PASS: content census buckets (read, loaded, cleared unread, undefined load)");
     return 0;

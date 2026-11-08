@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
@@ -89,6 +90,7 @@ public:
     uint64_t listNs = 0, passNs = 0;
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
     plume::RenderPassProfile::ContentFlow flow;
+    uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
     // Stores loaded by the next pass ([0]) or cleared unread ([1]), by the
     // pass that stored them and the attachment kind (colour, depth).
     std::map<std::pair<TargetKey, bool>, uint64_t> flowLoaded, flowCleared;
@@ -110,6 +112,7 @@ public:
             flow.loadValid[k] += profile.flow.loadValid[k];
             flow.loadUndefined[k] += profile.flow.loadUndefined[k];
         }
+        for (size_t i = 0; i < std::size(passEnds); ++i) passEnds[i] += profile.passEnds[i];
         for (const auto& event : profile.flowEvents)
         {
             const auto key = std::make_pair(TargetKey{event.width, event.height, event.colors, event.passDepth}, event.depth);
@@ -168,6 +171,17 @@ public:
         };
         top("stored_then_cleared", flowCleared);
         top("stored_then_loaded", flowLoaded);
+        static constexpr const char* endNames[] = {"framebuffer", "barrier_attachment", "barrier_other", "barrier_buffer",
+            "copy", "resolve", "dispatch", "external", "query_reset", "list_end", "other"};
+        static_assert(std::size(endNames) == size_t(plume::RenderPassProfile::PassEnd::Count));
+        line += " pass_ends_per_frame:";
+        for (size_t i = 0; i < std::size(endNames); ++i)
+        {
+            if (!passEnds[i]) continue;
+            std::snprintf(buffer, sizeof(buffer), " %s=%.1f", endNames[i], double(passEnds[i]) / f);
+            line += buffer;
+        }
+        line += ";";
         return line;
     }
 
