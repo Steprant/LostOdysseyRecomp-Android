@@ -10,15 +10,15 @@ on:
         required: true
         type: string
   push:
-    branches: ['integration/v1.6-candidate-*']
+    branches: ['integration/v1.7-optimization-*']
     paths: ['.github/workflows/steprant-draft-release.yml']
 permissions:
   contents: write
   actions: read
 env:
-  RUN_ID: ${{ inputs.run_id || '42420560649' }}
-  TAG: v1.6-steprant.20261106
-  TITLE: Lost Odyssey Steprant Android 1.6 (test build)
+  RUN_ID: ${{ inputs.run_id || '42462211616' }}
+  TAG: v1.7-steprant.20261108
+  TITLE: Lost Odyssey Steprant Android 1.7 (optimization test build)
 jobs:
   draft:
     runs-on: ubuntu-22.04
@@ -51,8 +51,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          src=out/apk/LostOdyssey-Steprant-v1.6.apk
-          apk=out/apk/LostOdyssey-Steprant-v1.6-20261106.apk
+          src=out/apk/LostOdyssey-Steprant-v1.7.apk
+          apk=out/apk/LostOdyssey-Steprant-v1.7-20261108.apk
           mv "$src" "$apk"
           sha256sum "$apk"
           commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_sha)
@@ -64,6 +64,6 @@ jobs:
             gh release upload "$TAG" "$apk" --clobber -R "$GITHUB_REPOSITORY"
           else
             gh release create "$TAG" "$apk" --draft --target "$commit" --title "$TITLE" \
-              --notes-file docs/notes/steprant-1.6-draft-release.md -R "$GITHUB_REPOSITORY"
+              --notes-file docs/notes/steprant-1.7-draft-release.md -R "$GITHUB_REPOSITORY"
           fi
           gh api "repos/$GITHUB_REPOSITORY/releases" -q ".[] | select(.tag_name == \"$TAG\") | {draft, html_url}"
