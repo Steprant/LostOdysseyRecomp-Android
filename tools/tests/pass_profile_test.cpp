@@ -27,6 +27,7 @@ int main()
     cleared.bucket = plume::RenderPassProfile::FlowBucket::Cleared; cleared.bytes = 1u << 20;
     scene.flowEvents = {cleared};
     scene.passEnds[size_t(plume::RenderPassProfile::PassEnd::BarrierOther)] = 3;
+    scene.barrierEndLayouts[1][3][2] = 6; // other texture: color_write > shader_read
     scene.pipelineBinds = 40; scene.pipelineBindsSkipped = 10; scene.descriptorBinds = 80;
 
     Summary summary;
@@ -47,6 +48,7 @@ int main()
     assert(line.find("depth store_read=0.0 store_loaded=0.0 store_cleared=1.0") != std::string::npos);
     assert(line.find("stored_then_cleared: 1024x1024 -d depth=1.0;") != std::string::npos);
     assert(line.find("pass_ends_per_frame: barrier_other=3.0;") != std::string::npos);
+    assert(line.find("barrier_ends_per_frame: other:color_write>shader_read=6.0;") != std::string::npos);
     assert(line.find("state_per_frame: pipeline_binds=40.0 pipeline_skipped=10.0 descriptor_binds=80.0") != std::string::npos);
 
     Reporter reporter;

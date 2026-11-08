@@ -92,6 +92,7 @@ public:
     uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
+    uint64_t barrierEndLayouts[2][plume::RenderPassProfile::LayoutCount][plume::RenderPassProfile::LayoutCount] = {};
     // Stores loaded by the next pass ([0]) or cleared unread ([1]), by the
     // pass that stored them and the attachment kind (colour, depth).
     std::map<std::pair<TargetKey, bool>, uint64_t> flowLoaded, flowCleared;
@@ -120,6 +121,10 @@ public:
             flow.loadUndefined[k] += profile.flow.loadUndefined[k];
         }
         for (size_t i = 0; i < std::size(passEnds); ++i) passEnds[i] += profile.passEnds[i];
+        for (uint32_t k = 0; k < 2; ++k)
+            for (uint32_t a = 0; a < plume::RenderPassProfile::LayoutCount; ++a)
+                for (uint32_t b = 0; b < plume::RenderPassProfile::LayoutCount; ++b)
+                    barrierEndLayouts[k][a][b] += profile.barrierEndLayouts[k][a][b];
         for (const auto& event : profile.flowEvents)
         {
             const auto key = std::make_pair(TargetKey{event.width, event.height, event.colors, event.passDepth}, event.depth);
@@ -189,6 +194,26 @@ public:
             line += buffer;
         }
         line += ";";
+        // The transitions behind barrier_attachment ("own") and barrier_other.
+        {
+            static constexpr const char* layoutNames[] = {"unknown", "general", "shader_read", "color_write", "depth_write",
+                "depth_read", "copy_source", "copy_dest", "resolve_source", "resolve_dest", "present"};
+            static_assert(std::size(layoutNames) == plume::RenderPassProfile::LayoutCount);
+            std::vector<std::tuple<uint64_t, uint32_t, uint32_t, uint32_t>> transitions;
+            for (uint32_t k = 0; k < 2; ++k)
+                for (uint32_t a = 0; a < plume::RenderPassProfile::LayoutCount; ++a)
+                    for (uint32_t b = 0; b < plume::RenderPassProfile::LayoutCount; ++b)
+                        if (barrierEndLayouts[k][a][b]) transitions.emplace_back(barrierEndLayouts[k][a][b], k, a, b);
+            std::sort(transitions.begin(), transitions.end(), [](const auto& x, const auto& y) { return std::get<0>(x) > std::get<0>(y); });
+            line += " barrier_ends_per_frame:";
+            for (size_t i = 0; i < transitions.size() && i < 8; ++i)
+            {
+                const auto& [count, k, a, b] = transitions[i];
+                std::snprintf(buffer, sizeof(buffer), " %s:%s>%s=%.1f", k ? "other" : "own", layoutNames[a], layoutNames[b], double(count) / f);
+                line += buffer;
+            }
+            line += ";";
+        }
         std::snprintf(buffer, sizeof(buffer),
             " state_per_frame: pipeline_binds=%.1f pipeline_skipped=%.1f descriptor_binds=%.1f push_constants=%.1f vertex_binds=%.1f index_binds=%.1f;",
             double(pipelineBinds) / f, double(pipelineBindsSkipped) / f, double(descriptorBinds) / f,

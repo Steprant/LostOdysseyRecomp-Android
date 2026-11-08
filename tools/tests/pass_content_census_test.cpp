@@ -100,6 +100,8 @@ int main()
     expect(profile.passEnds[size_t(End::Framebuffer)] == 2, "passes 1 and 2 end at the framebuffer change");
     expect(profile.passEnds[size_t(End::RenderArea)] == (area ? 1u : 0u), "pass 3 ends when a clear leaves its area");
     expect(profile.passEnds[size_t(End::BarrierOther)] == 1, "the last pass ends at a barrier on another texture");
+    expect(profile.barrierEndLayouts[1][uint32_t(RenderTextureLayout::COLOR_WRITE)][uint32_t(RenderTextureLayout::SHADER_READ)] == 1,
+        "that barrier is recorded as another texture going from colour write to shader read");
     if (failures) return 1;
     std::puts("PASS: content census buckets (read, loaded, cleared unread, undefined load)");
     return 0;

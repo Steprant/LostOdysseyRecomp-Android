@@ -169,3 +169,8 @@ A/B: Tester row "Render passes limited to the scissor" (`render_area`,
 census follow the render area; `pass_ends_per_frame` gains `render_area`.
 Lavapipe test: a corner clear fits the pass to the corner, a clear of the
 opposite corner restarts it over both (both settings tested).
+
+The `gpu passes` line also names the layout transitions behind the barriers
+that end passes (`barrier_ends_per_frame:`, `own:` for the pass's own
+attachments, `other:` for other textures), to decide which barriers can move
+before their pass.
