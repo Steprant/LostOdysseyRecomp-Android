@@ -4957,9 +4957,8 @@ namespace gpu::video
 #endif
     }
 
-    // Wait for swapchain images since the last TakeAcquireWait (P6 pacing).
+    // Wait for swapchain images since the last TakeAcquireWaitMs (P6 pacing).
     static std::atomic<uint64_t> g_lastAcquireWaitUs{0};
-    double TakeAcquireWaitMs() { return double(g_lastAcquireWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0; }
 
     static bool AcquirePresentTexture(uint32_t* index)
     {
@@ -5211,6 +5210,7 @@ namespace gpu::video
     } // namespace
 
     uint64_t CompletedPresentCount() { return g_completedPresentCount; }
+    double TakeAcquireWaitMs() { return double(g_lastAcquireWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0; }
     presentation_progress::Snapshot PresentationProgress() { return g_presentProgress.Read(); }
     void SetCalibrationGameMenuOpen(bool open)
     {
