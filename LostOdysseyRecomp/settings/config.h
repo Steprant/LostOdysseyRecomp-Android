@@ -4,6 +4,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include "os/platform.h"
 #include "gpu/aspect_ratio.h"
 #include "gpu/backend_selection.h"
 #include "gpu/upscaling_plan.h"
@@ -94,7 +95,13 @@ struct Config
     // Shape of the game image; a fixed one is centred in the window with black
     // bars. Applied live. Android always uses Auto.
     gpu::aspect_ratio::Mode aspectRatio = gpu::aspect_ratio::Mode::Auto;
+#if LO_PLATFORM_ANDROID
+    // Steprant 1.8 Android defaults (the settings Steprant plays with on the
+    // Xiaomi 14): 900p rendering upscaled by SGSR2 Quality with SMAA.
+    int internalResolution = 900;
+#else
     int internalResolution = 720; // Factory default is the Xbox 360's native 720p. 0 follows output (up to 4K);
+#endif
                                   // 720/1080/1440/2160 select scene height;
                                   // InternalResolutionNative renders at the drawable's pixel size.
     WindowMode windowMode = WindowMode::Windowed;
@@ -110,8 +117,13 @@ struct Config
     // leaves window placement to the system. Applied when saved.
     std::string displayName;
     uint32_t displayIndex = 0;
+#if LO_PLATFORM_ANDROID
+    uint32_t antialiasing = 3; // With upscaler Sgsr2 below: the Anti-aliasing → SGSR2 choice.
+    uint32_t shadowResolution = 2;
+#else
     uint32_t antialiasing = 0; // 0 Off, 1 FXAA, 2 SMAA, 3 experimental camera-based TAA.
     uint32_t shadowResolution = 1; // Shadow map width and height multiplier: 1/2/4.
+#endif
     uint32_t ambientOcclusion = 0; // 0 Off, 1 SSAO, 2 GTAO.
     uint32_t frameRate = 30;
     uint32_t loadingTransitions = 2; // Loading pace: 0 Original, 2 Fast (default). Transition effects keep their normal speed.
@@ -144,7 +156,11 @@ struct Config
     // View-frustum culling, 0..200 in steps of 10: 100 retail, lower draws
     // objects at the screen edges longer, higher hides them sooner. Applied live.
     uint32_t cullingPercent = 100;
+#if LO_PLATFORM_ANDROID
+    gpu::upscaling::Upscaler upscaler = gpu::upscaling::Upscaler::Sgsr2; // SGSR2 Quality (dlssQuality below)
+#else
     gpu::upscaling::Upscaler upscaler = gpu::upscaling::Upscaler::Off;
+#endif
     gpu::upscaling::DlssQuality dlssQuality = gpu::upscaling::DlssQuality::Quality;
     uint32_t dlssModel = 0; // DLSS SR model (render preset): 0 M, 1 L. Applied after saving.
     gpu::upscaling::FsrQuality fsrQuality = gpu::upscaling::FsrQuality::Quality;
