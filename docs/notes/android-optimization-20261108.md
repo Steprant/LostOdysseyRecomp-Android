@@ -184,3 +184,13 @@ The runtime now calls it at startup (off by default), and the Tester row
 "CPU performance hints (ADPF)" (`performance_hints`, `LO_ADPF=1`) turns it on,
 for an A/B in the city where the 8 November session showed the prime core
 held at 902 MHz during the stutter.
+
+### 1.4a on the phone: the shadow map regressed, fixed
+
+The 11:47 session (render area on) showed the shadow map (1760x1792 depth)
+going from ~4 to 46 passes a frame and 471 MB of loads: its draws do not
+stay inside the first scissor, and growing the area step by step restarted
+the pass and reloaded the union each time. A pass that has to grow now
+restarts once over the whole framebuffer, and that framebuffer's later
+passes begin whole (`renderAreaGrew`): at worst one extra restart per
+framebuffer, the gain kept where scissors are stable.

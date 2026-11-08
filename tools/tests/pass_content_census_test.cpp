@@ -52,7 +52,7 @@ int main()
     commands->clearColor(0, RenderColor(1, 0, 0, 1), &corner, 1);
     // With render areas (LO_VK_RENDER_AREA, default on) pass 3 covers only
     // that corner; a clear of the opposite corner ends it and pass 4 covers
-    // both, loading what pass 3 stored.
+    // the whole framebuffer, loading what pass 3 stored.
     const RenderRect farCorner{int32_t(size) - 8, int32_t(size) - 8, int32_t(size), int32_t(size)};
     commands->clearColor(0, RenderColor(0, 1, 0, 1), &farCorner, 1);
     // Sampling a texture the pass does not render to still ends it, and
