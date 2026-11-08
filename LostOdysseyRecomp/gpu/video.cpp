@@ -5211,6 +5211,7 @@ namespace gpu::video
 
     uint64_t CompletedPresentCount() { return g_completedPresentCount; }
     double TakeAcquireWaitMs() { return double(g_lastAcquireWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0; }
+    const char* TakeSlowestPresentStage(double& milliseconds) { return presentation_progress::Name(g_presentProgress.TakeSlowestStage(milliseconds)); }
     presentation_progress::Snapshot PresentationProgress() { return g_presentProgress.Read(); }
     void SetCalibrationGameMenuOpen(bool open)
     {

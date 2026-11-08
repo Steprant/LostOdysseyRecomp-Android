@@ -1142,6 +1142,7 @@ namespace gpu
                     const char* value = getenv("LO_DISPLAY_PACED");
                     return !value || std::strcmp(value, "0") != 0;
                 }();
+                pacing.presentSlowestStage = video::TakeSlowestPresentStage(pacing.presentSlowestStageMs);
                 const double acquireMs = video::TakeAcquireWaitMs();
                 if (displayPaced && acquireMs > 4.0)
                     pacer.Reanchor(std::chrono::steady_clock::now());

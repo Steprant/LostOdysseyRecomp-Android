@@ -66,9 +66,9 @@ static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double
     const uint32_t n = reported++;
     if (n >= 300 && n % 10 != 0) return;
     LOG_INFO("slow frame swap={} total={:.1f}ms between={:.1f}ms cp_idle={:.1f}ms cp_busy={:.1f}ms gpu_fence_wait={:.1f}ms "
-        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms previous_post={:.1f}ms n={}",
+        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms present_slowest={}:{:.1f}ms previous_post={:.1f}ms n={}",
         swap, total, pacing.betweenMs, idleMs, std::max(0.0, pacing.betweenMs - idleMs), fenceMs, regMemMs,
-        flushMs, waitMs, presentMs, acquireMs, pacing.previousSwapPostMs, n + 1);
+        flushMs, waitMs, presentMs, acquireMs, pacing.presentSlowestStage, pacing.presentSlowestStageMs, pacing.previousSwapPostMs, n + 1);
 }
 void EngineTick(double delta)
 {

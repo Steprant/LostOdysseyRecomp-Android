@@ -169,6 +169,8 @@ namespace gpu::video
     // Milliseconds the presenting thread waited for swapchain images since the
     // previous call (the display holding the host back; P6 pacing).
     double TakeAcquireWaitMs();
+    // The presentation stage that took longest since the previous call.
+    const char* TakeSlowestPresentStage(double& milliseconds);
 
     // Writes the last untiled frontbuffer as a binary PPM (for offline inspection).
     bool SaveScreenshot(const char* path);

@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gpu/presentation_progress.h>
 #include <cstdio>
 #include <cstdlib>
@@ -63,4 +64,22 @@ int main()
     state.Submitted(1);
     Require(state.Read().completed == 0 && state.Read().pendingFence == 1 &&
         state.Read().image == progress::NoImage, "replacement device starts a fresh submission lifetime");
+    {
+        // Slow-frame breakdown: the stage that took longest since the last take.
+        progress::Progress timed;
+        double ms = 0;
+        timed.TakeSlowestStage(ms);
+        {
+            progress::Progress::Scope present(timed, progress::Stage::Present);
+            {
+                progress::Progress::Scope record(timed, progress::Stage::Record);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        const auto slowest = timed.TakeSlowestStage(ms);
+        Require(slowest == progress::Stage::Record && ms >= 19.0, "record is the slowest stage");
+        timed.TakeSlowestStage(ms);
+        Require(ms == 0.0, "taking resets the stage times");
+    }
 }

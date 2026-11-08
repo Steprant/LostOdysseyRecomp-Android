@@ -266,3 +266,29 @@ reports `deferred_copies_per_frame` (deferred, run early).
 Lavapipe test (`tools/tests/deferred_copy_test.cpp`, both settings): a
 resolve followed by a clear over the copied rectangle still copies the
 pre-clear colour, and a resolve with nothing after it keeps the pass whole.
+
+## Phone results, 8 November 13:20 (city) and 13:25 (field), APK d
+
+Same maps and settings (900p, SGSR1) as 11:56 and 11:47:
+
+| | 11:56 city | 13:20 city | 11:47 field | 13:25 field |
+|---|---|---|---|---|
+| frames over 50 ms per minute | 18.2 | 6.2 | 20.7 | 10.0 |
+| frame time p99 | 48.5 ms | 37.5 ms | 51.2 ms | 39.0 ms |
+| passes ended by an own-attachment barrier | 14.7 | 7.1 | 15.0 | 8.6 |
+| copies deferred / run early per frame | – | 8.5 / 6.6 | – | 7.0 / 5.0 |
+
+Slow frames are about a third as frequent and the 99th percentile is back
+under 40 ms. The resolve copies now wait in the pass, but three in four run
+early, so about two pass splits a frame are saved. GPU occupancy did not
+move measurably (the sessions differ in content: 279 and 1,404 median draws
+against 263 and 890).
+
+`present_acquire` stayed at 0: the swapchain acquire is not where the
+present waits, so the pacer re-anchor never triggers; the remaining slow
+frames split between the guest (command processor idle 70-90 ms), a GPU
+fence inside the present (92-95 ms at scene changes) and a present stage
+not yet identified (38-54 ms). The slow-frame line now names the slowest
+presentation stage (`present_slowest`), and the pass line why deferred
+copies ran early (`early_draw_over`, `early_sampled`, `early_draw_into`,
+`early_clear`, `early_other`).

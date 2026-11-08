@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 namespace gpu::presentation_progress {
@@ -55,12 +56,35 @@ public:
         ~Scope() { Set(previous_); }
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
-        void Set(Stage stage) { progress_.stage_.store(stage, std::memory_order_relaxed); }
+        void Set(Stage stage) { progress_.Enter(stage); }
     private:
         Progress& progress_;
         Stage previous_;
     };
 
+    // Wall time spent in each stage since the last TakeStageTimes (written
+    // by the command thread that sets the stages; slow-frame breakdown).
+    static constexpr uint32_t StageCount = uint32_t(Stage::Capture) + 1;
+    void Enter(Stage stage) {
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const Stage previous = stage_.load(std::memory_order_relaxed);
+        if (enteredNs_ && uint32_t(previous) < StageCount)
+            stageNs_[uint32_t(previous)].fetch_add(uint64_t(now - enteredNs_), std::memory_order_relaxed);
+        enteredNs_ = now;
+        stage_.store(stage, std::memory_order_relaxed);
+    }
+    // The stage other than Idle that took longest, and its milliseconds.
+    Stage TakeSlowestStage(double& milliseconds) {
+        Stage slowest = Stage::Idle;
+        uint64_t most = 0;
+        for (uint32_t i = 0; i < StageCount; ++i) {
+            const uint64_t ns = stageNs_[i].exchange(0, std::memory_order_relaxed);
+            if (Stage(i) != Stage::Idle && ns > most) { most = ns; slowest = Stage(i); }
+        }
+        milliseconds = double(most) / 1e6;
+        return slowest;
+    }
     void Policy(bool loading, bool vsync) {
         policy_.store(uint32_t(loading) | (uint32_t(vsync) << 1), std::memory_order_relaxed);
     }
@@ -93,5 +117,7 @@ private:
     std::atomic<Stage> stage_{Stage::Idle};
     std::atomic<uint64_t> submitted_{0}, completed_{0}, swapchainGeneration_{0};
     std::atomic<uint32_t> image_{NoImage}, policy_{0};
+    std::atomic<uint64_t> stageNs_[StageCount] = {};
+    int64_t enteredNs_ = 0;
 };
 } // namespace gpu::presentation_progress

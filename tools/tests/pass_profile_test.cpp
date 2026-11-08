@@ -50,7 +50,7 @@ int main()
     assert(line.find("stored_then_cleared: 1024x1024 -d depth=1.0;") != std::string::npos);
     assert(line.find("pass_ends_per_frame: barrier_other=3.0;") != std::string::npos);
     assert(line.find("barrier_ends_per_frame: other:color_write>shader_read=6.0;") != std::string::npos);
-    assert(line.find("deferred_copies_per_frame: deferred=5.0 run_early=2.0;") != std::string::npos);
+    assert(line.find("deferred_copies_per_frame: deferred=5.0 run_early=2.0 early_draw_over=0.0") != std::string::npos);
     assert(line.find("state_per_frame: pipeline_binds=40.0 pipeline_skipped=10.0 descriptor_binds=80.0") != std::string::npos);
 
     Reporter reporter;
