@@ -237,3 +237,32 @@ variables (`LO_VK_KEEP_VS_OUTPUTS`, `LO_ALPHATEST_SPEC`, `LO_KEEP_DEPTH_ONLY_PS`
 `LO_SGSR2_NATIVE_MENUS`, `TU_DEBUG`, `LO_VK_DISCARD_UNDEFINED`,
 `LO_VK_RENDER_AREA`, `LO_ADPF`, `LO_DISPLAY_PACED`) still override them on
 development builds.
+
+## 1.4c Resolve copies that wait for the pass to end
+
+The phone census counted ~9.5 passes a frame ended by an EDRAM resolve: the
+renderer moves the active pass's colour attachment to COPY_SOURCE, copies a
+rectangle into the resolve texture and moves the attachment back, so the
+pass stores everything and the next one reloads colour and depth.
+
+Plume now defers that copy. While a pass is active, the transitions of a
+colour attachment to COPY_SOURCE (and back to COLOR_WRITE) and of a texture
+outside the pass to COPY_DEST (and on to SHADER_READ) are recorded as the
+layouts the caller asked for, and a copy between such a pair is queued. The
+pass goes on. The queued copies run, with the asked-for layouts, as soon as:
+
+- the pass ends for any reason (framebuffer change, any other barrier, copy,
+  dispatch, external commands, end of the list) — at no extra cost;
+- a draw's scissor overlaps a queued copy's source rectangle, or the draw has
+  no single scissor;
+- a bound descriptor set samples a texture involved;
+- a clear is recorded inside the pass, or an occlusion query begins while
+  any of the above holds.
+
+So the copy always reads exactly what it would have read at once; only the
+moment changes. `LO_VK_DEFER_COPY=0` copies at once. The `gpu passes` line
+reports `deferred_copies_per_frame` (deferred, run early).
+
+Lavapipe test (`tools/tests/deferred_copy_test.cpp`, both settings): a
+resolve followed by a clear over the copied rectangle still copies the
+pre-clear colour, and a resolve with nothing after it keeps the pass whole.

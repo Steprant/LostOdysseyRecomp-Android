@@ -90,6 +90,7 @@ public:
     uint64_t listNs = 0, passNs = 0;
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
     uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
+    uint64_t copiesDeferred = 0, deferredFlushedEarly = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
     uint64_t barrierEndLayouts[2][plume::RenderPassProfile::LayoutCount][plume::RenderPassProfile::LayoutCount] = {};
@@ -112,6 +113,8 @@ public:
         pushConstants += profile.pushConstants;
         vertexBinds += profile.vertexBinds;
         indexBinds += profile.indexBinds;
+        copiesDeferred += profile.copiesDeferred;
+        deferredFlushedEarly += profile.deferredFlushedEarly;
         for (int k = 0; k < 2; ++k)
         {
             flow.storeRead[k] += profile.flow.storeRead[k];
@@ -218,6 +221,9 @@ public:
             " state_per_frame: pipeline_binds=%.1f pipeline_skipped=%.1f descriptor_binds=%.1f push_constants=%.1f vertex_binds=%.1f index_binds=%.1f;",
             double(pipelineBinds) / f, double(pipelineBindsSkipped) / f, double(descriptorBinds) / f,
             double(pushConstants) / f, double(vertexBinds) / f, double(indexBinds) / f);
+        line += buffer;
+        std::snprintf(buffer, sizeof(buffer), " deferred_copies_per_frame: deferred=%.1f run_early=%.1f;",
+            double(copiesDeferred) / f, double(deferredFlushedEarly) / f);
         line += buffer;
         return line;
     }

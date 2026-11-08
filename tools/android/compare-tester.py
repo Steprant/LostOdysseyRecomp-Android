@@ -93,6 +93,10 @@ def pass_fields(text):
     if barrier_ends:
         for key, value in re.findall(r"(\w+:\w+>\w+)=([0-9.]+)", barrier_ends.group(1)):
             fields[f"barrier {key}"] = float(value)
+    deferred = re.search(r"deferred_copies_per_frame:(.*?);", text)
+    if deferred:
+        for key, value in re.findall(r"(\w+)=([0-9.]+)", deferred.group(1)):
+            fields[f"copies_{key}"] = float(value)
     ends = re.search(r"pass_ends_per_frame:(.*?);", text)
     if ends:
         for key, value in re.findall(r"(\w+)=([0-9.]+)", ends.group(1)):
