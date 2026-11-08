@@ -14,6 +14,9 @@ Optimization only: no new features and no intended change to the image.
 - The boot title screen is promoted to the output size with SGSR2 again; SSAO no longer draws stripes on the sky and distant terrain.
 - Diagnostics: slow frames (over 50 ms) are broken down in the log while the Tester records; the GPU profile names the transitions of barriers that end passes; the existing CPU performance hints (ADPF) can be turned on from the Tester.
 - Android build fetches nlohmann/json by git tag (the release archive CDN was failing).
+- Frame pacing follows the display when the present blocks (the city stutter).
+- The render area grows at most once per framebuffer (the shadow map regressed with step-by-step growth).
+- The Tester's A/B rows are removed; the confirmed behaviour is built in.
 
 Details: `docs/notes/android-optimization-20261108.md`.
 
