@@ -14,6 +14,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <future>
 #include <optional>
 
 namespace ui::achievement_overlay {
@@ -63,13 +66,13 @@ std::optional<Toast> gToast;
 Image gImage;
 uint64_t gRevision = 0;
 
-void Prepare(Toast& toast, float scale) {
+// Text and content pointers for `scale`; thread-safe for an immutable asset set
+// (the asynchronous preparation runs it off the presentation thread).
+void Rasterize(Toast& toast, float scale, const menu_assets::Assets* assets) {
     toast.scale = scale;
-    const auto assets = menu_assets::Cached(FileSystem::GetGameRoot(), UiLanguageFor(settings::GameLanguage()));
-    toast.title = DrawText(assets.get(), achievements::UnlockedHeading(), 21.0 * scale);
-    toast.detail = DrawText(assets.get(), fmt::format("{}G - {}", toast.info->score, toast.info->name), 16.0 * scale);
+    toast.title = DrawText(assets, achievements::UnlockedHeading(), 21.0 * scale);
+    toast.detail = DrawText(assets, fmt::format("{}G - {}", toast.info->score, toast.info->name), 16.0 * scale);
     auto& c = toast.content;
-    c.revision = ++gRevision;
     c.icon = toast.icon.pixels.empty() ? nullptr : toast.icon.pixels.data();
     c.iconWidth = toast.icon.width;
     c.iconHeight = toast.icon.height;
@@ -80,12 +83,41 @@ void Prepare(Toast& toast, float scale) {
     c.detailWidth = toast.detail.width;
     c.detailHeight = toast.detail.height;
 }
+void Prepare(Toast& toast, float scale) {
+    const auto assets = menu_assets::Cached(FileSystem::GetGameRoot(), UiLanguageFor(settings::GameLanguage()));
+    Rasterize(toast, scale, assets.get());
+    toast.content.revision = ++gRevision;
+}
+
+// Steprant 2.0 WP3.4: a notification used to cost one frame of up to 88 ms
+// on the presentation thread (first icon decode of the achievement list, text
+// raster, chime). The icon, the text and the chime are now prepared on a
+// worker; the toast appears when they are ready, a few frames later.
+// LO_UI_PREWARM=0 keeps the synchronous preparation.
+bool AsyncPreparation() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("LO_UI_PREWARM");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    return enabled;
+}
+std::future<Toast> gPreparing;
 }
 
 const Image* Update(uint32_t outputWidth, uint32_t outputHeight) {
     if (!outputWidth || !outputHeight) return nullptr;
     const auto now = std::chrono::steady_clock::now();
-    if (!gToast) {
+    const float scaleNow = std::max(0.5f, std::min(outputWidth / 1280.0f, outputHeight / 720.0f));
+    if (!gToast && gPreparing.valid()) {
+        if (gPreparing.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
+        Toast toast = gPreparing.get();
+        toast.content.revision = ++gRevision;
+        toast.last = now;
+        LOG_INFO("achievements: toast for {} ({}x{} icon, prepared off the presentation thread)",
+            toast.id, toast.icon.width, toast.icon.height);
+        gToast = std::move(toast);
+        if (settings::GetConfig().achievementSound) apu::PlayUiSound(Chime());
+    } else if (!gToast) {
         const auto id = achievements::NextAnnouncement();
         if (!id) return nullptr;
         const auto config = settings::GetConfig();
@@ -94,6 +126,18 @@ const Image* Update(uint32_t outputWidth, uint32_t outputHeight) {
         toast.id = *id;
         toast.info = achievements::Find(*id);
         if (!toast.info) return nullptr;
+        if (AsyncPreparation()) {
+            // The asset set is immutable and kept alive by the worker's copy.
+            auto assets = menu_assets::Cached(FileSystem::GetGameRoot(), UiLanguageFor(settings::GameLanguage()));
+            gPreparing = std::async(std::launch::async, [toast = std::move(toast), assets, scaleNow]() mutable {
+                auto icon = achievements::IconOf(toast.id);
+                toast.icon = {std::move(icon.pixels), icon.width, icon.height};
+                Rasterize(toast, scaleNow, assets.get());
+                (void)Chime(); // first use loads or synthesizes it here
+                return std::move(toast);
+            });
+            return nullptr;
+        }
         auto icon = achievements::IconOf(toast.id);
         toast.icon = {std::move(icon.pixels), icon.width, icon.height};
         toast.last = now;
@@ -105,7 +149,7 @@ const Image* Update(uint32_t outputWidth, uint32_t outputHeight) {
         gToast->clock += std::min(std::chrono::duration<double>(now - gToast->last).count(), 0.05);
         gToast->last = now;
     }
-    const float scale = std::max(0.5f, std::min(outputWidth / 1280.0f, outputHeight / 720.0f));
+    const float scale = scaleNow;
     if (scale != gToast->scale) Prepare(*gToast, scale);
     if (gToast->clock >= ui::achievement_toast::Duration()) {
         gToast.reset();

@@ -680,6 +680,7 @@ namespace gpu
     {
         os::SetCurrentThreadName("GPU CmdProc");
         os::scheduling::PreferPerformanceCores();
+        os::scheduling::PinCriticalThread(os::scheduling::CriticalThread::GpuCommands);
         auto idleStart = std::chrono::steady_clock::time_point{};
         bool timingIdle = false;
         while (m_running)

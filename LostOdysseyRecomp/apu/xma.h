@@ -46,4 +46,6 @@ namespace apu::xma
         uint32_t contendedLatencySensitive = 0;
     };
     LockStats TakeLockStats();
+    // The same peaks without resetting them (diagnostics between reports).
+    LockStats PeekLockStats();
 }

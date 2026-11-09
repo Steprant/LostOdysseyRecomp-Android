@@ -624,6 +624,62 @@ static std::string GuestAnsiString(const XANSI_STRING* str)
     return std::string(str->Buffer.get(), str->Length.get());
 }
 
+// Steprant 2.0 WP3.8: cutscene voices (.xwv) and other streamed audio are read
+// by the game in small synchronous pieces from its streaming thread; on the
+// phone a cold read stalled the audio callback (705 ms in the Great Gate
+// cutscene of 8/11). When the game opens such a file, a background thread
+// reads it once, in 1 MiB pieces, so the game's own reads hit the page cache.
+// At most two files at a time, up to 96 MiB each. LO_VOICE_PREFETCH=0: off.
+// (One-line namespace: file_io_regression.py extracts up to "namespace\n{".)
+namespace {
+    std::atomic<uint32_t> g_audioPrefetches{0};
+    bool StreamedAudioPath(const std::filesystem::path &path)
+    {
+        std::string extension = path.extension().string();
+        for (auto &c : extension) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return extension == ".xwv" || extension == ".xma" || extension == ".wma" || extension == ".xwb" || extension == ".wav";
+    }
+}
+static void PrefetchStreamedAudio(const std::filesystem::path &path, uint64_t size)
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("LO_VOICE_PREFETCH");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    if (!enabled || size == 0 || size > (96ull << 20) || !StreamedAudioPath(path)) return;
+    if (g_audioPrefetches.fetch_add(1, std::memory_order_relaxed) >= 2)
+    {
+        g_audioPrefetches.fetch_sub(1, std::memory_order_relaxed);
+        return;
+    }
+    try
+    {
+        std::thread([path, size] {
+            const auto start = std::chrono::steady_clock::now();
+#ifdef _WIN32
+            FILE *file = _wfopen(path.c_str(), L"rb");
+#else
+            FILE *file = fopen(path.c_str(), "rb");
+#endif
+            uint64_t read = 0;
+            if (file)
+            {
+                std::vector<char> buffer(1u << 20);
+                for (size_t n; (n = fread(buffer.data(), 1, buffer.size(), file)) != 0;) read += n;
+                fclose(file);
+            }
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            LOG_INFO("audio prefetch: {} {:.1f} MiB in {} ms", FileSystem::PathUtf8(path.filename()), double(read) / 1048576.0, ms);
+            g_audioPrefetches.fetch_sub(1, std::memory_order_relaxed);
+            (void)size;
+        }).detach();
+    }
+    catch (const std::exception &)
+    {
+        g_audioPrefetches.fetch_sub(1, std::memory_order_relaxed);
+    }
+}
+
 static uint32_t OpenFileHandle(be<uint32_t>* FileHandleOut, uint32_t DesiredAccess, XOBJECT_ATTRIBUTES* Attributes,
     XIO_STATUS_BLOCK* IoStatusBlock, uint32_t CreateDisposition, uint32_t CreateOptions)
 {
@@ -777,6 +833,8 @@ static uint32_t OpenFileHandle(be<uint32_t>* FileHandleOut, uint32_t DesiredAcce
         _fseeki64(handle->file, 0, SEEK_END);
         handle->size = handle->fileSize = uint64_t(_ftelli64(handle->file));
         _fseeki64(handle->file, 0, SEEK_SET);
+        if (!wantWrite)
+            PrefetchStreamedAudio(openedPath, handle->fileSize);
         if (!wantWrite && !overflow)
         {
             handle->ranges = modding::text_overlay::RangesFor(hostPath);

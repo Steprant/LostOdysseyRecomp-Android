@@ -6,7 +6,9 @@
 namespace gpu::presentation_progress {
 enum class Stage : uint32_t {
     Idle, Present, Prepare, Reconcile, ResizeDrain, Resize, Source, Fence, RendererFence,
-    Acquire, Record, Submit, SubmitQueueLock, SubmitNative, QueuePresent, Capture
+    Acquire, Record, Submit, SubmitQueueLock, SubmitNative, QueuePresent, Capture,
+    // Steprant 2.0 WP3.1: parts of the generic "present" stage.
+    MenuDraw, SettingsOverlay, AchievementToast, CpuFrameCache, Upload
 };
 
 inline const char* Name(Stage stage)
@@ -28,6 +30,11 @@ inline const char* Name(Stage stage)
     case Stage::SubmitNative: return "submit-native";
     case Stage::QueuePresent: return "queue-present";
     case Stage::Capture: return "capture";
+    case Stage::MenuDraw: return "menu-draw";
+    case Stage::SettingsOverlay: return "settings-overlay";
+    case Stage::AchievementToast: return "achievement-toast";
+    case Stage::CpuFrameCache: return "cpu-frame-cache";
+    case Stage::Upload: return "upload";
     }
     return "unknown";
 }
@@ -64,7 +71,7 @@ public:
 
     // Wall time spent in each stage since the last TakeStageTimes (written
     // by the command thread that sets the stages; slow-frame breakdown).
-    static constexpr uint32_t StageCount = uint32_t(Stage::Capture) + 1;
+    static constexpr uint32_t StageCount = uint32_t(Stage::Upload) + 1;
     void Enter(Stage stage) {
         const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -25,6 +25,10 @@ void BeginLatencyCriticalActivity();
 // No-op elsewhere, on devices without efficiency cores, or with
 // LO_PERFORMANCE_CORES=0. guestMain marks the thread LO_FRAME_STATS reports.
 void PreferPerformanceCores(bool guestMain = false);
+// WP3.2 A/B (LO_PIN_GAME_THREADS=1): pin the calling critical thread to the
+// prime core (guest main) or the fastest big cores (GPU command thread).
+enum class CriticalThread { GuestMain, GpuCommands };
+void PinCriticalThread(CriticalThread which);
 // Render thread, once per guest swap: LO_FRAME_STATS=<seconds> logs frame
 // interval percentiles and per-frame thread CPU time (Android only).
 void OnRenderFrame();

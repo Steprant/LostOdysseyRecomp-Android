@@ -321,6 +321,45 @@ void PreferPerformanceCores(bool guestMain)
     std::call_once(logged, [] { LOG_INFO("thread placement: game threads on {} performance cores", count); });
 }
 
+// Steprant 2.0 WP3.2 A/B (LO_PIN_GAME_THREADS=1, developer page): the guest
+// main thread on the cores of the largest capacity (the prime core) and the
+// GPU command thread on the next capacity level (the fastest big cores). In
+// the city on 8/11 the prime core idled at 902 MHz while both threads shared
+// the big cores. Off by default until measured.
+void PinCriticalThread(CriticalThread which)
+{
+    static const bool enabled = [] {
+        const char* value = getenv("LO_PIN_GAME_THREADS");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    if (!enabled) return;
+    const long cpus = std::min<long>(sysconf(_SC_NPROCESSORS_CONF), CPU_SETSIZE);
+    std::vector<int> capacity(size_t(std::max<long>(cpus, 0)), 0);
+    for (long cpu = 0; cpu < cpus; ++cpu) {
+        char path[64];
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
+        if (FILE* file = fopen(path, "re")) {
+            if (fscanf(file, "%d", &capacity[cpu]) != 1) capacity[cpu] = 0;
+            fclose(file);
+        }
+    }
+    std::vector<int> levels(capacity.begin(), capacity.end());
+    std::sort(levels.begin(), levels.end(), std::greater<int>());
+    levels.erase(std::unique(levels.begin(), levels.end()), levels.end());
+    if (levels.empty() || levels.front() <= 0) return;
+    const int wanted = which == CriticalThread::GuestMain || levels.size() < 2 || levels[1] <= 0 ? levels[0] : levels[1];
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int count = 0;
+    for (long cpu = 0; cpu < cpus; ++cpu)
+        if (capacity[cpu] == wanted) { CPU_SET(cpu, &set); ++count; }
+    if (count && sched_setaffinity(0, sizeof(set), &set) != 0)
+        LOG_WARNING("thread placement: pinning failed, errno {}", errno);
+    else
+        LOG_INFO("thread placement: {} pinned to {} core(s) of capacity {}",
+            which == CriticalThread::GuestMain ? "guest main" : "GPU command thread", count, wanted);
+}
+
 void OnRenderFrame()
 {
     static FrameStats stats;
@@ -347,6 +386,7 @@ void RaiseAudioThreadPriority()
         LOG_WARNING("audio thread priority: setpriority failed, errno {}", errno);
 }
 #else
+void PinCriticalThread(CriticalThread) {}
 void PreferPerformanceCores(bool)
 {
 }

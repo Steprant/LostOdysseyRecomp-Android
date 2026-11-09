@@ -21,6 +21,7 @@ public:
         while (value > current && !m_peak.compare_exchange_weak(current, value, std::memory_order_relaxed)) {}
     }
     uint64_t Take() { return m_peak.exchange(0, std::memory_order_relaxed); }
+    uint64_t Peek() const { return m_peak.load(std::memory_order_relaxed); }
 };
 
 // How long a full device queue has been waiting since the app could play.

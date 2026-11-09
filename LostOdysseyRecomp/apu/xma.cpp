@@ -859,4 +859,14 @@ namespace apu::xma
         stats.contendedLatencySensitive = g_contendedLatencySensitive.exchange(0, std::memory_order_relaxed);
         return stats;
     }
+
+    LockStats PeekLockStats()
+    {
+        LockStats stats;
+        stats.waitMaxUs = g_waitPeak.Peek();
+        stats.waitLatencySensitiveMaxUs = g_waitLatencySensitivePeak.Peek();
+        stats.holdMaxUs = g_holdPeak.Peek();
+        stats.contendedLatencySensitive = g_contendedLatencySensitive.load(std::memory_order_relaxed);
+        return stats;
+    }
 }

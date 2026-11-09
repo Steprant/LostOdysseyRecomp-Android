@@ -10,6 +10,7 @@
 #include <cpu/guest_thread.h>
 #include <debug/fast_forward.h>
 #include <kernel/memory.h>
+#include <kernel/io/file_system.h>
 #include <os/guest_code_thread.h>
 #include <os/host_scheduling.h>
 #include <os/logger.h>
@@ -320,7 +321,27 @@ namespace apu
                         struct RecordCallback
                         {
                             std::chrono::steady_clock::time_point start;
-                            ~RecordCallback() { g_callbackPeak.Record(std::chrono::steady_clock::now() - start); }
+                            ~RecordCallback()
+                            {
+                                const auto elapsed = std::chrono::steady_clock::now() - start;
+                                g_callbackPeak.Record(elapsed);
+                                // Steprant 2.0 WP3.8: a guest audio callback over 50 ms
+                                // (705 ms in the Great Gate cutscene of 8/11) stops the
+                                // queue. Say where it was: the XMA lock waits and holds
+                                // during it and the file the game last opened (a voice
+                                // stream read synchronously). Bounded: 32 lines a session.
+                                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+                                static uint32_t reported = 0;
+                                if (ms >= 50 && reported < 32)
+                                {
+                                    ++reported;
+                                    const auto lock = xma::PeekLockStats();
+                                    LOG_WARNING("audio callback stall: {} ms xma_wait_max_us={} xma_wait_audio_max_us={} xma_hold_max_us={} "
+                                        "xma_contended_audio={} last_file='{}' reserve_frames={}",
+                                        ms, lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs,
+                                        lock.contendedLatencySensitive, FileSystem::LastOpenedFile(), g_reserveFrames.load(std::memory_order_relaxed));
+                                }
+                            }
                         } recordCallback{ callbackStart };
                         g_client.Dispatch([&](uint32_t callback, uint32_t param)
                         {

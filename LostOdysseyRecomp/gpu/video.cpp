@@ -5381,7 +5381,12 @@ namespace gpu::video
             }
         }
 
-        const bool hasSettings = settings::DrawMenu(g_menuPixels, g_menuRevision, menuWidth, menuHeight);
+        bool hasSettings = false;
+        {
+            // WP3.1: the settings menu's CPU raster, apart from "present".
+            PresentScope menuDraw(g_presentProgress, PresentStage::MenuDraw);
+            hasSettings = settings::DrawMenu(g_menuPixels, g_menuRevision, menuWidth, menuHeight);
+        }
         const bool hasDebug = debug_menu::IsOverlayVisible();
         // In a game, Settings goes over this frame (DrawSettingsOverlay), which
         // keeps the retail header. Frame generation presents frames of its own,
@@ -5642,10 +5647,15 @@ namespace gpu::video
                         g_presentation->DrawContentBars(g_commandList.get(), backBuffer, sourceWidth, sourceHeight,
                             g_swapChain->getWidth(), g_swapChain->getHeight());
                     DrawTitleHint(backBuffer);
-                    if (settingsOverGame)
+                    if (settingsOverGame) {
+                        PresentScope overlay(g_presentProgress, PresentStage::SettingsOverlay);
                         DrawSettingsOverlay(backBuffer, g_menuPixels, menuWidth, menuHeight, g_menuRevision);
+                    }
                     DrawPreparationBar(backBuffer);
-                    DrawAchievementToast(backBuffer);
+                    {
+                        PresentScope toast(g_presentProgress, PresentStage::AchievementToast);
+                        DrawAchievementToast(backBuffer);
+                    }
                     if (performanceOverlay)
                         DrawPerformanceOverlay(backBuffer, presentationConfig.performanceOverlay, sourcePlan,
                             sourceWidth, sourceHeight, now);
@@ -5815,7 +5825,12 @@ namespace gpu::video
             overlayWait.Until(overlayPacer.Schedule(std::chrono::steady_clock::now(), GetFramePacingTarget(60, true)));
         }
 
-        const bool hasSettings = settings::DrawMenu(g_menuPixels, g_menuRevision, menuWidth, menuHeight);
+        bool hasSettings = false;
+        {
+            // WP3.1: the settings menu's CPU raster, apart from "present".
+            PresentScope menuDraw(g_presentProgress, PresentStage::MenuDraw);
+            hasSettings = settings::DrawMenu(g_menuPixels, g_menuRevision, menuWidth, menuHeight);
+        }
         const bool hasDebug = debug_menu::IsOverlayVisible();
         if (!hasSettings && !hasDebug)
             return;
@@ -5845,7 +5860,10 @@ namespace gpu::video
         if (menuPresentBuffer.empty())
             return;
 
-        CacheCpuFrame(menuPresentBuffer, menuWidth, menuHeight);
+        {
+            PresentScope cache(g_presentProgress, PresentStage::CpuFrameCache);
+            CacheCpuFrame(menuPresentBuffer, menuWidth, menuHeight);
+        }
         UploadAndPresentPixels(menuPresentBuffer, menuWidth, menuHeight, true, displayTicket, PresentationOptions{}, nullptr, nullptr, false);
 #endif
     }
