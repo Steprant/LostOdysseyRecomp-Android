@@ -1190,6 +1190,15 @@ std::wstring DlssNotice()
 }
 bool SystemRowHidden(int r)
 {
+#if LO_PLATFORM_ANDROID
+    // Steprant Android: only what a player uses on the phone or TV. Desktop
+    // update, Windows log upload, mods (no player-reachable mod folder),
+    // shader bundle and preparation maintenance, and the debug log switch
+    // (the log stays on for Tester archives) keep their stored values.
+    if (r == SystemUpdatesRow || r == SystemDebugLogRow || r == SystemCollectionRow || r == SystemModsRow ||
+        r == SystemShaderBundleRow || r == SystemShaderPreparationRow)
+        return true;
+#endif
 #if !LO_PLATFORM_ANDROID
     if (r == SystemTvOutputRow || r == SystemAndroidDiagnosticsRow) return true;
 #endif
@@ -1221,6 +1230,11 @@ bool GraphicsRowHidden(int r)
     if (r == int(GraphicsRow::FsrSharpness))
         return edit.upscaler != gpu::upscaling::Upscaler::Sgsr2 &&
             (!graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr);
+    // A temporal upscaler writes the output size itself: the presentation
+    // scaling filter and SGSR1 have nothing to scale, so they are not offered.
+    if (r == int(GraphicsRow::ScalingQuality) || r == int(GraphicsRow::Sgsr1))
+        if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2 || edit.upscaler == gpu::upscaling::Upscaler::Fsr)
+            return true;
 #endif
     // A single adapter or display leaves nothing to choose.
     if (r == int(GraphicsRow::Gpu))

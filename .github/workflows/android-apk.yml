@@ -138,9 +138,10 @@ jobs:
             steprant/v2.0) version=2.0 ;;
             *) version= ;;
           esac
-          # 1.9.x test builds carry the hidden developer page; 2.0 does not.
+          # The developer page (A/B switches) is compiled out: the 1.9 logs
+          # settled every switch (D8), and its built-in values are the chosen
+          # ones. LO_STEPRANT_DEVELOPER_PAGE=1 in a local build brings it back.
           developer=0
-          [[ "$version" == 1.9 ]] && developer=1
           echo "developer=$developer" >> "$GITHUB_OUTPUT"
           if [[ -n "$version" ]]; then
             {
