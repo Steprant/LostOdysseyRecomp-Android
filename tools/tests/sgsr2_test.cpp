@@ -295,6 +295,7 @@ bool gSmaa = false;      // SMAA on the input (Quality), off unless a check turn
 float gEdgeClip = NAN;   // the controller's default unless a check sets it
 bool gSoft = false;      // the Soft filter (WP7.3), with its 0.7 window
 gpu::sgsr2::ColorFormat gColorFormat = gpu::sgsr2::ColorFormat::Rgba8;
+bool gAntiTrail = false;  // G6: transient history not kept
 float gKernelScale = 1.0f;
 
 // Records one frame, submits it and retires it, as the renderer does.
@@ -302,7 +303,7 @@ gpu::sgsr2::Status RunFrame(Fixture& f, gpu::sgsr2::Controller& controller, uint
     double jx, double jy, bool sameCamera, uint64_t& serial)
 {
     const auto attempt = controller.RecordIsolated(*f.sr, kConfig, f.Inputs(frame, reset, jx, jy),
-        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSmaa, gEdgeClip, gKernelScale, gSoft, gColorFormat}, *f.output);
+        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSmaa, gEdgeClip, gKernelScale, gSoft, gColorFormat, gAntiTrail}, *f.output);
     if (attempt.status != gpu::sgsr2::Status::Ready) return attempt.status;
     controller.OnBatchSubmitted(attempt.useId, ++serial);
     f.Submit(f.sr.get());
@@ -535,6 +536,59 @@ int Run(RenderDevice* device)
         for (uint64_t frame = 740; frame < 746; ++frame) RunFrame(f, controller, frame, frame == 740, 0.25, -0.25, true, serial);
         pass &= Check(flatDeviation(f.Read()) < 0.006, "the Soft filter keeps a flat colour");
         gSoft = false; gKernelScale = 1.0f;
+    }
+
+    // 2b-iv. G6: a bright particle moving over still ground without motion
+    // vectors (camera still), as the battle effects do. Without the
+    // anti-trail rule the history keeps it where it was; with it the trail
+    // is gone, and a still detailed scene keeps its accumulated detail.
+    {
+        const auto particleAt = [](int frame) { return 10 + frame * 4; };
+        std::array<double, 2> trail{};
+        for (int run = 0; run < 2; ++run) {
+            gAntiTrail = run == 1;
+            int last = 0;
+            for (int frame = 0; frame < 9; ++frame) {
+                const int px = particleAt(frame);
+                f.colorFn = [px](uint32_t x, uint32_t y) {
+                    const bool particle = int(x) >= px && int(x) < px + 3 && y >= 16 && y < 19;
+                    const uint32_t v = particle ? 250u : 60u;
+                    return 0xff000000u | (v << 16) | (v << 8) | v;
+                };
+                f.depthFn = [](uint32_t, uint32_t) { return 0.05f; };
+                if (!f.Upload(flat, 0, 0, 0, false, 0, 0)) return 1;
+                const double jx = (frame & 1) ? 0.25 : -0.25, jy = (frame & 2) ? 0.25 : -0.25;
+                RunFrame(f, controller, 760 + run * 20 + frame, frame == 0, jx, jy, true, serial);
+                last = px;
+            }
+            const auto out = f.Read();
+            // Where the particle was two or more frames ago (render x < last - 4),
+            // in output pixels, the ground should be back to 60/255.
+            double worst = 0;
+            for (uint32_t y = 16 * kOutH / kRenderH; y < 19 * kOutH / kRenderH; ++y)
+                for (uint32_t x = uint32_t(particleAt(0)) * kOutW / kRenderW; x < uint32_t(last - 4) * kOutW / kRenderW; ++x)
+                    worst = std::max(worst, double(out[(size_t(y) * kOutW + x) * 3 + 1]) - 60 / 255.0);
+            trail[run] = worst;
+        }
+        printf("  particle trail on still ground: without anti-trail %.4f, with %.4f\n", trail[0], trail[1]);
+        pass &= Check(trail[1] < 0.03, "no visible trail behind a particle without motion vectors");
+        pass &= Check(trail[1] <= trail[0], "the anti-trail rule never leaves more trail than the reference box");
+        f.colorFn = nullptr; f.depthFn = nullptr;
+        // A still detailed scene keeps what the jitter accumulates: the same
+        // frame sequence with and without the rule.
+        std::vector<float> kept, reference;
+        double keptDelta = 1, referenceDelta = 1;
+        gAntiTrail = false;
+        pass &= Check(accumulate(800, 1.0f, reference, referenceDelta), "jittered reference frames recorded");
+        gAntiTrail = true;
+        pass &= Check(accumulate(800, 1.0f, kept, keptDelta), "jittered frames with anti-trail recorded");
+        const auto withRule = Rmse(detail, kept), without = Rmse(detail, reference);
+        printf("  detail rmse with anti-trail r/g/b %.4f %.4f %.4f (same frames without %.4f %.4f %.4f)\n",
+            withRule[0], withRule[1], withRule[2], without[0], without[1], without[2]);
+        pass &= Check(withRule[0] + withRule[1] + withRule[2] <= (without[0] + without[1] + without[2]) * 1.05,
+            "anti-trail keeps the accumulated detail (within 5% of the reference box)");
+        pass &= Check(keptDelta < 0.03, "anti-trail keeps a still image stable");
+        gAntiTrail = false;
     }
 
     // 2c. Thin railings and a moving character, as on the device.

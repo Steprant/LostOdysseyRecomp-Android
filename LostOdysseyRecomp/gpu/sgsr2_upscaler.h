@@ -44,6 +44,7 @@ struct FrameValues {
     float kernelScale = 1.0f;       // 0.5..1: narrows the Lanczos window's bias (wider, softer kernel) below 1
     bool softFilter = false;        // Soft filter: Gaussian kernel without negative lobes (WP7.3)
     ColorFormat colorFormat = ColorFormat::Rgba8;
+    bool antiTrail = false;         // G6/G4: history no current neighbour explains is not kept (LO_SGSR2_REACTIVE)
 };
 
 // Render size for an FsrQuality-style ratio (Quality 1.5, Balanced 1.7,

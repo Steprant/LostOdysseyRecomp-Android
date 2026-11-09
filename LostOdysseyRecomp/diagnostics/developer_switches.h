@@ -26,9 +26,7 @@ enum class Switch : uint32_t
     GameThreadsOnBigCores,// WP3.2: guest main and GPU threads on the prime/big cores (off)
     UiPrewarm,            // WP3.4: settings menu and achievement toast resources prepared ahead (on)
     VoicePrefetch,        // WP3.8: cutscene voice streams read ahead on their own thread (on)
-    Sgsr2Reactive,        // WP5 G6 / WP7.2.5: transparent draws lower SGSR2's history weight (on)
-    UnjitteredCompensation,// WP7.2.3: unknown-camera scene draws get the jitter (on)
-    LightsAtSceneScale,   // WP5 D4: 1920x1080 light buffers follow the scene scale (off; D4 needs Steprant's yes)
+    Sgsr2Reactive,        // WP5 G6 / WP7.2.5: SGSR2 does not keep history no current neighbour explains (on)
     TurnipMode,           // Turnip render mode: 0 auto, 1 sysmem, 2 gmem
     Count
 };
@@ -52,8 +50,6 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"ui_prewarm", L"Prepare menu resources ahead", L"預先準備選單資源", 0, 2, "LO_UI_PREWARM"},
     {"voice_prefetch", L"Read cutscene voices ahead", L"預先讀取過場語音", 0, 2, "LO_VOICE_PREFETCH"},
     {"sgsr2_reactive", L"SGSR2 reactive mask", L"SGSR2 反應遮罩", 0, 2, "LO_SGSR2_REACTIVE"},
-    {"unjittered_compensation", L"Jitter unknown scene draws", L"抖動未知場景繪製", 0, 2, "LO_SR_COMPENSATE_UNJITTERED"},
-    {"lights_scene_scale", L"Light buffers at scene scale", L"光照緩衝跟隨場景比例", 1, 2, "LO_LIGHTS_SCENE_SCALE"},
     {"turnip_mode", L"Turnip render mode", L"Turnip 渲染模式", 0, 3, "TU_DEBUG"},
 }};
 
@@ -70,8 +66,6 @@ inline const char* VariableValue(Switch which, uint32_t value)
     case Switch::UiPrewarm: return value == 1 ? "0" : nullptr;
     case Switch::VoicePrefetch: return value == 1 ? "0" : nullptr;
     case Switch::Sgsr2Reactive: return value == 1 ? "0" : nullptr;
-    case Switch::UnjitteredCompensation: return value == 1 ? "0" : nullptr;
-    case Switch::LightsAtSceneScale: return value == 0 ? "1" : nullptr;
     case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
     case Switch::Count: break;
     }

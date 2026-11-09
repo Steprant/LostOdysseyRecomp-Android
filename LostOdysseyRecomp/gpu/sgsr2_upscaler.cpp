@@ -66,7 +66,7 @@ struct PushConstants {
     float edgeClip;
     float kernelScale;
     uint32_t kernelMode; // 0 reference, 1 Soft (sgsr2_source.h SoftKernel)
-    uint32_t padding;
+    uint32_t antiTrail;  // G6: transient history is clamped to the neighbours' range
 };
 static_assert(sizeof(PushConstants) == 96);
 
@@ -380,6 +380,7 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     constants.edgeClip = std::isfinite(frame.edgeClip) ? std::clamp(frame.edgeClip, 0.0f, 1.0f) : EdgeClip();
     constants.kernelScale = std::isfinite(frame.kernelScale) ? std::clamp(frame.kernelScale, 0.5f, 1.0f) : 1.0f;
     constants.kernelMode = frame.softFilter ? 1u : 0u;
+    constants.antiTrail = frame.antiTrail ? 1u : 0u;
 
     // SMAA 1x on an SDR input, at the render size, before the convert pass
     // reads it (Quality). Colour in the history, YCoCg and the clamp box all

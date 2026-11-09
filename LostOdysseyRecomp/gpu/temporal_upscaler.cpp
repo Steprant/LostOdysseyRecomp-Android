@@ -227,6 +227,14 @@ SrResult TemporalUpscaler::RecordIsolated(plume::VulkanCommandList& commands,
         // wider window (0.7); the renderer halves the scene mip bias.
         frame.softFilter = sgsr2::softFilter.load(std::memory_order_relaxed);
         frame.kernelScale = kernelOverride > 0.0f ? kernelOverride : frame.softFilter ? 0.7f : 1.0f;
+        // G6/G4 (D3: defects to correct): transient history (particles,
+        // alpha-tested edges moving without motion vectors) is not kept.
+        // LO_SGSR2_REACTIVE=0 (developer page) restores the reference box.
+        static const bool antiTrail = [] {
+            const char* value = std::getenv("LO_SGSR2_REACTIVE");
+            return !(value && std::string_view(value) == "0");
+        }();
+        frame.antiTrail = antiTrail;
         if (inputs.cameraValid && inputs.color.height) {
             const double aspect = double(inputs.color.width) / inputs.color.height;
             if (const auto projection = fsr::DeriveProjection(inputs.cameraViewProjection, aspect))

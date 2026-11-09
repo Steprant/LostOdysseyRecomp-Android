@@ -61,3 +61,19 @@ heavy aliasing in Quality; wish for a softer image.
   and flat colour.
 - Settings menu suites (labels, help text widths, translations).
 - Not yet measured or seen on the phone.
+
+## WP5 G6 / WP7.2.5 — trails without motion vectors (anti-trail)
+
+- With a still camera SGSR2's clamp box is several times the neighbourhood's
+  spread (`scaleFactor` up to 20), so a particle or an alpha-tested edge that
+  moved without motion vectors stays in the history as a trail.
+- `sgsr2_source.h`: when the history's luma lies outside the range of every
+  current neighbour by more than 0.12, it is clamped to the neighbours' own
+  range and the current frame is taken whole. A full reactive mask (one more
+  render target written by the transparent draws) is not needed for this.
+- Developer switch *SGSR2 reactive mask* (`LO_SGSR2_REACTIVE=0` restores the
+  reference box).
+- Lavapipe: a bright particle moving over still ground without motion
+  vectors leaves 0.049 of trail with the reference box, 0.000 with the rule;
+  on the same jittered frame sequence the detail scene's error is unchanged
+  (0.1103 against 0.1102).

@@ -49,7 +49,7 @@ struct Sgsr2Parameters {
     float  edgeClip;          // weight of the reference's depth-edge clip (1 = reference)
     float  kernelScale;       // 1 = reference; below 1 a wider, softer upsampling kernel
     uint   kernelMode;        // 0: reference (fast Lanczos); 1: Soft, a Gaussian with no negative lobes
-    uint   padding;
+    uint   antiTrail;         // 1: history brighter or darker than every current neighbour is not kept (G6)
 };
 [[vk::push_constant]] ConstantBuffer<Sgsr2Parameters> params;
 
@@ -311,10 +311,26 @@ void sgsr2Upscale(uint3 id : SV_DispatchThreadID)
     const float3 boxMaximum = min(box.maximum, box.center + scaledVariance);
     const float3 boxMinimum = max(box.minimum, box.center - scaledVariance);
 
-    const float3 clampedColor = clamp(historyColor, boxMinimum, boxMaximum);
+    // Not part of Qualcomm's SGSR2 (Steprant 2.0, G6/G4): with a still camera
+    // the box above can be several times the neighbourhood's spread, so a
+    // particle or alpha-tested edge that moved without motion vectors stays
+    // in the history as a trail (white dashed lines on the battle ground).
+    // When the history's luma lies outside the range of every current
+    // neighbour by more than 0.12, it shows something the frame no longer
+    // has: clamp it to the neighbours' own range and let the current frame in.
+    float3 trailMinimum = boxMinimum, trailMaximum = boxMaximum;
+    bool transient = false;
+    if (params.antiTrail != 0u && params.reset == 0u) {
+        transient = historyColor.x > box.maximum.x + 0.12 || historyColor.x < box.minimum.x - 0.12;
+        if (transient) {
+            trailMinimum = box.minimum;
+            trailMaximum = box.maximum;
+        }
+    }
+    const float3 clampedColor = clamp(historyColor, trailMinimum, trailMaximum);
     const float startLerp = abs(motion.x) + abs(motion.y) > 0.000001 ? 0.0 : params.minLerpContribution;
-    const bool outside = any(boxMinimum > historyColor) || any(historyColor > boxMaximum);
-    const float lerpContribution = saturate(outside ? startLerp : 1.0);
+    const bool outside = transient || any(boxMinimum > historyColor) || any(historyColor > boxMaximum);
+    const float lerpContribution = saturate(outside ? (transient ? 0.0 : startLerp) : 1.0);
     historyColor = lerp(clampedColor, historyColor, lerpContribution);
     baseAlpha = lerp(min(baseAlpha, 0.1), baseAlpha, lerpContribution);
 
