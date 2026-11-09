@@ -1,7 +1,7 @@
 name: Steprant test draft
 
 # Copies a finished Android APK workflow artifact from steprant/v2.0-dev into
-# a DRAFT release v1.9-steprant.<YYYYMMDD> for testing. It never publishes the
+# a DRAFT release v1.9-steprant.<YYYYMMDD>-<short_name> for testing. It never publishes the
 # release and never marks it latest; the public 1.8 release is untouched.
 # Run by hand, or by pushing .github/steprant-test-draft.json
 # ({"run_id": "...", "short_name": "..."}) to steprant/v2.0-dev.
@@ -77,7 +77,6 @@ jobs:
           set -euo pipefail
           day=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .created_at | cut -c1-10 | tr -d -)
           commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_sha)
-          tag="v1.9-steprant.$day"
           src=out/apk/LostOdyssey-Steprant-v1.9.apk
           apk="out/apk/LostOdyssey-Steprant-v1.9-$SHORT_NAME-$day.apk"
           mv "$src" "$apk"
@@ -89,10 +88,36 @@ jobs:
             echo
             printf -- '- `%s`: SHA-256 `%s`, commit `%s`, APK run %s\n' "$(basename "$apk")" "$sum" "$commit" "$RUN_ID"
           } > "$notes"
-          # One draft per test APK: the token of this workflow cannot read or
-          # change an existing draft (HTTP 403 on 9/11), but it can create one.
+          # A build SHA may no longer be a branch head by the time its APK
+          # finishes. GITHUB_TOKEN cannot create a release for such a SHA
+          # when workflow files differ. android-apk.yml preserves a ref at
+          # the start of each build, with no extra token or repository-wide grant.
+          pin="steprant/build-1.9-$RUN_ID"
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha)
+          [[ "$actual" == "$commit" ]] || { echo "::error::Build ref does not match APK source"; exit 1; }
           tag="v1.9-steprant.$day-$SHORT_NAME"
           title="Lost Odyssey Steprant Android 1.9 test ($day, $SHORT_NAME)"
-          gh release create "$tag" "$apk" --draft --target "$commit" \
-            --title "$title" --notes-file "$notes" -R "$GITHUB_REPOSITORY"
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.draft and .name == \"$title\") | {draft, name, assets: [.assets[].name]}"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            -q ".[] | select(.tag_name == \"$tag\" or .name == \"$title\") | .id" | head -n 1)
+          if [[ -n "$id" ]]; then
+            [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" -q .draft)" == true ]] \
+              || { echo "::error::Refusing to modify a published release"; exit 1; }
+            target=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" -q .target_commitish)
+            [[ "$target" == "$commit" || "$target" == "$pin" ]] \
+              || { echo "::error::Draft belongs to another build; choose another short_name"; exit 1; }
+            digest=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" \
+              -q ".[] | select(.name == \"$(basename "$apk")\") | .digest")
+            if [[ -n "$digest" ]]; then
+              [[ "$digest" == "sha256:$sum" ]] \
+                || { echo "::error::Existing draft APK has a different digest"; exit 1; }
+              echo "Verified APK is already attached; preserving it."
+            else
+              stored_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" -q .tag_name)
+              gh release upload "$stored_tag" "$apk" -R "$GITHUB_REPOSITORY"
+            fi
+          else
+            gh release create "$tag" "$apk" --draft --target "$pin" \
+              --title "$title" --notes-file "$notes" -R "$GITHUB_REPOSITORY"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            -q ".[] | select(.draft and .name == \"$title\") | {draft, name, assets: [.assets[] | {name, digest}]}"

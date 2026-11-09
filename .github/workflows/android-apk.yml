@@ -17,6 +17,27 @@ on:
 permissions:
   contents: read
 jobs:
+  pin-test-build:
+    name: Preserve Steprant test build commit
+    if: github.ref == 'refs/heads/steprant/v2.0-dev'
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Pin this build before the development branch advances
+        run: |
+          set -euo pipefail
+          pin="steprant/build-1.9-$GITHUB_RUN_ID"
+          if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
+            [[ "$actual" == "$GITHUB_SHA" ]] || { echo "::error::Build ref points to another commit"; exit 1; }
+          else
+            grep -q 'HTTP 404' ref-error.txt || { cat ref-error.txt >&2; exit 1; }
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/heads/$pin" -f sha="$GITHUB_SHA" --silent
+          fi
   apk:
     name: Android arm64 APK
     runs-on: ubuntu-22.04
