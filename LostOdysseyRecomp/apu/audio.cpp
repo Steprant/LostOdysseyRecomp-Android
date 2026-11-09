@@ -274,6 +274,10 @@ namespace apu
         {
             os::SetCurrentThreadName("Audio Driver");
             os::scheduling::RaiseAudioThreadPriority();
+            // It runs the game's audio callback (guest code), like the other
+            // guest threads: keep it off the efficiency cores. The 9/11 logs had
+            // callbacks of 40-180 ms with XMA waits under 35 ms (WP3.6).
+            os::scheduling::PreferPerformanceCores();
             xma::MarkLatencySensitiveThread();
             GuestThreadContext ctx(3);
             constexpr auto framePeriod = std::chrono::microseconds(1000000ull * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
