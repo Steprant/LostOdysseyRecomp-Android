@@ -188,13 +188,13 @@ int main() {
     }
     for(auto text : {"", "battle_exp_double=0\n", "battle_exp_double=2\n",
                     "battle_exp_double=-1\n", "battle_exp_double=bad\n",
-                    "battle_exp_multiplier=0\n", "battle_exp_multiplier=5\n",
+                    "battle_exp_multiplier=0\n", "battle_exp_multiplier=5\n", "battle_exp_multiplier=9\n",
                     "battle_exp_multiplier=bad\nbattle_exp_double=1\n"}) {
         Write(text); Check(settings::Read().battleExpMultiplier==1,"missing/invalid battle EXP is x1");
     }
     Write("width=1600\nbattle_exp_double=1\n");
     Check(settings::Read().battleExpMultiplier==2,"legacy battle EXP x2 key parsed as x2");
-    for(uint32_t m : {1u,2u,3u,4u}) {
+    for(uint32_t m : {1u,2u,3u,4u,10u}) {
         Write(("battle_exp_double=1\nbattle_exp_multiplier="+std::to_string(m)+"\n").c_str());
         Check(settings::Read().battleExpMultiplier==m,"multiplier key wins over the legacy key");
     }

@@ -106,6 +106,11 @@ int main(int argc, char** argv) {
     debug_menu::SetBattleExpMultiplier(4);
     Check(saves == 3 && config.battleExpMultiplier == 4, "x4 persists");
     Run(0x82AC6E14, {4, 100, 100, 100, 100});
+    debug_menu::SetBattleExpMultiplier(10);
+    Check(saves == 4 && config.battleExpMultiplier == 10, "x10 persists");
+    Run(0x82AC6E14, {10, 100, 100, 100, 100});
+    debug_menu::SetBattleExpMultiplier(4);
+    Check(saves == 5 && config.battleExpMultiplier == 4, "back to x4");
     Run(0x82AC6E10, gains); // Exact return address, not a nearby call.
     Run(0x12345678, gains); // Other callers always run unchanged.
     gains = {0, 20, 99, 101, 0xffffffff};
@@ -113,15 +118,15 @@ int main(int argc, char** argv) {
     characters[1] = 0;
     Run(0x82AC6E14, {0, 20, 100, 101, 0xffffffff}); // Empty party slot.
     debug_menu::SetBattleExpMultiplier(9); // Out of range falls back to retail.
-    Check(saves == 4 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "invalid is x1");
+    Check(saves == 6 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "invalid is x1");
     debug_menu::SetBattleExpMultiplier(1);
-    Check(saves == 5 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "disable persists");
+    Check(saves == 7 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "disable persists");
     Run(0x82AC6E14, gains);
     saveSucceeds = false;
     debug_menu::SetBattleExpMultiplier(2);
-    Check(saves == 6 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 2,
+    Check(saves == 8 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 2,
         "failed persistence still applies the live preference");
-    for (uint32_t m = 0; m <= 5; ++m)
+    for (uint32_t m = 0; m <= 11; ++m)
         for (uint32_t g = 0; g <= 120; ++g) {
             const uint32_t v = settings::ValidBattleExpMultiplier(m);
             const uint32_t expected = g == 0 || g > 100 ? g : std::min(g * v, 100u);

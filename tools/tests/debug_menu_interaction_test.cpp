@@ -580,9 +580,11 @@ int main()
     Require(g_mock.battleExpMultiplier==4, "EXP row did not select x4");
     debug_menu::RenderOverlay(rasterizer);
     debug_menu::HandleInput(debug_menu::InputAction::Right);
-    Require(g_mock.battleExpMultiplier==1, "EXP row did not wrap from x4 to OFF");
+    Require(g_mock.battleExpMultiplier==10, "EXP row did not select x10");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.battleExpMultiplier==1, "EXP row did not wrap from x10 to OFF");
     debug_menu::HandleInput(debug_menu::InputAction::Left);
-    Require(g_mock.battleExpMultiplier==4, "EXP row did not wrap back from OFF to x4");
+    Require(g_mock.battleExpMultiplier==10, "EXP row did not wrap back from OFF to x10");
     debug_menu::HandleInput(debug_menu::InputAction::Right);
     Require(g_mock.battleExpMultiplier==1 && g_mock.encounterRate==settings::EncounterRate::None,
         "EXP row changed encounter rate or failed to return to OFF");

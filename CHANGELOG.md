@@ -18,7 +18,7 @@ Test builds toward the 2.0 architectural update; see [Super Roadmap 2 notes](doc
 - SGSR2: the render resolution row now decides SGSR2's render size, also in TV mode (900p renders 1600x900 on a 1080p TV and 2003x900 on the 2670x1200 panel); the row's first value reads "Auto" with SGSR2 and keeps the quality ratio. The quality row selects SMAA (Quality) or not, and Native AA.
 - SGSR2 Quality: SMAA also runs on 10-bit and float scene targets (it ran only on 8-bit ones); the runtime log and the performance overlay say whether SMAA is on.
 - SGSR2 filter: Standard or Soft (a filter without halos, a wider footprint and half the texture sharpening; same cost).
-- Quick tools (LB+RB): Battle EXP now cycles OFF/×2/×3/×4 (each character's award stays capped at 100 per battle, as in the game); Encounter rate gains 0.75× between Normal and Half (one successful walking draw in four is skipped).
+- Quick tools (LB+RB): Battle EXP now cycles OFF/×2/×3/×4/×10 (each character's award stays capped at 100 per battle, as in the game); Encounter rate gains 0.75× between Normal and Half (one successful walking draw in four is skipped).
 
 ## [v1.8-steprant.20261108](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108) — Steprant Android 1.8 — 2026-11-08
 

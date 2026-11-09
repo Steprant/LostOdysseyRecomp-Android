@@ -38,7 +38,7 @@ inline unsigned EncounterRateIndex() {
         : unsigned(settings::EncounterRateMenuIndex(debug_menu::GetEncounterRate()));
 }
 inline constexpr const wchar_t* BattleExpLabel[] = {L"Battle EXP",L"战斗 EXP"};
-inline constexpr const wchar_t* BattleExpValues[] = {L"OFF",L"×2",L"×3",L"×4"};
+inline constexpr const wchar_t* BattleExpValues[] = {L"OFF",L"×2",L"×3",L"×4",L"×10"};
 inline const wchar_t* BattleExpValue() {
     return BattleExpValues[settings::BattleExpMultiplierIndex(debug_menu::BattleExpMultiplier())];
 }
@@ -258,8 +258,8 @@ inline const wchar_t* QuickToolHelp(unsigned row,bool zh) {
         ? L"仅影响步行遇敌；0.75× 每四次跳过一次，减半交替跳过，一步一遇敌不保存。剧情与首领战不受影响。"
         : L"Walking only. 0.75× skips one draw in four, Half every other; Every step is not saved.";
     if(row==7) return zh
-        ? L"战斗经验 ×2、×3 或 ×4，每场上限仍为 100；SP 和金币各有规则。"
-        : L"Battle EXP ×2/×3/×4, still capped at 100 per battle; SP has its own switch.";
+        ? L"战斗经验 ×2、×3、×4 或 ×10，每场上限仍为 100；SP 和金币各有规则。"
+        : L"Battle EXP ×2/×3/×4/×10, still capped at 100 per battle; SP has its own switch.";
     if(row==8) return zh ? L"战斗后获得的技能点加倍，已有进度不变。" : L"Doubles SP earned in battle, not previously learned progress.";
     if(row==9) return MenuAnimationHelp[zh];
     return nullptr;

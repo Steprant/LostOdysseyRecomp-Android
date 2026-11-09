@@ -5,18 +5,21 @@
 namespace settings
 {
 // Battle EXP multiplier of the Quick tools (settings.ini battle_exp_multiplier).
-// 1 is the retail award. Profiles from before ×3/×4 stored only
+// 1 is the retail award; ×10 fills the 100 EXP cap from any award of 10 or
+// more. Profiles from before ×3/×4 stored only
 // battle_exp_double=1, which reads as 2; saving keeps writing that key so an
 // older build still finds its ×2 switch.
-inline constexpr uint32_t BattleExpMultipliers[] = {1, 2, 3, 4};
-inline constexpr uint32_t ValidBattleExpMultiplier(uint32_t multiplier)
-{
-    return multiplier >= 1 && multiplier <= 4 ? multiplier : 1;
-}
-
+inline constexpr uint32_t BattleExpMultipliers[] = {1, 2, 3, 4, 10};
 inline constexpr uint32_t BattleExpMultiplierIndex(uint32_t multiplier)
 {
-    return ValidBattleExpMultiplier(multiplier) - 1;
+    for (uint32_t i = 0; i < sizeof(BattleExpMultipliers) / sizeof(BattleExpMultipliers[0]); ++i)
+        if (BattleExpMultipliers[i] == multiplier) return i;
+    return 0;
+}
+
+inline constexpr uint32_t ValidBattleExpMultiplier(uint32_t multiplier)
+{
+    return BattleExpMultipliers[BattleExpMultiplierIndex(multiplier)];
 }
 
 // The victory calculator awards each character 0..100 EXP; the game's own
