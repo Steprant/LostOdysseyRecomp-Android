@@ -25,7 +25,25 @@ Second 1.9 build (9/11 evening): EXP ×10, fast-forward in battle, save point
 healing, D6 settings cleanup, developer page removed, settings menu raster on
 a worker (WP3.4), audio stall lines without app pauses.
 
-Open: WP3.1 fence ring, 3.3, 3.5, 3.7 (60 FPS per scene); WP7.2.3 unjittered
-draws; WP5 black spot at 576p and D4; capture of the scene before SGSR2
+Third 1.9 build (9/11 night):
+- WP3.5: the "4–5 s block after settings saved" was the Quick tools / F1
+  overlay, which pauses the game and saves settings.ini. Every pause, resume,
+  background and foreground bumps `host_ui::SuspendEpoch()`; slow frame lines
+  over such an interval end with `game_paused=1`, the Tester frame CSV has a
+  `game_paused` column, and the session summary and `compare-tester.py` leave
+  those intervals out (`paused_intervals`).
+- WP5: the shadow projection (VS 99c2) the game feeds NaN in c2..c5 on the
+  first frame after a load is skipped (`renderer: skipped shadow projection
+  with non-finite c2..c5`); suspected cause of the black spot after loads.
+  `LO_SKIP_NAN_SHADOW_PROJECTION=0` draws it.
+- WP7.2.3 classified, nothing left to compensate: `unjittered_known=0` in all
+  three logs; every unknown-camera draw that tests depth already gets the SR
+  viewport jitter; the rest (depth test off: rect lists and quads with
+  blending) are screen-space overlays and effects.
+- WP3.1 deferred: slow frames whose slowest stage is `present-fence` were 18 in
+  about 4,300 s of logs; the remaining stalls are the game's own loads
+  (`cp_idle` ~250 ms at each battle start).
+
+Open: 3.2/3.3 game stalls at loads, 3.7 (60 FPS per scene); D4; capture of the scene before SGSR2
 (WP0); D7 default filter; WP6 release. Nothing in 1.9 is measured on the
 phone yet beyond the logs above.
