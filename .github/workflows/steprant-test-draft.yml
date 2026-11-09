@@ -89,29 +89,10 @@ jobs:
             echo
             printf -- '- `%s`: SHA-256 `%s`, commit `%s`, APK run %s\n' "$(basename "$apk")" "$sum" "$commit" "$RUN_ID"
           } > "$notes"
-          # A draft has no tag yet (its tag_name can read "untagged-..."): find
-          # the day's draft by tag or by title.
-          title="Lost Odyssey Steprant Android 1.9 test ($day)"
-          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            -q ".[] | select(.tag_name == \"$tag\" or (.draft and .name == \"$title\")) | .id" | head -n 1)
-          if [[ -n "$release_id" ]]; then
-            draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" -q .draft)
-            if [[ "$draft" != true ]]; then
-              echo "::error::release $tag is published; test builds only go to drafts"; exit 1
-            fi
-            gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" -q .body > out/previous.md || true
-            grep -F -- '- `' out/previous.md | grep -vF "$(basename "$apk")" >> "$notes" || true
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-              -f body="$(cat "$notes")" -F draft=true -f make_latest=false -f target_commitish="$commit" >/dev/null
-            # gh release upload resolves the tag, which a draft does not have
-            # yet: upload to the release id, replacing an asset of the same name.
-            name=$(basename "$apk")
-            old=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" -q ".[] | select(.name == \"$name\") | .id")
-            [[ -n "$old" ]] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
-            gh api -X POST "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$name" \
-              -H "Content-Type: application/vnd.android.package-archive" --input "$apk" -q .name
-          else
-            gh release create "$tag" "$apk" --draft --target "$commit" \
-              --title "$title" --notes-file "$notes" -R "$GITHUB_REPOSITORY"
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.draft and (.name | startswith(\"Lost Odyssey Steprant Android 1.9 test\"))) | {draft, name, assets: [.assets[].name]}"
+          # One draft per test APK: the token of this workflow cannot read or
+          # change an existing draft (HTTP 403 on 9/11), but it can create one.
+          tag="v1.9-steprant.$day-$SHORT_NAME"
+          title="Lost Odyssey Steprant Android 1.9 test ($day, $SHORT_NAME)"
+          gh release create "$tag" "$apk" --draft --target "$commit" \
+            --title "$title" --notes-file "$notes" -R "$GITHUB_REPOSITORY"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.draft and .name == \"$title\") | {draft, name, assets: [.assets[].name]}"
