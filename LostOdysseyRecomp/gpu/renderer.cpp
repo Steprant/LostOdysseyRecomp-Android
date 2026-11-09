@@ -10345,6 +10345,31 @@ void main()
                     if (!post.bloom) psConstants[7 * 4] = 0;
                     if (post.depthOfFieldPercent < 100 || !post.bloom) drawConstantsModified[1] = true;
                 }
+                // WP5: the shadow projection (VS 99c2) rebuilds each pixel's
+                // position as linearDepth * (ndcX*c2 + ndcY*c3 + c4) + c5. On the
+                // first frame after a load the game hands it NaN in c2..c5 (logged
+                // as rejection=invalid_constants, 9/11 at 900p and before at 576p):
+                // every pixel it touches turns NaN, which reaches the upscaler as
+                // black and left a black spot. Such a draw cannot shade anything
+                // correctly; it is skipped, as the game's next frame redraws it.
+                // LO_SKIP_NAN_SHADOW_PROJECTION=0 draws it as before.
+                if (key.vs == temporal::ShadowProjectionVS) {
+                    static const bool skipNan = [] {
+                        const char* value = std::getenv("LO_SKIP_NAN_SHADOW_PROJECTION");
+                        return !(value && std::string_view(value) == "0");
+                    }();
+                    bool finite = true;
+                    for (unsigned i = 2 * 4; i < 6 * 4 && finite; ++i)
+                        finite = std::isfinite(std::bit_cast<float>(psConstants[i]));
+                    if (!finite && skipNan) {
+                        static uint64_t skippedNanShadows = 0;
+                        const uint64_t skipped = ++skippedNanShadows;
+                        if ((skipped & (skipped - 1)) == 0) // 1, 2, 4, 8, ...
+                            LOG_INFO("renderer: skipped shadow projection with non-finite c2..c5 ps={:016x} frame={} total={}",
+                                key.ps, frame, skipped);
+                        return;
+                    }
+                }
                 // Diagnostic selection uses only GPU draw constants, not the CPU
                 // presented-swap counter. Shader/layout recognition is deliberately
                 // limited to the path verified in the captured Map2 scene.
