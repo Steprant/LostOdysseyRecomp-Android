@@ -14,6 +14,12 @@ namespace host_ui
 {
     // Global pause state for host in-game overlay menus (e.g. F1 Debug Menu)
     inline std::atomic<bool> g_gamePaused{false};
+    // Counts every pause, resume, background and foreground of the game.
+    // Frame and audio diagnostics compare it across an interval: an interval
+    // that spans a change was a suspension, not a slow frame.
+    inline std::atomic<uint32_t> g_suspendEpoch{0};
+    inline void NoteSuspendChange() { g_suspendEpoch.fetch_add(1, std::memory_order_relaxed); }
+    inline uint32_t SuspendEpoch() { return g_suspendEpoch.load(std::memory_order_relaxed); }
     inline std::atomic<bool> g_stopping{false};
     inline std::mutex g_pauseMutex;
     inline std::condition_variable g_pauseCv;
@@ -57,6 +63,7 @@ namespace host_ui
             if (!g_stopping.load(std::memory_order_relaxed))
             {
                 bool wasPaused = g_gamePaused.load(std::memory_order_relaxed);
+                if (paused != wasPaused) NoteSuspendChange();
                 if (paused && !wasPaused)
                 {
                     debug_menu::fast_forward::SetPaused(true);

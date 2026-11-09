@@ -21,7 +21,7 @@ import java.util.zip.ZipOutputStream;
 
 /** Bounded, private trace files. All methods run on the collector thread. */
 final class TesterTraceFiles {
-    static final String FRAME_HEADER = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws,gpu_completed_batch_total_ns,gpu_completed_batches,audio_queue_empty_count,audio_clock_resets,xma_decode_attempts,xma_decode_failures,xma_decode_wall_total_ns,movie_guest_frames,movie_guest_pts_ms,movie_update_wall_ns,inline_pipeline_attempts,inline_pipeline_failures,inline_pipeline_wall_total_ns,last_pipeline_vs_hash,last_pipeline_ps_hash,movie_active,present_accepted,slow_interval\n";
+    static final String FRAME_HEADER = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws,gpu_completed_batch_total_ns,gpu_completed_batches,audio_queue_empty_count,audio_clock_resets,xma_decode_attempts,xma_decode_failures,xma_decode_wall_total_ns,movie_guest_frames,movie_guest_pts_ms,movie_update_wall_ns,inline_pipeline_attempts,inline_pipeline_failures,inline_pipeline_wall_total_ns,last_pipeline_vs_hash,last_pipeline_ps_hash,movie_active,present_accepted,slow_interval,game_paused\n";
     static final String CPU_HEADER = "monotonic_ns,process_cpu_time_ms,process_cpu_percent_one_core,logical_processors\n";
     static final String THERMAL_HEADER = "monotonic_ns,android_thermal_status,thermal_headroom,battery_temperature_c\n";
     static final String THREAD_HEADER = "monotonic_ns,thread_id,name,state,thread_cpu_ticks,ticks_per_second,thread_cpu_percent_one_core\n";
@@ -175,7 +175,7 @@ final class TesterTraceFiles {
             try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
                 for (String line; (line = in.readLine()) != null;) {
                     String[] values = line.split(",", -1);
-                    if (values.length != 24) continue;
+                    if (values.length < 24) continue;
                     try {
                         long time = Long.parseLong(values[0]), total = Long.parseLong(values[6]), count = Long.parseLong(values[7]);
                         if (previousTime != 0 && time - previousTime < 1_000_000_000L) continue;
@@ -219,14 +219,17 @@ final class TesterTraceFiles {
         }
         List<Long> intervals = new ArrayList<>();
         long totalInterval = 0;
-        int spikes = 0;
+        int spikes = 0, pausedIntervals = 0;
         StringBuilder spikeTimes = new StringBuilder();
         for (File file : files(dir, "frames")) {
             try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
                 for (String line; (line = in.readLine()) != null;) {
                     String[] fields = line.split(",", -1);
-                    if (fields.length != 24) continue;
+                    if (fields.length < 24) continue;
                     try {
+                        // Steprant 2.0: an interval that spans a pause of the
+                        // game (overlay, background) is not a frame.
+                        if (fields.length > 24 && fields[24].equals("1")) { ++pausedIntervals; continue; }
                         long value = Long.parseLong(fields[1]);
                         if (value > 0) { intervals.add(value); totalInterval += value; }
                         if (fields[23].equals("1")) {
@@ -250,7 +253,7 @@ final class TesterTraceFiles {
         String onePercentLow = slowestTime > 0 ? String.format(java.util.Locale.US, "%.3f", slowestOnePercent * 1_000_000_000.0 / slowestTime) : "null";
         zipText(zip, "summary.json", "{\"retained_intervals\":" + intervals.size() + ",\"p95_interval_ns\":" + (p95 == 0 ? "null" : p95) +
             ",\"p99_interval_ns\":" + (p99 == 0 ? "null" : p99) + ",\"accepted_presents_per_second\":" + fps +
-            ",\"estimated_1pct_low_accepted_present_fps\":" + onePercentLow + ",\"slow_intervals\":" + spikes +
+            ",\"estimated_1pct_low_accepted_present_fps\":" + onePercentLow + ",\"slow_intervals\":" + spikes + ",\"paused_intervals\":" + pausedIntervals +
             ",\"scope\":\"retained accepted-present intervals; not display latency or whole-frame GPU time\"}\n");
         zipText(zip, "events.json", "{\"slow_intervals_in_retained_trace\":" + spikes +
             ",\"saved_windows\":" + files(dir, "event").length +

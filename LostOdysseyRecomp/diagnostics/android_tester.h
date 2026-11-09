@@ -28,6 +28,9 @@ struct Frame {
     uint64_t movieFrames = 0, moviePtsMs = 0, movieUpdateWallNs = 0;
     uint64_t pipelineCreates = 0, pipelineFailures = 0, pipelineWallNs = 0, pipelineVs = 0, pipelinePs = 0;
     bool movieActive = false, presented = false, spike = false;
+    // The interval since the previous present spans a pause of the game
+    // (overlay, background): a suspension, left out of the frame statistics.
+    bool gamePaused = false;
 };
 
 class Recorder {
@@ -97,8 +100,11 @@ public:
         }
         movieWall_.store(wallNs, std::memory_order_relaxed);
     }
-    void Add(uint64_t now, uint64_t wall, uint64_t cpu, bool presented, uint64_t gpuTotal, uint64_t gpuBatches) {
+    void Add(uint64_t now, uint64_t wall, uint64_t cpu, bool presented, uint64_t gpuTotal, uint64_t gpuBatches,
+             uint32_t suspendEpoch = 0, bool pausedNow = false) {
         if (!recording.load(std::memory_order_acquire)) return;
+        const uint32_t previousEpoch = suspendEpoch_.exchange(suspendEpoch, std::memory_order_relaxed);
+        const bool gamePaused = pausedNow || previousEpoch != suspendEpoch;
         // Advance even when the queue is busy or full; otherwise a dropped
         // diagnostic sample would look like a slow game frame in the next one.
         uint64_t interval = 0;
@@ -117,7 +123,7 @@ public:
             pipelineCreates_.load(std::memory_order_relaxed), pipelineFailures_.load(std::memory_order_relaxed),
             pipelineWall_.load(std::memory_order_relaxed), pipelineVs_.load(std::memory_order_relaxed), pipelinePs_.load(std::memory_order_relaxed),
             movieActive_.load(std::memory_order_relaxed),
-            presented, automatic.load(std::memory_order_relaxed) && interval >= threshold_};
+            presented, automatic.load(std::memory_order_relaxed) && interval >= threshold_ && !gamePaused, gamePaused};
         if (count_ == Capacity) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
         frames_[(head_ + count_) % Capacity] = sample;
         ++count_;
@@ -151,6 +157,7 @@ private:
     size_t head_ = 0, count_ = 0;
     std::atomic<uint64_t> dropped_{0}, rendererFrame_{0}, draws_{0}, starved_{0}, clockResets_{0};
     std::atomic<uint64_t> previousPresent_{0};
+    std::atomic<uint32_t> suspendEpoch_{0};
     std::atomic<uint64_t> xmaFrames_{0}, xmaFailures_{0}, xmaWall_{0}, movieFrames_{0}, moviePts_{0}, movieWall_{0};
     std::atomic<uint64_t> pipelineCreates_{0}, pipelineFailures_{0}, pipelineWall_{0}, pipelineVs_{0}, pipelinePs_{0};
     std::atomic<bool> movieActive_{false};

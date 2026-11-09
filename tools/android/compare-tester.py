@@ -125,8 +125,13 @@ def analyse(path, start=None, end=None):
         seconds = (ns - first) / 1e9
         return (start is None or seconds >= start) and (end is None or seconds <= end)
 
+    # Steprant 2.0: an interval that spans a pause of the game (overlay,
+    # Android background; column game_paused) is a suspension, not a frame.
+    def paused(r):
+        return (r.get("game_paused") or "0").strip() == "1"
+    out["paused_intervals"] = sum(1 for r in frames if paused(r) and in_window(number(r["monotonic_ns"])))
     intervals = [number(r["interval_ns"]) / 1e6 for r in frames
-                 if number(r.get("interval_ns")) and in_window(number(r["monotonic_ns"]))]
+                 if number(r.get("interval_ns")) and not paused(r) and in_window(number(r["monotonic_ns"]))]
     if intervals:
         out["frames"] = len(intervals)
         out["seconds"] = sum(intervals) / 1000.0

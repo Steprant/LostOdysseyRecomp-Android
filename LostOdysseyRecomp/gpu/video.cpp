@@ -413,7 +413,10 @@ namespace gpu::video
             if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
                 g_androidWasBackgrounded = true;
                 g_androidSurfaceReady = false;
+                host_ui::NoteSuspendChange();
             }
+            else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
+                host_ui::NoteSuspendChange();
             return true;
         }
 #endif
@@ -5059,7 +5062,7 @@ namespace gpu::video
             const uint64_t wallAfter = ::diagnostics::android_tester::NowNs(), cpuAfter = threadTime();
             tester.Add(wallAfter, wallAfter - wallBefore,
                 cpuBefore && cpuAfter >= cpuBefore ? cpuAfter - cpuBefore : 0,
-                ok, gpu_busy::Total(), gpu_busy::Batches());
+                ok, gpu_busy::Total(), gpu_busy::Batches(), host_ui::SuspendEpoch(), host_ui::IsGamePaused());
             return ok;
         }
 #endif

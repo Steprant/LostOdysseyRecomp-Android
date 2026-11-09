@@ -6,6 +6,7 @@
 #include <settings/config.h>
 #include <gpu/render_timing.h>
 #include <os/logger.h>
+#include <host_ui/host_ui.h>
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,12 @@ void AddWaitRegMem(double milliseconds)
 static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double presentMs,
     const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs, double acquireMs)
 {
+    // An interval that spans a pause of the game (F1 / Quick tools overlay,
+    // Android background) is tagged: it is a suspension, not a slow frame.
+    static uint32_t lastEpoch = host_ui::SuspendEpoch();
+    const uint32_t epoch = host_ui::SuspendEpoch();
+    const bool suspended = epoch != lastEpoch || host_ui::IsGamePaused();
+    lastEpoch = epoch;
     if (!pacing.hasPrevious || !pacing.presentAccepted || !std::isfinite(pacing.betweenMs)) return;
     const double total = pacing.betweenMs + flushMs + waitMs + presentMs;
     if (!(total > 50.0)) return;
@@ -66,9 +73,10 @@ static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double
     const uint32_t n = reported++;
     if (n >= 300 && n % 10 != 0) return;
     LOG_INFO("slow frame swap={} total={:.1f}ms between={:.1f}ms cp_idle={:.1f}ms cp_busy={:.1f}ms gpu_fence_wait={:.1f}ms "
-        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms present_slowest={}:{:.1f}ms previous_post={:.1f}ms n={}",
+        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms present_slowest={}:{:.1f}ms previous_post={:.1f}ms n={}{}",
         swap, total, pacing.betweenMs, idleMs, std::max(0.0, pacing.betweenMs - idleMs), fenceMs, regMemMs,
-        flushMs, waitMs, presentMs, acquireMs, pacing.presentSlowestStage, pacing.presentSlowestStageMs, pacing.previousSwapPostMs, n + 1);
+        flushMs, waitMs, presentMs, acquireMs, pacing.presentSlowestStage, pacing.presentSlowestStageMs, pacing.previousSwapPostMs, n + 1,
+        suspended ? " game_paused=1" : "");
 }
 void EngineTick(double delta)
 {

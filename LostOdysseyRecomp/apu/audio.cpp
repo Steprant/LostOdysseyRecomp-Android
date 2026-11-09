@@ -187,6 +187,8 @@ namespace apu
                 g_resumedAt = std::chrono::steady_clock::now().time_since_epoch().count();
             else if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
                 g_resumedAt = 0;
+            if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND || event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
+                g_pauseChanges.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 

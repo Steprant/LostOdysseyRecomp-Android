@@ -13,12 +13,12 @@ compare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(compare)
 
 
-def archive(path, frame_ms, gpu_busy):
-    header = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws\n"
+def archive(path, frame_ms, gpu_busy, paused=()):
+    header = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws,game_paused\n"
     rows, t = [], 0
     for i, ms in enumerate(frame_ms):
         t += int(ms * 1e6)
-        rows.append(f"{t},{int(ms * 1e6)},0,0,{i},500\n")
+        rows.append(f"{t},{int(ms * 1e6)},0,0,{i},500,{1 if i in paused else 0}\n")
     gpu = "monotonic_ns,completed_batch_total_ns,completed_batch_count\n0,0,0\n" + f"{t},{int(t * gpu_busy)},10\n"
     log = ("[    1.000 t1] [info]  start\n"
            "[   11.000 t2] [info]  gpu passes: frames=300 lists=600 untimed_lists=0 per_frame: passes=50.0 empty=4.0 "
@@ -58,6 +58,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert result["what-if dead_store_mb"] == 70.0 and result["what-if merge_passes"] == 6.0, result
     assert result["sgsr2_input"] == "2003x900" and abs(result["render_mpix"] - 1.8027) < 1e-3, result
     assert result["sgsr2_smaa"] == "on (rgba8)", result
+    # An interval spanning a pause of the game (Quick tools, background) is not a slow frame.
+    c = Path(tmp) / "c.zip"
+    archive(c, [33.3] * 98 + [5185.0, 80.0], 0.7, paused={98})
+    paused_result = compare.analyse(c)
+    assert paused_result["paused_intervals"] == 1 and paused_result["frames"] == 99, paused_result
+    assert paused_result["frames_over_50ms"] == 1 and paused_result["frame_max_ms"] == 80.0, paused_result
     assert result["draw_fit_us_per_draw"] == 12.0 and result["draw_fit_fixed_ms"] == 3.0, result
     output = io.StringIO()
     with redirect_stdout(output):

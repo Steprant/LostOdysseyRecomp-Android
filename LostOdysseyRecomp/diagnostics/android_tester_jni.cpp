@@ -53,7 +53,7 @@ Java_io_github_freefrank_lostodyssey_RuntimeActivity_nativeTesterDrain(JNIEnv* e
                  << f.audioStarved << ',' << f.audioClockResets << ',' << f.xmaFrames << ',' << f.xmaFailures << ','
                  << f.xmaDecodeWallNs << ',' << f.movieFrames << ',' << f.moviePtsMs << ',' << f.movieUpdateWallNs << ','
                  << f.pipelineCreates << ',' << f.pipelineFailures << ',' << f.pipelineWallNs << ',' << f.pipelineVs << ',' << f.pipelinePs << ','
-                 << f.movieActive << ',' << f.presented << ',' << f.spike << '\n';
+                 << f.movieActive << ',' << f.presented << ',' << f.spike << ',' << f.gamePaused << '\n';
         return env->NewStringUTF(text.str().c_str());
     } catch (const std::bad_alloc&) {
         return nullptr;
