@@ -32,6 +32,7 @@ prefix = r'''
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -83,6 +84,7 @@ void Check(bool ok,const char* reason) {
     if(!ok) { std::fprintf(stderr,"FAIL: %s\n",reason); std::exit(1); }
 }
 void Write(const std::string& value) { std::ofstream("settings.ini") << value; }
+std::string Contents() { std::ifstream in("settings.ini"); return std::string(std::istreambuf_iterator<char>(in), {}); }
 uint32_t Draw(uint32_t result=1,uint32_t caller=0x829E31F8) {
     PPCContext ctx; ctx.lr=caller; ctx.r6.u32=0x1000;
     originalDraw=result;
@@ -100,7 +102,7 @@ int main() {
     fs::current_path(scratch);
     using settings::EncounterRate;
     Check(settings::GetConfig().encounterRate==EncounterRate::Normal &&
-        !settings::GetConfig().battleExpDouble && !settings::GetConfig().battleSpDouble,"safe defaults for existing profiles");
+        settings::GetConfig().battleExpMultiplier==1 && !settings::GetConfig().battleSpDouble,"safe defaults for existing profiles");
     Check(settings::GetConfig().discordStatus,"Discord status defaults On for existing profiles");
     for (auto text : {"", "sgsr1=2\n", "sgsr1=-1\n", "sgsr1=bad\n"}) {
         Write(text); Check(!settings::Read().sgsr1,"missing/invalid SGSR1 keeps the standard renderer");
@@ -177,41 +179,51 @@ int main() {
                     "encounter_rate=1\nno_random_encounters=1\n"}) {
         Write(text); Check(settings::Read().encounterRate==EncounterRate::Half,"new key wins in either order");
     }
+    Write("encounter_rate=3\nno_random_encounters=1\n");
+    Check(settings::Read().encounterRate==EncounterRate::ThreeQuarters,"stored 3 is the 0.75 rate and wins over legacy None");
     for(auto text : {"no_random_encounters=1\nencounter_rate=bad\n",
-        "encounter_rate=3\nno_random_encounters=1\n","encounter_rate=-1\n",
+        "encounter_rate=4\nno_random_encounters=1\n","encounter_rate=-1\n",
         "encounter_rate=4294967295\n"}) {
         Write(text); Check(settings::Read().encounterRate==EncounterRate::Normal,"invalid new key cannot inherit legacy None");
     }
     for(auto text : {"", "battle_exp_double=0\n", "battle_exp_double=2\n",
-                    "battle_exp_double=-1\n", "battle_exp_double=bad\n"}) {
-        Write(text); Check(!settings::Read().battleExpDouble,"missing/invalid battle EXP is off");
+                    "battle_exp_double=-1\n", "battle_exp_double=bad\n",
+                    "battle_exp_multiplier=0\n", "battle_exp_multiplier=5\n",
+                    "battle_exp_multiplier=bad\nbattle_exp_double=1\n"}) {
+        Write(text); Check(settings::Read().battleExpMultiplier==1,"missing/invalid battle EXP is x1");
     }
     Write("width=1600\nbattle_exp_double=1\n");
-    Check(settings::Read().battleExpDouble,"battle EXP key parsed");
+    Check(settings::Read().battleExpMultiplier==2,"legacy battle EXP x2 key parsed as x2");
+    for(uint32_t m : {1u,2u,3u,4u}) {
+        Write(("battle_exp_double=1\nbattle_exp_multiplier="+std::to_string(m)+"\n").c_str());
+        Check(settings::Read().battleExpMultiplier==m,"multiplier key wins over the legacy key");
+    }
     for(auto text : {"", "battle_sp_double=2\n", "battle_sp_double=-1\n", "battle_sp_double=bad\n"}) {
         Write(text); Check(!settings::Read().battleSpDouble,"missing/invalid battle SP is off");
     }
     Write("width=1600\nbattle_exp_double=1\n");
     auto preview=settings::GetConfig(); preview.width=2000;
     settings::PreviewConfig(preview);
-    Check(settings::SaveBattleExpDouble(true) && settings::GetConfig().battleExpDouble,
+    Check(settings::SaveBattleExpMultiplier(3) && settings::GetConfig().battleExpMultiplier==3,
         "EXP preference persists independently");
+    Check(Contents().find("battle_exp_double=1\n")!=std::string::npos &&
+        Contents().find("battle_exp_multiplier=3\n")!=std::string::npos,"x3 keeps the legacy x2 key for older builds");
     Check(settings::SaveBattleSpDouble(true) && settings::GetConfig().battleSpDouble &&
-        settings::Read().battleExpDouble && settings::Read().battleSpDouble,
+        settings::Read().battleExpMultiplier==3 && settings::Read().battleSpDouble,
         "SP setting persists independently of EXP");
-    for(auto rate : {EncounterRate::Normal,EncounterRate::Half,EncounterRate::None}) {
+    for(auto rate : {EncounterRate::Normal,EncounterRate::ThreeQuarters,EncounterRate::Half,EncounterRate::None}) {
         Check(settings::SaveEncounterRate(rate),"encounter preference saved");
-        Check(settings::Read().encounterRate==rate && settings::Read().battleExpDouble && settings::Read().battleSpDouble,
+        Check(settings::Read().encounterRate==rate && settings::Read().battleExpMultiplier==3 && settings::Read().battleSpDouble,
             "rate round trip retains independent EXP setting");
         Check(settings::Read().width==1600,"debug save does not commit a graphics preview");
     }
     auto graphics=settings::GetConfig();
-    graphics.encounterRate=EncounterRate::Normal; graphics.battleExpDouble=false; graphics.battleSpDouble=false;
+    graphics.encounterRate=EncounterRate::Normal; graphics.battleExpMultiplier=1; graphics.battleSpDouble=false;
     Check(settings::SaveConfig(graphics),"ordinary settings save");
-    Check(settings::Read().encounterRate==EncounterRate::None && settings::Read().battleExpDouble && settings::Read().battleSpDouble,
+    Check(settings::Read().encounterRate==EncounterRate::None && settings::Read().battleExpMultiplier==3 && settings::Read().battleSpDouble,
         "ordinary settings save preserves debug preferences");
     settings::PreviewConfig(graphics);
-    Check(settings::GetConfig().encounterRate==EncounterRate::None && settings::GetConfig().battleExpDouble && settings::GetConfig().battleSpDouble,
+    Check(settings::GetConfig().encounterRate==EncounterRate::None && settings::GetConfig().battleExpMultiplier==3 && settings::GetConfig().battleSpDouble,
         "graphics preview cannot overwrite debug preferences");
 
     // Execute the real wrapper, including the successful-draw original-body
@@ -230,9 +242,25 @@ int main() {
         Check(PPC_LOAD_U32(0x832C95C0+564)==123 && PPC_LOAD_U32(0x832C95C0+580)==0,
             "original threshold/distance reset survives suppressed encounters");
     }
+    unsigned threeQuarters=0;
+    debug_menu::SetEncounterRate(EncounterRate::ThreeQuarters);
+    for(unsigned i=0;i<100;++i) {
+        Check(Draw(0)==0,"failed walking draw remains zero at 0.75");
+        Check(Draw(1,0x12345678)==1,"scripted/other caller never suppressed at 0.75");
+        const auto result=Draw();
+        Check(result==((i&3)!=0 ? 1u : 0u),"0.75 skips the first of every four successful draws");
+        threeQuarters+=result;
+    }
     debug_menu::SetEncounterRate(EncounterRate::None);
     for(unsigned i=0;i<100;++i) none+=Draw();
-    Check(normal==100 && half==50 && none==0,"100 successful draws give 100/50/0 battles");
+    Check(normal==100 && threeQuarters==75 && half==50 && none==0,"100 successful draws give 100/75/50/0 battles");
+    debug_menu::SetEncounterRate(EncounterRate::ThreeQuarters);
+    Check(Draw()==0 && Draw()==1 && Draw()==1 && Draw()==1 && Draw()==0,"0.75 restarts deterministically after a mode change");
+    debug_menu::SetEncounterEveryStepEnabled(true);
+    Check(Draw()==1 && settings::Read().encounterRate==EncounterRate::ThreeQuarters,"Every Step permits battles over 0.75");
+    debug_menu::SetEncounterRate(EncounterRate::ThreeQuarters);
+    Check(!debug_menu::EncounterEveryStepEnabled(),"0.75 disables Every Step");
+    debug_menu::SetEncounterRate(EncounterRate::None);
     Check(Draw(1,0x829E31F4)==1,"None leaves every other call site unchanged");
     Check(Draw(2)==2,"non-battle original result is preserved");
     tourPending=true;
@@ -259,7 +287,7 @@ int main() {
     Check(!debug_menu::EncounterEveryStepEnabled() && Draw()==1,"Normal disables Every Step");
     Check(originalCalls==wrapperCalls,"every wrapper invocation runs the original draw");
     fs::current_path(previous); fs::remove_all(scratch);
-    std::printf("PASS production encounter hook/config: 100 successful walking draws -> Normal=%u Half=%u None=%u; caller/tour/Every Step and migration verified\n",normal,half,none);
+    std::printf("PASS production encounter hook/config: 100 successful walking draws -> Normal=%u 0.75=%u Half=%u None=%u; caller/tour/Every Step and migration verified\n",normal,threeQuarters,half,none);
 }
 '''
 

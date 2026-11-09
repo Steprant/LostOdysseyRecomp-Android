@@ -88,10 +88,10 @@ int wmain(int argc, wchar_t** argv)
     Write("no_random_encounters=2\n");
     Check(settings::Read().encounterRate == settings::EncounterRate::Normal, "invalid legacy value defaults Normal");
     Write("no_random_encounters=1\nencounter_rate=1\nbattle_exp_double=1\n");
-    Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpDouble,
+    Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpMultiplier == 2,
         "new encounter rate overrides legacy and EXP loads independently");
     Write("encounter_rate=0\nno_random_encounters=1\nbattle_exp_double=2\n");
-    Check(settings::Read().encounterRate == settings::EncounterRate::Normal && !settings::Read().battleExpDouble,
+    Check(settings::Read().encounterRate == settings::EncounterRate::Normal && settings::Read().battleExpMultiplier == 1,
         "new key precedence is independent of ordering; invalid EXP defaults off");
     Write("no_random_encounters=1\nencounter_rate=garbage\n");
     Check(settings::Read().encounterRate == settings::EncounterRate::Normal, "malformed new rate overrides legacy safely");
@@ -234,8 +234,9 @@ int wmain(int argc, wchar_t** argv)
           settings::GetConfig().encounterRate == settings::EncounterRate::Half &&
           Contents().find("encounter_rate=1\n") != std::string::npos,
         "Half encounter rate persists");
-    Check(settings::SaveBattleExpDouble(true) && settings::GetConfig().battleExpDouble &&
-          Contents().find("battle_exp_double=1\n") != std::string::npos,
+    Check(settings::SaveBattleExpMultiplier(2) && settings::GetConfig().battleExpMultiplier == 2 &&
+          Contents().find("battle_exp_double=1\n") != std::string::npos &&
+          Contents().find("battle_exp_multiplier=2\n") != std::string::npos,
         "battle EXP preference persists");
     for (const auto button : {0u, 1u})
     {
@@ -255,7 +256,7 @@ int wmain(int argc, wchar_t** argv)
     auto menuPreview = settings::GetConfig();
     menuPreview.width = 2200;
     menuPreview.encounterRate = settings::EncounterRate::Normal;
-    menuPreview.battleExpDouble = false;
+    menuPreview.battleExpMultiplier = 1;
     menuPreview.fastForwardButton = 0;
     settings::PreviewConfig(menuPreview);
     Check(settings::GetConfig().fastForwardButton == 1, "graphics preview preserves the fast-forward button");
@@ -266,14 +267,14 @@ int wmain(int argc, wchar_t** argv)
               Contents().find("menu_animation_rate=" + std::to_string(rate) + "\n") != std::string::npos,
             "menu animation multiplier persists and publishes to the hook");
         Check(settings::Read().width == 1280, "menu animation save does not commit a graphics preview");
-        Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpDouble,
+        Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpMultiplier == 2,
             "menu animation save retains encounter rate and battle EXP over a graphics preview");
         CheckFreshProcess(executable, "1", rate);
     }
-    Check(settings::SaveEncounterRate(settings::EncounterRate::None) && settings::SaveBattleExpDouble(false) &&
+    Check(settings::SaveEncounterRate(settings::EncounterRate::None) && settings::SaveBattleExpMultiplier(1) &&
           settings::Read().menuAnimationRate == 4 && settings::MenuAnimationRate() == 4,
         "encounter and battle EXP saves retain the persisted and live animation rate");
-    Check(settings::SaveEncounterRate(settings::EncounterRate::Half) && settings::SaveBattleExpDouble(true),
+    Check(settings::SaveEncounterRate(settings::EncounterRate::Half) && settings::SaveBattleExpMultiplier(2),
         "restore encounter and battle EXP preferences for subsequent save checks");
     Check(std::filesystem::create_directory("settings.ini.tmp"), "block atomic settings temporary file");
     Check(!settings::SaveMenuAnimationRate(2) && settings::GetConfig().menuAnimationRate == 4 &&
@@ -303,7 +304,7 @@ int wmain(int argc, wchar_t** argv)
     Check(settings::GetConfig().vibrationPercent == 30 && settings::Read().vibrationPercent == 30 &&
           Contents().find("vibration=30\n") != std::string::npos, "vibration strength roundtrips");
     Check(settings::Read().saveAnywhere, "ordinary save retains debug-only preference");
-    Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpDouble,
+    Check(settings::Read().encounterRate == settings::EncounterRate::Half && settings::Read().battleExpMultiplier == 2,
         "ordinary save retains encounter rate and battle EXP");
     Check(settings::Read().fastForward && settings::Read().fastForwardMode == 1 && settings::Read().fastForwardRate == 8 &&
           !settings::Read().fastForwardKeepAudioPitch && settings::Read().fastForwardButton == 1,

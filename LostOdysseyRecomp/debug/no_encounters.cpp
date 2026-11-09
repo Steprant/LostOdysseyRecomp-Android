@@ -19,6 +19,7 @@ namespace
         return requested;
     }
 
+    // Successful walking draws since the last rate change (Half, 0.75).
     std::atomic<uint32_t> halfDraws{0};
 
     // Not persisted: a player must not reboot into a battle on every step.
@@ -91,10 +92,14 @@ PPC_FUNC(sub_829E3268)
         return;
     const auto rate = Requested().load(std::memory_order_relaxed);
     // The original draw has already reset its distance and threshold. Count
-    // only successful walking draws: skip the first, allow the second, repeat.
-    // A tour draw and Encounter Every Step bypass this counter entirely.
-    if (rate == settings::EncounterRate::None ||
-        (rate == settings::EncounterRate::Half && (halfDraws.fetch_add(1, std::memory_order_relaxed) & 1) == 0))
+    // only successful walking draws: Half skips the first and allows the
+    // second, 0.75 skips one in four. A tour draw and Encounter Every Step
+    // bypass this counter entirely.
+    if (rate == settings::EncounterRate::Normal)
+        return;
+    const uint32_t draw = rate == settings::EncounterRate::None ? 0
+        : halfDraws.fetch_add(1, std::memory_order_relaxed);
+    if (!settings::EncounterDrawAllowed(rate, draw))
         ctx.r3.u64 = 0;
 }
 

@@ -42,7 +42,7 @@ struct MockServices
     int partySwitchRequests = 0;
     settings::EncounterRate encounterRate = settings::EncounterRate::Normal;
     int encounterRateSaveCalls = 0;
-    bool battleExpDouble = false;
+    uint32_t battleExpMultiplier = 1;
     bool battleSpDouble = false;
     bool everyStep = false;
     bool allowVictory = true;
@@ -125,8 +125,8 @@ void SetEncounterRate(settings::EncounterRate rate)
     g_mock.everyStep = false;
     ++g_mock.encounterRateSaveCalls;
 }
-bool BattleExpDoubleEnabled() { return g_mock.battleExpDouble; }
-void SetBattleExpDoubleEnabled(bool enabled) { g_mock.battleExpDouble = enabled; }
+uint32_t BattleExpMultiplier() { return g_mock.battleExpMultiplier; }
+void SetBattleExpMultiplier(uint32_t multiplier) { g_mock.battleExpMultiplier = multiplier; }
 bool BattleSpDoubleEnabled() { return g_mock.battleSpDouble; }
 void SetBattleSpDoubleEnabled(bool enabled) { g_mock.battleSpDouble = enabled; }
 bool EncounterEveryStepEnabled() { return g_mock.everyStep; }
@@ -488,7 +488,7 @@ int main()
         for (const auto& mode : debug_menu::cheat_overlay::FastForwardAudioValues)
             Require(rasterizer.MeasureWString(mode[zh]) <= 350,
                 "Fast-forward audio value exceeds the Cheats value column");
-        for (const auto* value : {L"ON", L"OFF"})
+        for (const auto* value : debug_menu::cheat_overlay::BattleExpValues)
             Require(rasterizer.MeasureWString(value) <= 350,
                 "Battle EXP value exceeds the Cheats value column");
         const std::wstring help = debug_menu::cheat_overlay::MenuAnimationHelp[zh];
@@ -553,37 +553,48 @@ int main()
         "Changing audio mode must not enable fast-forward");
     debug_menu::HandleInput(debug_menu::InputAction::Down);
     debug_menu::HandleInput(debug_menu::InputAction::Confirm);
-    Require(g_mock.encounterRate==settings::EncounterRate::Half, "Encounter rate did not select Half");
+    Require(g_mock.encounterRate==settings::EncounterRate::ThreeQuarters, "Encounter rate did not select 0.75");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.encounterRate==settings::EncounterRate::Half, "Encounter rate did not select Half after 0.75");
     debug_menu::HandleInput(debug_menu::InputAction::Right);
     Require(g_mock.encounterRate==settings::EncounterRate::None, "Encounter rate did not select None");
     debug_menu::HandleInput(debug_menu::InputAction::Confirm);
-    Require(g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::None && g_mock.encounterRateSaveCalls==2,
+    Require(g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::None && g_mock.encounterRateSaveCalls==3,
         "Every step must enable the session flag and preserve the saved None choice");
     debug_menu::HandleInput(debug_menu::InputAction::Confirm);
     Require(!g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::Normal,
         "Encounter rate did not wrap from Every step to Normal and disable Every step");
     debug_menu::HandleInput(debug_menu::InputAction::Left);
-    Require(g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::Normal && g_mock.encounterRateSaveCalls==3,
+    Require(g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::Normal && g_mock.encounterRateSaveCalls==4,
         "Backward wrap to Every step must preserve the saved Normal choice");
     debug_menu::HandleInput(debug_menu::InputAction::Left);
     Require(!g_mock.everyStep && g_mock.encounterRate==settings::EncounterRate::None,
         "Left from Every step must select None and disable Every step");
     debug_menu::HandleInput(debug_menu::InputAction::Down);
     debug_menu::HandleInput(debug_menu::InputAction::Confirm);
-    Require(g_mock.battleExpDouble && g_mock.encounterRate==settings::EncounterRate::None,
-        "EXP toggle changed encounter rate or failed to enable");
+    Require(g_mock.battleExpMultiplier==2 && g_mock.encounterRate==settings::EncounterRate::None,
+        "EXP row changed encounter rate or failed to select x2");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.battleExpMultiplier==3, "EXP row did not select x3");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.battleExpMultiplier==4, "EXP row did not select x4");
+    debug_menu::RenderOverlay(rasterizer);
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.battleExpMultiplier==1, "EXP row did not wrap from x4 to OFF");
     debug_menu::HandleInput(debug_menu::InputAction::Left);
-    Require(!g_mock.battleExpDouble && g_mock.encounterRate==settings::EncounterRate::None,
-        "EXP toggle changed encounter rate or failed to disable");
+    Require(g_mock.battleExpMultiplier==4, "EXP row did not wrap back from OFF to x4");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    Require(g_mock.battleExpMultiplier==1 && g_mock.encounterRate==settings::EncounterRate::None,
+        "EXP row changed encounter rate or failed to return to OFF");
     Require(!debug_menu::cheats::session.Get().enabled, "Quick options enabled memory edits");
     debug_menu::RenderOverlay(rasterizer);
 
     // SP and EXP are independent battle awards.
     debug_menu::HandleInput(debug_menu::InputAction::Down); // Row 8: battle SP
     debug_menu::HandleInput(debug_menu::InputAction::Confirm);
-    Require(g_mock.battleSpDouble && !g_mock.battleExpDouble, "SP toggle changed EXP");
+    Require(g_mock.battleSpDouble && g_mock.battleExpMultiplier==1, "SP toggle changed EXP");
     debug_menu::HandleInput(debug_menu::InputAction::Left);
-    Require(!g_mock.battleSpDouble && !g_mock.battleExpDouble, "SP toggle failed to disable");
+    Require(!g_mock.battleSpDouble && g_mock.battleExpMultiplier==1, "SP toggle failed to disable");
     // Cheats / Quick tools / Menu animations: forward/backward cycling persists each choice.
     debug_menu::HandleInput(debug_menu::InputAction::Down); // Row 9: Menu animations
     Require(g_mock.menuAnimationRate == 1, "Menu animation speed should initially be Normal");
@@ -606,7 +617,7 @@ int main()
     g_mock.saveMenuAnimationSuccess = true;
     debug_menu::HandleInput(debug_menu::InputAction::Right);
     Require(g_mock.menuAnimationRate == 2, "Failed animation save must restore the row's previous choice");
-    Require(g_mock.encounterRate == settings::EncounterRate::None && !g_mock.battleExpDouble &&
+    Require(g_mock.encounterRate == settings::EncounterRate::None && g_mock.battleExpMultiplier == 1 &&
             !debug_menu::cheats::session.Get().enabled,
         "Menu animation changes affected another quick-tool option or enabled memory edits");
     debug_menu::RenderOverlay(rasterizer);

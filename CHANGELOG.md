@@ -4,6 +4,14 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
+## Steprant Android 1.9 test builds (2.0 development, branch `steprant/v2.0-dev`) — unreleased
+
+### English
+
+Test builds toward the 2.0 architectural update; see [Super Roadmap 2 notes](docs/notes/android-2.0-roadmap-status.md).
+
+- Quick tools (LB+RB): Battle EXP now cycles OFF/×2/×3/×4 (each character's award stays capped at 100 per battle, as in the game); Encounter rate gains 0.75× between Normal and Half (one successful walking draw in four is skipped).
+
 ## [v1.8-steprant.20261108](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108) — Steprant Android 1.8 — 2026-11-08
 
 ### English

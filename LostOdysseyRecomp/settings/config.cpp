@@ -34,6 +34,7 @@ std::string PackId(std::string text)
 Config Validate(Config value)
 {
     value.encounterRate = ValidEncounterRate(value.encounterRate);
+    value.battleExpMultiplier = ValidBattleExpMultiplier(value.battleExpMultiplier);
     value.gpuDevice = TextValue(std::move(value.gpuDevice));
     value.displayName = TextValue(std::move(value.displayName));
     value.gameLanguagePack = PackId(std::move(value.gameLanguagePack));
@@ -146,6 +147,7 @@ Config Read()
     bool hasAntialiasing = false;
     bool hasEncounterRate = false, legacyNoEncounters = false;
     bool hasHdrPeakAuto = false, hasHdrPeakNits = false, hasAspectRatio = false, hasVsync = false;
+    bool hasBattleExpMultiplier = false, legacyBattleExpDouble = false;
     const auto path = os::user_paths::SettingsPath();
     std::ifstream input(path);
     std::string key;
@@ -159,6 +161,7 @@ Config Read()
         if (name == "antialiasing") { hasAntialiasing = true; value.antialiasing = 0; }
         if (name == "encounter_rate") { hasEncounterRate = true; value.encounterRate = EncounterRate::Normal; }
         if (name == "internal_resolution") value.internalResolution = 0;
+        if (name == "battle_exp_multiplier") { hasBattleExpMultiplier = true; value.battleExpMultiplier = 1; }
         if (name == "fast_forward_button") value.fastForwardButton = 0;
         if (name == "anisotropic_filtering") value.anisotropicFiltering = 0;
         if (name == "aspect_ratio") hasAspectRatio = true;
@@ -322,7 +325,9 @@ Config Read()
         else if (key == "encounter_rate")
             value.encounterRate = ValidEncounterRate(EncounterRate(number));
         else if (key == "battle_exp_double" && number <= 1)
-            value.battleExpDouble = number == 1;
+            legacyBattleExpDouble = number == 1;
+        else if (key == "battle_exp_multiplier")
+            value.battleExpMultiplier = ValidBattleExpMultiplier(number);
         else if (key == "battle_sp_double" && number <= 1)
             value.battleSpDouble = number == 1;
         else if (key == "fast_forward" && number <= 1)
@@ -361,6 +366,7 @@ Config Read()
     // Profiles written before automatic peak detection use their stored peak
     // as an explicit choice. A fresh profile follows the current display.
     if (hasHdrPeakNits && !hasHdrPeakAuto) value.hdrPeakAutomatic = false;
+    if (!hasBattleExpMultiplier && legacyBattleExpDouble) value.battleExpMultiplier = 2;
     // Before the Aspect ratio setting, a 21:9 output resolution was the
     // Widescreen switch; keep that shape.
     if (!hasAspectRatio) value.aspectRatio = gpu::aspect_ratio::Migrated(value.width, value.height);
@@ -433,7 +439,7 @@ void PreviewConfig(const Config &value)
     merged.debugLanguage = Current().debugLanguage;
     merged.saveAnywhere = Current().saveAnywhere;
     merged.encounterRate = Current().encounterRate;
-    merged.battleExpDouble = Current().battleExpDouble;
+    merged.battleExpMultiplier = Current().battleExpMultiplier;
     merged.battleSpDouble = Current().battleSpDouble;
     CopyFastForward(merged, Current());
     merged.menuAnimationRate = Current().menuAnimationRate;
@@ -524,7 +530,8 @@ static bool WriteConfig(const Config &value)
            << "\nperformance_overlay=" << value.performanceOverlay
            << "\nsave_anywhere=" << (value.saveAnywhere ? 1 : 0)
            << "\nencounter_rate=" << uint32_t(value.encounterRate)
-           << "\nbattle_exp_double=" << (value.battleExpDouble ? 1 : 0)
+           << "\nbattle_exp_double=" << (value.battleExpMultiplier >= 2 ? 1 : 0)
+           << "\nbattle_exp_multiplier=" << ValidBattleExpMultiplier(value.battleExpMultiplier)
            << "\nbattle_sp_double=" << (value.battleSpDouble ? 1 : 0)
            << "\nfast_forward=" << (value.fastForward ? 1 : 0)
            << "\nfast_forward_mode=" << value.fastForwardMode
@@ -557,7 +564,7 @@ bool SaveConfig(const Config &requested)
     value.debugLanguage = Current().debugLanguage;
     value.saveAnywhere = Current().saveAnywhere;
     value.encounterRate = Current().encounterRate;
-    value.battleExpDouble = Current().battleExpDouble;
+    value.battleExpMultiplier = Current().battleExpMultiplier;
     value.battleSpDouble = Current().battleSpDouble;
     CopyFastForward(value, Current());
     value.menuAnimationRate = Current().menuAnimationRate;
@@ -631,13 +638,13 @@ bool SaveEncounterRate(EncounterRate rate)
     Current().encounterRate = persisted.encounterRate;
     return true;
 }
-bool SaveBattleExpDouble(bool enabled)
+bool SaveBattleExpMultiplier(uint32_t multiplier)
 {
     std::lock_guard lock(mutex);
     auto persisted = Read();
-    persisted.battleExpDouble = enabled;
+    persisted.battleExpMultiplier = ValidBattleExpMultiplier(multiplier);
     if (!WriteConfig(persisted)) return false;
-    Current().battleExpDouble = enabled;
+    Current().battleExpMultiplier = persisted.battleExpMultiplier;
     return true;
 }
 bool SaveBattleSpDouble(bool enabled)

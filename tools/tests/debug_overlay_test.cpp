@@ -118,8 +118,8 @@ void SetSaveAnywhereEnabled(bool enabled) { g_saveAnywhere = enabled; }
 void RequestPartySwitch() {}
 settings::EncounterRate GetEncounterRate() { return g_encounterRate.load(); }
 void SetEncounterRate(settings::EncounterRate rate) { g_encounterRate = rate; g_everyStep = false; }
-bool BattleExpDoubleEnabled() { return false; }
-void SetBattleExpDoubleEnabled(bool) {}
+uint32_t BattleExpMultiplier() { return 1; }
+void SetBattleExpMultiplier(uint32_t) {}
 bool BattleSpDoubleEnabled() { return false; }
 void SetBattleSpDoubleEnabled(bool) {}
 bool EncounterEveryStepEnabled() { return g_everyStep.load(); }
@@ -302,6 +302,10 @@ int main(int argc, char** argv)
     debug_menu::HandleInput(debug_menu::InputAction::Down);
     renderFrame();
     capture("encounter-rate-zh-playstation.ppm");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    renderFrame();
+    capture("encounter-three-quarters-zh-playstation.ppm");
+    Require(g_encounterRate == settings::EncounterRate::ThreeQuarters, "encounter row did not select 0.75 after Normal");
     for (int i = 0; i < 3; ++i) debug_menu::HandleInput(debug_menu::InputAction::Right);
     renderFrame();
     capture("encounter-every-step-zh-playstation.ppm");
@@ -336,6 +340,10 @@ int main(int argc, char** argv)
     debug_menu::HandleInput(debug_menu::InputAction::Down);
     renderFrame();
     capture("encounter-rate-en.ppm");
+    debug_menu::HandleInput(debug_menu::InputAction::Right);
+    renderFrame();
+    capture("encounter-three-quarters-en.ppm");
+    Require(g_encounterRate == settings::EncounterRate::ThreeQuarters, "encounter row did not select 0.75 after Normal");
     for (int i = 0; i < 3; ++i) debug_menu::HandleInput(debug_menu::InputAction::Right);
     renderFrame();
     capture("encounter-every-step-en.ppm");

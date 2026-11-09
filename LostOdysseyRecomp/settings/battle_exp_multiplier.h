@@ -1,0 +1,32 @@
+#pragma once
+#include <algorithm>
+#include <cstdint>
+
+namespace settings
+{
+// Battle EXP multiplier of the Quick tools (settings.ini battle_exp_multiplier).
+// 1 is the retail award. Profiles from before ×3/×4 stored only
+// battle_exp_double=1, which reads as 2; saving keeps writing that key so an
+// older build still finds its ×2 switch.
+inline constexpr uint32_t BattleExpMultipliers[] = {1, 2, 3, 4};
+inline constexpr uint32_t ValidBattleExpMultiplier(uint32_t multiplier)
+{
+    return multiplier >= 1 && multiplier <= 4 ? multiplier : 1;
+}
+
+inline constexpr uint32_t BattleExpMultiplierIndex(uint32_t multiplier)
+{
+    return ValidBattleExpMultiplier(multiplier) - 1;
+}
+
+// The victory calculator awards each character 0..100 EXP; the game's own
+// application can grant at most one level and discards overflow, so a scaled
+// award keeps the 100 cap. Values outside the retail range are left alone.
+inline constexpr uint32_t ScaledBattleExp(uint32_t gain, uint32_t multiplier)
+{
+    multiplier = ValidBattleExpMultiplier(multiplier);
+    if (gain == 0 || gain > 100 || multiplier == 1)
+        return gain;
+    return std::min(gain * multiplier, 100u);
+}
+}

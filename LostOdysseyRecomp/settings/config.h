@@ -11,6 +11,7 @@
 #include "../../shared/frame_generation/core.h"
 #include "hid/input_map.h"
 #include "encounter_rate.h"
+#include "battle_exp_multiplier.h"
 namespace settings
 {
 inline constexpr uint32_t MenuAnimationRates[] = {1, 2, 4};
@@ -207,7 +208,7 @@ struct Config
     uint32_t performanceOverlay = 0;
     bool saveAnywhere = false; // Debug-only preference; defaults off for existing profiles.
     EncounterRate encounterRate = EncounterRate::Normal; // Debug-only walking encounters.
-    bool battleExpDouble = false; // Debug-only battle reward preference.
+    uint32_t battleExpMultiplier = 1; // Debug-only battle EXP reward: 1, 2, 3 or 4.
     bool battleSpDouble = false; // Debug-only battle skill-point preference.
     // Debug-menu fast-forward, persisted like saveAnywhere: switch, 0 Hold / 1 Toggle,
     // multiplier (one of debug_menu::fast_forward::Rates).
@@ -226,7 +227,7 @@ bool SaveConfig(const Config &config);
 bool SaveDebugLanguage(uint32_t language);
 bool SaveSaveAnywhere(bool enabled);
 bool SaveEncounterRate(EncounterRate rate);
-bool SaveBattleExpDouble(bool enabled);
+bool SaveBattleExpMultiplier(uint32_t multiplier);
 bool SaveBattleSpDouble(bool enabled);
 bool SaveFastForward(bool enabled, uint32_t mode, uint32_t rate, bool keepAudioPitch, uint32_t button);
 bool SaveMenuAnimationRate(uint32_t rate);

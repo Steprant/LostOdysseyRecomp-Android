@@ -29,12 +29,19 @@ inline constexpr const wchar_t* FastForwardAudioHelp[] = {
     L"Keep pitch preserves voices and music; Speed up raises pitch with speed.",
     L"保持音调让人声和音乐维持原调；随速度升调会按加速倍率提高音调。"};
 inline constexpr const wchar_t* EncounterRateLabel[] = {L"Encounter rate",L"遇敌率"};
+// Menu order (settings::EncounterRateMenuOrder), then the session-only Every step.
 inline constexpr const wchar_t* EncounterRateValues[][2] = {
-    {L"Normal",L"正常"}, {L"Half",L"减半"}, {L"None",L"关闭"}, {L"Every step",L"一步一遇敌"}};
+    {L"Normal",L"正常"}, {L"0.75×",L"0.75×"}, {L"Half",L"减半"}, {L"None",L"关闭"}, {L"Every step",L"一步一遇敌"}};
+inline constexpr unsigned EncounterEveryStepIndex = 4;
 inline unsigned EncounterRateIndex() {
-    return debug_menu::EncounterEveryStepEnabled() ? 3 : unsigned(debug_menu::GetEncounterRate());
+    return debug_menu::EncounterEveryStepEnabled() ? EncounterEveryStepIndex
+        : unsigned(settings::EncounterRateMenuIndex(debug_menu::GetEncounterRate()));
 }
-inline constexpr const wchar_t* BattleExpLabel[] = {L"Battle EXP ×2",L"战斗 EXP ×2"};
+inline constexpr const wchar_t* BattleExpLabel[] = {L"Battle EXP",L"战斗 EXP"};
+inline constexpr const wchar_t* BattleExpValues[] = {L"OFF",L"×2",L"×3",L"×4"};
+inline const wchar_t* BattleExpValue() {
+    return BattleExpValues[settings::BattleExpMultiplierIndex(debug_menu::BattleExpMultiplier())];
+}
 inline constexpr const wchar_t* BattleSpLabel[] = {L"Battle SP ×2",L"战斗 SP ×2"};
 inline constexpr const wchar_t* MenuAnimationLabel[] = {L"Menu animations",L"菜单动画"};
 inline constexpr const wchar_t* MenuAnimationValues[][2] = {
@@ -171,10 +178,12 @@ struct Model {
                 fast_forward::SetKeepAudioPitch(!speed.keepAudioPitch);
             } else if (row==6) {
                 const unsigned rate=Wrap(EncounterRateIndex(),direction,unsigned(std::size(EncounterRateValues)));
-                if (rate==3) debug_menu::SetEncounterEveryStepEnabled(true);
-                else debug_menu::SetEncounterRate(settings::EncounterRate(rate));
+                if (rate==EncounterEveryStepIndex) debug_menu::SetEncounterEveryStepEnabled(true);
+                else debug_menu::SetEncounterRate(settings::EncounterRateMenuOrder[rate]);
             } else if (row==7) {
-                debug_menu::SetBattleExpDoubleEnabled(!debug_menu::BattleExpDoubleEnabled());
+                const unsigned index=settings::BattleExpMultiplierIndex(debug_menu::BattleExpMultiplier());
+                debug_menu::SetBattleExpMultiplier(settings::BattleExpMultipliers[
+                    Wrap(index,direction,unsigned(std::size(settings::BattleExpMultipliers)))]);
             } else if (row==8) {
                 debug_menu::SetBattleSpDoubleEnabled(!debug_menu::BattleSpDoubleEnabled());
             } else if (row==9) {
@@ -246,11 +255,11 @@ inline const wchar_t* QuickToolHelp(unsigned row,bool zh) {
         : L"Pairs: LT/RT, LB/RB. Holding both blocks boost.";
     if(row==5) return FastForwardAudioHelp[zh];
     if(row==6) return zh
-        ? L"仅影响步行遇敌；减半交替跳过成功判定，一步一遇敌不保存。剧情与首领战不受影响。"
-        : L"Walking only. Half skips alternate draws; Every step is not saved. Story and boss fights are unchanged.";
+        ? L"仅影响步行遇敌；0.75× 每四次跳过一次，减半交替跳过，一步一遇敌不保存。剧情与首领战不受影响。"
+        : L"Walking only. 0.75× skips one draw in four, Half every other; Every step is not saved.";
     if(row==7) return zh
-        ? L"战斗经验加倍；SP 和金币由各自的规则决定。"
-        : L"Doubles battle EXP only; SP has its own switch.";
+        ? L"战斗经验 ×2、×3 或 ×4，每场上限仍为 100；SP 和金币各有规则。"
+        : L"Battle EXP ×2/×3/×4, still capped at 100 per battle; SP has its own switch.";
     if(row==8) return zh ? L"战斗后获得的技能点加倍，已有进度不变。" : L"Doubles SP earned in battle, not previously learned progress.";
     if(row==9) return MenuAnimationHelp[zh];
     return nullptr;
@@ -296,7 +305,7 @@ inline void Render(host_ui::Rasterizer& r,const Model& m,bool zh,int x,int y,int
         row(4,zh ? L"加速倍率" : L"Speed multiplier",std::to_wstring(speed.multiplier)+L"x");
         row(5,FastForwardAudioLabel[zh],FastForwardAudioValues[speed.keepAudioPitch ? 0:1][zh]);
         row(6,EncounterRateLabel[zh],EncounterRateValues[EncounterRateIndex()][zh]);
-        row(7,BattleExpLabel[zh],debug_menu::BattleExpDoubleEnabled() ? L"ON":L"OFF");
+        row(7,BattleExpLabel[zh],BattleExpValue());
         row(8,BattleSpLabel[zh],debug_menu::BattleSpDoubleEnabled() ? L"ON":L"OFF");
         row(9,MenuAnimationLabel[zh],MenuAnimationValue(m.menuAnimationRate,zh));
         row(10,zh ? L"允许内存修改" : L"Allow memory edits",s.enabled ? L"ON":L"OFF");

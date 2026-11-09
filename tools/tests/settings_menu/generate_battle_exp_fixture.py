@@ -31,10 +31,10 @@ bool saveSucceeds = true;
 settings::Config config;
 namespace settings {
 Config GetConfig() { return config; }
-bool SaveBattleExpDouble(bool enabled) {
+bool SaveBattleExpMultiplier(uint32_t multiplier) {
     ++saves;
     if (!saveSucceeds) return false;
-    config.battleExpDouble = enabled;
+    config.battleExpMultiplier = multiplier;
     return true;
 }
 }
@@ -83,32 +83,50 @@ void Run(uint32_t caller, const std::array<uint32_t, 5>& expected) {
     Check(memory == expectedMemory, "only eligible EXP words change; SP/gold/skills untouched");
 }
 int main(int argc, char** argv) {
-    // Separate process verifies persisted-on startup instead of an initialized atomic.
-    config.battleExpDouble = argc == 2;
-    Check(debug_menu::BattleExpDoubleEnabled() == config.battleExpDouble, "startup setting restored");
+    // Separate process verifies a persisted multiplier at startup instead of an initialized atomic.
+    config.battleExpMultiplier = argc == 2 ? uint32_t(std::atoi(argv[1])) : 1;
+    Check(debug_menu::BattleExpMultiplier() == settings::ValidBattleExpMultiplier(config.battleExpMultiplier),
+        "startup setting restored");
     characters = {0x900, 0x910, 0x920, 0x930, 0x940};
-    gains = {1, 25, 49, 50, 100};
+    gains = {1, 25, 34, 50, 100};
     if (argc == 2) {
-        Run(0x82AC6E14, {2, 50, 98, 100, 100});
+        const uint32_t m = debug_menu::BattleExpMultiplier();
+        std::array<uint32_t, 5> expected;
+        for (uint32_t i = 0; i < 5; ++i) expected[i] = std::min(gains[i] * m, 100u);
+        Run(0x82AC6E14, expected);
         return 0;
     }
-    Run(0x82AC6E14, gains); // Default off.
-    debug_menu::SetBattleExpDoubleEnabled(true);
-    Check(saves == 1 && config.battleExpDouble && debug_menu::BattleExpDoubleEnabled(), "enable persists");
-    Run(0x82AC6E14, {2, 50, 98, 100, 100});
+    Run(0x82AC6E14, gains); // Default off (x1).
+    debug_menu::SetBattleExpMultiplier(2);
+    Check(saves == 1 && config.battleExpMultiplier == 2 && debug_menu::BattleExpMultiplier() == 2, "x2 persists");
+    Run(0x82AC6E14, {2, 50, 68, 100, 100});
+    debug_menu::SetBattleExpMultiplier(3);
+    Check(saves == 2 && config.battleExpMultiplier == 3, "x3 persists");
+    Run(0x82AC6E14, {3, 75, 100, 100, 100});
+    debug_menu::SetBattleExpMultiplier(4);
+    Check(saves == 3 && config.battleExpMultiplier == 4, "x4 persists");
+    Run(0x82AC6E14, {4, 100, 100, 100, 100});
     Run(0x82AC6E10, gains); // Exact return address, not a nearby call.
     Run(0x12345678, gains); // Other callers always run unchanged.
-    gains = {0, 51, 99, 101, 0xffffffff};
-    Run(0x82AC6E14, {0, 100, 100, 101, 0xffffffff});
+    gains = {0, 20, 99, 101, 0xffffffff};
+    Run(0x82AC6E14, {0, 80, 100, 101, 0xffffffff});
     characters[1] = 0;
-    Run(0x82AC6E14, {0, 51, 100, 101, 0xffffffff}); // Empty party slot.
-    debug_menu::SetBattleExpDoubleEnabled(false);
-    Check(saves == 2 && !config.battleExpDouble && !debug_menu::BattleExpDoubleEnabled(), "disable persists");
+    Run(0x82AC6E14, {0, 20, 100, 101, 0xffffffff}); // Empty party slot.
+    debug_menu::SetBattleExpMultiplier(9); // Out of range falls back to retail.
+    Check(saves == 4 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "invalid is x1");
+    debug_menu::SetBattleExpMultiplier(1);
+    Check(saves == 5 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 1, "disable persists");
     Run(0x82AC6E14, gains);
     saveSucceeds = false;
-    debug_menu::SetBattleExpDoubleEnabled(true);
-    Check(saves == 3 && !config.battleExpDouble && debug_menu::BattleExpDoubleEnabled(),
+    debug_menu::SetBattleExpMultiplier(2);
+    Check(saves == 6 && config.battleExpMultiplier == 1 && debug_menu::BattleExpMultiplier() == 2,
         "failed persistence still applies the live preference");
+    for (uint32_t m = 0; m <= 5; ++m)
+        for (uint32_t g = 0; g <= 120; ++g) {
+            const uint32_t v = settings::ValidBattleExpMultiplier(m);
+            const uint32_t expected = g == 0 || g > 100 ? g : std::min(g * v, 100u);
+            Check(settings::ScaledBattleExp(g, m) == expected, "scaled EXP table");
+        }
     std::printf("battle EXP production hook: %u checks passed\n", checks);
     return 0;
 }
