@@ -33,3 +33,23 @@ Requested by Steprant on 2026-11-09.
   `debug_menu_interaction` and `debug_overlay` (row cycling, rendering in both
   languages, value widths).
 - Not yet verified in the game on the phone.
+
+## Fast-forward in battle and save points (9/11, second 1.9 build)
+
+- Holding fast-forward in battle stalled actions and cinematics until it was
+  released (Stefano, hold 4× at 30 FPS). The guest clock now gains at most
+  83 ms of game time per engine tick in battle (`BattleFrameLimitNs`,
+  `debug/fast_forward.h`; the engine-tick hook calls `BeginFrame`), so a
+  battle runs at up to 2.5× at 30 FPS and the full rate at 60 FPS up to 5×.
+  A slower real frame advances at 1×. The status line says
+  `battle limit 83 ms/frame (withheld N ms)`. The field is unchanged.
+- In battle, while fast-forward is on, the held LT (or LB) is not passed to the
+  game (`hid.cpp`); LT+RT / LB+RB still pass. Outside battle the game keeps it.
+- `LoSoftResetTest` checks: field 4× unchanged; battle 4× ≤ 83 ms per frame,
+  never backwards; a 120 ms frame at 1×; 60 FPS 4× unchanged; button ownership.
+- Official save points: when the field controller's active save point
+  (`AfcController` +0x86C, set by `CheckSavePoint` 82A16DC0 for the nearest
+  `fgGimmickSavePoint` in range) becomes a new value, the party in PlayData
+  gets full HP and MP through the validated `HealParty` plan (`cheats.cpp`
+  `SavePointTick`). HP 0 (knocked out) is revived. No other status field is
+  catalogued, so none is written. `LO_SAVE_POINT_HEAL=0` turns it off.
