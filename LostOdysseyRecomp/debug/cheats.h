@@ -237,5 +237,8 @@ public:
 };
 inline Session session;
 void Tick(PPCContext& ctx, uint8_t* base);
+// Engine tick, guest game thread: restores the party's HP and MP when the
+// player reaches an official save point (Steprant). No permission needed.
+void SavePointTick(PPCContext& ctx, uint8_t* base);
 void PollHostControls();
 } // namespace debug_menu::cheats

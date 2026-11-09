@@ -3,6 +3,9 @@
 #include "fast_forward.h"
 #include "menu_overlay.h"
 #include <kernel/memory.h>
+#include <os/logger.h>
+#include <cstdlib>
+#include <cstring>
 #include <kernel/xex_loader.h>
 #include <settings/menu.h>
 #include <host_ui/host_ui.h>
@@ -89,6 +92,46 @@ void Tick(PPCContext& ctx, uint8_t* base) {
     session.Tick(context, memory, field);
     const auto current = session.Get();
     ApplyEditor(base, current.enabled && current.available && current.editorRequested);
+}
+void SavePointTick(PPCContext& ctx, uint8_t* base) {
+    // The field controller's active save point (AfcController +0x86C, the
+    // nearest fgGimmickSavePoint in range: CheckSavePoint 82A16DC0 sets it,
+    // 82A18080/82A184D0 clear it). A new non-zero value is the player
+    // arriving at an official save point; restore HP and MP of the party
+    // there, once per arrival. A knocked-out member out of battle has HP 0
+    // and gets full HP back. No other status field is catalogued, so none is
+    // written.
+    // LO_SAVE_POINT_HEAL=0 turns it off for comparisons.
+    static const bool enabled = [] {
+        const char* value = std::getenv("LO_SAVE_POINT_HEAL");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
+    static uint32_t lastSavePoint = 0;
+    if (!enabled || !base || !ImageContains(EngineSlot, 4) || !ImageContains(SceneSlot, 4)) return;
+    const auto scene = PPC_LOAD_U32(SceneSlot);
+    if (scene != 0 && scene != 10) { lastSavePoint = 0; return; }
+    const auto engine = PPC_LOAD_U32(EngineSlot);
+    if (!AllocationContains(engine, 0x2C0)) return;
+    const auto players = PPC_LOAD_U32(engine + 0x2B8), count = PPC_LOAD_U32(engine + 0x2BC);
+    if (count == 0 || count > 4 || !AllocationContains(players, 4)) return;
+    const auto player = PPC_LOAD_U32(players);
+    if (!AllocationContains(player, 0x44)) return;
+    const auto controller = PPC_LOAD_U32(player + 0x40);
+    if (!AllocationContains(controller, 0x870)) return;
+    const auto savePoint = PPC_LOAD_U32(controller + 0x86C);
+    if (savePoint == lastSavePoint) return;
+    lastSavePoint = savePoint;
+    if (!savePoint || !AllocationContains(savePoint, 4)) return;
+    const auto playData = PlayData(ctx, base, engine);
+    if (!AllocationContains(playData, data::DataSize + 8)) return;
+    Memory memory{{base + playData + 8, data::DataSize}};
+    const auto writes = Plan(memory, Request{Action::HealParty});
+    if (!writes) {
+        LOG_WARNING("save point {:#x}: party data did not validate, nothing restored", savePoint);
+        return;
+    }
+    Commit(memory, *writes);
+    LOG_INFO("save point {:#x}: party HP/MP restored ({} values)", savePoint, writes->size());
 }
 void PollHostControls() {
     // Called by debug_menu::Update on the existing SDL window/event thread.

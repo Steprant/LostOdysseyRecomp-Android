@@ -526,7 +526,7 @@ PPC_FUNC(sub_82290B60)
     if (teleportCommandFile && !observed.exchange(true))
         LOG_INFO("teleport scene hook this={:#x} caller={:#x}", ctx.r3.u32, uint32_t(ctx.lr));
     const bool engine = ctx.r3.u32 == PPC_LOAD_U32(0x83315FB4);
-    if (engine) { debug_menu::fast_forward::BeginFrame(debug_menu::CurrentBattle() != 0); debug_menu::soft_reset::Tick(ctx, base); debug_menu::cheats::Tick(ctx, base); gpu::frame_plan::BeginCpuFrame(); frame_timing::EngineTick(ctx.f1.f64); }
+    if (engine) { debug_menu::fast_forward::BeginFrame(debug_menu::CurrentBattle() != 0); debug_menu::soft_reset::Tick(ctx, base); debug_menu::cheats::Tick(ctx, base); debug_menu::cheats::SavePointTick(ctx, base); gpu::frame_plan::BeginCpuFrame(); frame_timing::EngineTick(ctx.f1.f64); }
     __imp__sub_82290B60(ctx, base);
     if (engine)
     {
