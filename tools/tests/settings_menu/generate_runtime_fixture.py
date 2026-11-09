@@ -19,6 +19,7 @@ PREAMBLE = r'''
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <mutex>
 #include <hid/glyph_atlases.h>
 #include <apu/audio.h>

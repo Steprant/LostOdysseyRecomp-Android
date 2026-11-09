@@ -1,4 +1,5 @@
 #include <os/log_collection.h>
+#include <future>
 #include <os/steam_shortcut.h>
 #include "menu.h"
 #include "menu_render.h"
@@ -4703,9 +4704,7 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
     current.promptFamily = hid::PromptFamily();
     current.promptIcons = PromptIcons(current.promptFamily);
     const bool opened = !shown;
-    if (!opened && revision == current.revision && cachedWidth == width && cachedHeight == height &&
-        cachedPromptFamily == current.promptFamily && !pixels.empty())
-    {
+    const auto steady = [&] {
         const auto now = MenuNow();
         motion.Advance(pixels, now);
         eraseArrow();
@@ -4713,11 +4712,50 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
         drawMarker();
         drawArrow(now);
         return true;
-    }
+    };
+    const bool sameShape = cachedWidth == width && cachedHeight == height &&
+        cachedPromptFamily == current.promptFamily && !pixels.empty();
+    if (!opened && revision == current.revision && sameShape)
+        return steady();
     current.assets = menu_assets::Cached(FileSystem::GetGameRoot(), current.language);
     MenuArrow nextArrow;
-    if (!RasterizeMenu(current, width, height, raster, &nextArrow))
-        return false;
+    // Steprant 2.0 WP3.4: a raster at the output size takes 41-58 ms on the
+    // Xiaomi 14 (2670x1200), and every move or change in the menu needed one
+    // on the presenting thread (menu-draw, 9/11 logs). A change of an open
+    // page at the same size is rasterized on a worker instead; the shown image
+    // keeps moving and the new raster eases in when it is ready (about one
+    // frame later). Opening, a resize, a new prompt style and the preview
+    // pages stay synchronous. The rasterizer is pure on its snapshot; its
+    // backdrop cache is per thread.
+    struct AsyncRaster { MenuSnapshot snapshot; std::vector<uint32_t> pixels; MenuArrow arrow; bool ok = false; };
+    static std::future<AsyncRaster> asyncRaster;
+    const bool currentPreview = current.calibration.open || current.brightness.open || current.neuralRendering.open;
+    if (!opened && sameShape && !currentPreview && !cachedPreviewPage)
+    {
+        if (!asyncRaster.valid())
+            asyncRaster = std::async(std::launch::async, [snapshot = current, width, height]() mutable {
+                AsyncRaster result;
+                result.ok = RasterizeMenu(snapshot, width, height, result.pixels, &result.arrow);
+                result.snapshot = std::move(snapshot);
+                return result;
+            });
+        if (asyncRaster.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return steady();
+        auto result = asyncRaster.get();
+        if (!result.ok)
+            return steady();
+        // Ease in what was rasterized; a newer revision starts the next one.
+        current = std::move(result.snapshot);
+        raster = std::move(result.pixels);
+        nextArrow = result.arrow;
+    }
+    else
+    {
+        if (asyncRaster.valid())
+            asyncRaster.wait(), asyncRaster = {};
+        if (!RasterizeMenu(current, width, height, raster, &nextArrow))
+            return false;
+    }
     // Ease what the player did: opening (content over the panels) and a new
     // revision at the same size and prompt style. A resize, a controller style
     // change and the calibration pages, whose preview presentation paints
