@@ -258,6 +258,41 @@ static std::string g_lastVulkanGpuName;
 #endif
 
 #if defined(__ANDROID__) || (defined(_WIN32) && defined(LO_GPU_PLUME) && !defined(LO_VIDEO_SUBMISSION_UNIT))
+// Steprant 2.0 WP-A.2 and WP2: whether the driver exposes hardware counters
+// (VK_KHR_performance_query: cycles, memory bytes, shader occupancy, texture
+// stalls per pass) and multi-draw (VK_EXT_multi_draw), and which counters.
+// Read-only: nothing is enabled. One line per device, then the counter list.
+static void LogVulkanProfilingSupport(VkPhysicalDevice device)
+{
+    uint32_t extensionCount = 0;
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr) != VK_SUCCESS) return;
+    std::vector<VkExtensionProperties> extensions(extensionCount);
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, extensions.data()) < VK_SUCCESS) return;
+    const auto has = [&](const char* name) {
+        return std::any_of(extensions.begin(), extensions.end(), [&](const auto& e) { return std::strcmp(e.extensionName, name) == 0; });
+    };
+    const bool performanceQuery = has("VK_KHR_performance_query");
+    const bool multiDraw = has("VK_EXT_multi_draw");
+    uint32_t counterCount = 0;
+    std::string names;
+#ifdef VK_KHR_performance_query
+    if (performanceQuery && vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR &&
+        vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(device, 0, &counterCount, nullptr, nullptr) == VK_SUCCESS &&
+        counterCount) {
+        std::vector<VkPerformanceCounterKHR> counters(counterCount, {VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_KHR});
+        std::vector<VkPerformanceCounterDescriptionKHR> descriptions(counterCount, {VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_DESCRIPTION_KHR});
+        if (vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(device, 0, &counterCount, counters.data(), descriptions.data()) >= VK_SUCCESS)
+            for (uint32_t i = 0; i < counterCount; ++i) {
+                if (!names.empty()) names += ", ";
+                names += fmt::format("{}[{}]", descriptions[i].name, descriptions[i].category);
+            }
+    }
+#endif
+    LOG_INFO("vulkan profiling: VK_KHR_performance_query={} counters={} VK_EXT_multi_draw={}",
+        performanceQuery ? "yes" : "no", counterCount, multiDraw ? "yes" : "no");
+    if (!names.empty()) LOG_INFO("vulkan profiling counters (queue family 0): {}", names);
+}
+
 // Every GPU the instance reports, before device creation can fail or crash:
 // player reports name a phone, not the driver that actually loaded.
 static void LogVulkanPhysicalDevices(VkInstance instance)
@@ -296,6 +331,7 @@ static void LogVulkanPhysicalDevices(VkInstance instance)
             driverProperties.conformanceVersion.subminor, driverProperties.conformanceVersion.patch,
             idProperties.deviceLUIDValid ? fmt::format("{:08x}:{:08x}", luid[1], luid[0]) : std::string("none"),
             idProperties.deviceNodeMask);
+        LogVulkanProfilingSupport(device);
     }
 }
 #endif
@@ -1745,8 +1781,13 @@ namespace gpu::video
         {
             plume::RenderPassProfile profile;
             if (list->takePassProfile(profile)) {
-                const std::string line = pass_profile::GlobalReporter().Add(profile, list == g_commandList.get());
-                if (!line.empty()) LOG_INFO("{}", line);
+                const std::string lines = pass_profile::GlobalReporter().Add(profile, list == g_commandList.get());
+                // One log record per line (gpu passes, frame graph what-if).
+                for (size_t start = 0; start < lines.size();) {
+                    const size_t end = std::min(lines.find('\n', start), lines.size());
+                    LOG_INFO("{}", std::string_view(lines).substr(start, end - start));
+                    start = end + 1;
+                }
             }
             list->setPassProfiling(pass_profile::Enabled());
         }

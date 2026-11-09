@@ -63,6 +63,10 @@ def percentile(values, p):
 
 
 GPU_PASSES = re.compile(r"^\[\s*([0-9.]+)[^\]]*\].*?gpu passes: .*? per_frame: (.*)$")
+WHAT_IF = re.compile(r"^\[\s*([0-9.]+)[^\]]*\].*?frame graph what-if: .*? per_frame: (.*)$")
+SGSR2_INPUT = re.compile(r"Sgsr2: frame=\d+ outcome=submitted input=(\d+)x(\d+) output=(\d+)x(\d+)")
+SGSR2_SMAA = re.compile(r"SGSR2: smaa=(on|off) format=(\w+)")
+PROFILING = re.compile(r"vulkan profiling: (.*)$")
 DRAW_CLASSES = re.compile(r"draw classes \(session.*")
 LOG_TIME = re.compile(r"^\[\s*([0-9.]+)")
 
@@ -97,6 +101,10 @@ def pass_fields(text):
     if deferred:
         for key, value in re.findall(r"(\w+)=([0-9.]+)", deferred.group(1)):
             fields[f"copies_{key}"] = float(value)
+    cmdproc = re.search(r"cmdproc_per_frame:(.*)$", text)
+    if cmdproc:
+        for key, value in re.findall(r"(\w+)=([0-9.]+)", cmdproc.group(1)):
+            fields[f"cmdproc_{key}"] = float(value)
     ends = re.search(r"pass_ends_per_frame:(.*?);", text)
     if ends:
         for key, value in re.findall(r"(\w+)=([0-9.]+)", ends.group(1)):
@@ -161,8 +169,25 @@ def analyse(path, start=None, end=None):
     log = source.read("runtime.log") or ""
     log_start = None
     passes = []
+    what_if = []
     draw_classes = None
     for line in log.splitlines():
+        found_input = SGSR2_INPUT.search(line)
+        if found_input:
+            out["sgsr2_input"] = f"{found_input.group(1)}x{found_input.group(2)}"
+            out["sgsr2_output"] = f"{found_input.group(3)}x{found_input.group(4)}"
+            out["render_mpix"] = int(found_input.group(1)) * int(found_input.group(2)) / 1e6
+        found_smaa = SGSR2_SMAA.search(line)
+        if found_smaa:
+            out["sgsr2_smaa"] = f"{found_smaa.group(1)} ({found_smaa.group(2)})"
+        found_profiling = PROFILING.search(line)
+        if found_profiling:
+            out["vulkan_profiling"] = found_profiling.group(1)
+        found_what_if = WHAT_IF.match(line)
+        if found_what_if:
+            seconds = float(found_what_if.group(1)) - (log_start or 0.0)
+            if (start is None or seconds >= start) and (end is None or seconds <= end):
+                what_if.append({k: float(v) for k, v in re.findall(r"(\w+)=([0-9.]+)", found_what_if.group(2))})
         stamp = LOG_TIME.match(line)
         if stamp and log_start is None:
             log_start = float(stamp.group(1))
@@ -182,7 +207,20 @@ def analyse(path, start=None, end=None):
         for key in keys:
             values = [p[key] for p in passes if key in p]
             out[f"pass {key}"] = statistics.mean(values)
+    if what_if:
+        for key in sorted({k for w in what_if for k in w}):
+            values = [w[key] for w in what_if if key in w]
+            out[f"what-if {key}"] = statistics.mean(values)
     out["draw_classes"] = draw_classes
+    if draw_classes:
+        fit = re.search(r"fit: us_per_draw=([0-9.-]+) fixed_ms=([0-9.-]+) r2=([0-9.]+)", draw_classes)
+        if fit:
+            out["draw_fit_us_per_draw"] = float(fit.group(1))
+            out["draw_fit_fixed_ms"] = float(fit.group(2))
+            out["draw_fit_r2"] = float(fit.group(3))
+        timed = re.search(r"us_per_draw=([0-9.]+) untimed=", draw_classes)
+        if timed:
+            out["draw_timestamped_us_per_draw"] = float(timed.group(1))
     return out
 
 

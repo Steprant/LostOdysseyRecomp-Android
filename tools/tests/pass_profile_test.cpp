@@ -57,7 +57,31 @@ int main()
     const auto t0 = std::chrono::steady_clock::time_point(std::chrono::seconds(100));
     assert(reporter.Add(scene, false, t0).empty());
     assert(reporter.Add(present, true, t0 + std::chrono::seconds(5)).empty());
-    assert(!reporter.Add(present, true, t0 + std::chrono::seconds(11)).empty());
+    {
+        const std::string window = reporter.Add(present, true, t0 + std::chrono::seconds(11));
+        assert(!window.empty());
+        // Two lines: gpu passes, then the frame graph what-if (WP1 stage 1a).
+        const auto newline = window.find('\n');
+        assert(newline != std::string::npos && window.rfind("gpu passes:", 0) == 0);
+        assert(window.compare(newline + 1, 21, "frame graph what-if: ") == 0);
+    }
     assert(reporter.Add(present, true, t0 + std::chrono::seconds(12)).empty()); // new window
+    {
+        // What-if arithmetic: 2 MB dead stores, one resumed pass that
+        // reloaded 1 MB (merge_mb counts its store too), per frame.
+        gpu::pass_profile::Summary whatIf;
+        plume::RenderPassProfile frame;
+        frame.flow.storeCleared[0] = 1u << 20;
+        frame.flow.storeCleared[1] = 1u << 20;
+        frame.whatIfMergeablePasses = 1;
+        frame.whatIfMergeBytes = 1u << 20;
+        frame.diagDiscardedStores = 3;
+        frame.diagDiscardedStoreBytes = 3u << 20;
+        whatIf.Add(frame, true);
+        const std::string line = whatIf.FormatWhatIf();
+        std::printf("%s\n", line.c_str());
+        assert(line.find("dead_store_mb=2.0 merge_passes=1.0 merge_mb=2.0 savable_mb=4.0") != std::string::npos);
+        assert(line.find("diag_discarded_stores=3.0 diag_discarded_mb=3.0") != std::string::npos);
+    }
     std::printf("PASS pass profile summary and reporting window\n");
 }

@@ -13,6 +13,7 @@
 #include "render_timing.h"
 #include "shader_identity.h"
 #include <diagnostics/frame_samples.h>
+#include "cmdproc_profile.h"
 #include <debug/frame_timing.h>
 #include <cpu/guest_thread.h>
 #include <kernel/memory.h>
@@ -1110,8 +1111,21 @@ namespace gpu
                 }
             }
             const auto timingFlush = std::chrono::steady_clock::now();
-            renderer::PreparePresent(frontbuffer);
-            renderer::Flush();
+            {
+                const bool profiled = pass_profile::Enabled();
+                const uint64_t start = profiled ? pass_profile::ThreadCpuNs() : 0;
+                renderer::PreparePresent(frontbuffer);
+                renderer::Flush();
+                if (profiled)
+                {
+                    // WP-A.5: this swap's thread CPU time, and the flush as recording.
+                    static uint64_t lastSwapCpu = 0;
+                    const uint64_t now = pass_profile::ThreadCpuNs();
+                    pass_profile::g_cmdprocRecordNs.fetch_add(now - start, std::memory_order_relaxed);
+                    if (lastSwapCpu) pass_profile::NoteCmdprocSwap(now - lastSwapCpu);
+                    lastSwapCpu = now;
+                }
+            }
             const auto timingPace = std::chrono::steady_clock::now();
             const auto fpsCap = loading::Active() ? loading::Target(GetFrameRateTarget())
                 : video::GetFramePacingTarget(GetFrameRateTarget());
@@ -1755,7 +1769,15 @@ namespace gpu
                 // VGT_DMA_BASE is aligned to the index element size. Keeping
                 // bit 1 for 16-bit indices is essential for mesh subranges.
                 di.indexBase = dmaBase & (di.index32 ? ~3u : ~1u);
-                renderer::Draw(di);
+                // WP-A.5: the thread CPU time spent recording (pass profile on).
+                if (pass_profile::Enabled())
+                {
+                    const uint64_t start = pass_profile::ThreadCpuNs();
+                    renderer::Draw(di);
+                    pass_profile::g_cmdprocRecordNs.fetch_add(pass_profile::ThreadCpuNs() - start, std::memory_order_relaxed);
+                }
+                else
+                    renderer::Draw(di);
             }
 
             uint32_t modeControl = 0;

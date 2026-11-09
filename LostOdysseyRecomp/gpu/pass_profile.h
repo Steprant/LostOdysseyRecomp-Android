@@ -1,4 +1,5 @@
 #pragma once
+#include "cmdproc_profile.h"
 #include <plume_render_interface.h>
 #include "draw_attachment_policy.h"
 #include <algorithm>
@@ -26,17 +27,7 @@
 // follow the chosen Vulkan load/store ops; they are not measured bandwidth.
 namespace gpu::pass_profile
 {
-inline bool Enabled()
-{
-    static const bool forced = [] {
-        const char* value = std::getenv("LO_PASS_PROFILE");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-#if defined(__ANDROID__)
-    if (::diagnostics::android_tester::g_recorder.CollectGpu()) return true;
-#endif
-    return forced;
-}
+// Enabled() lives in cmdproc_profile.h (no plume dependency).
 
 // Guest draws by Xenos colour render-target format (RB_COLOR_INFO format,
 // 0-15) and depth-only draws, counted by the renderer while profiling: which
@@ -91,6 +82,7 @@ public:
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
     uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
     uint64_t copiesDeferred = 0, deferredFlushedEarly = 0, deferredEarlyReasons[5] = {};
+    uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
     uint64_t barrierEndLayouts[2][plume::RenderPassProfile::LayoutCount][plume::RenderPassProfile::LayoutCount] = {};
@@ -116,6 +108,10 @@ public:
         copiesDeferred += profile.copiesDeferred;
         deferredFlushedEarly += profile.deferredFlushedEarly;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
+        whatIfMergeablePasses += profile.whatIfMergeablePasses;
+        whatIfMergeBytes += profile.whatIfMergeBytes;
+        diagDiscardedStores += profile.diagDiscardedStores;
+        diagDiscardedStoreBytes += profile.diagDiscardedStoreBytes;
         for (int k = 0; k < 2; ++k)
         {
             flow.storeRead[k] += profile.flow.storeRead[k];
@@ -230,6 +226,44 @@ public:
         return line;
     }
 
+    // Steprant 2.0 WP1 stage 1a: what a frame graph could save, per frame,
+    // from this window's profiled lists, without changing any command.
+    // dead_store_mb: stores cleared before anything read them (STORE ->
+    // DONT_CARE). merge_passes: passes that resume the framebuffer the
+    // previous pass ended on with only unrelated barriers or query resets in
+    // between; merge_mb: what those resumed passes loaded again, plus the
+    // matching store (an upper bound, the pair's attachments at full size).
+    // copies_to_pass_end: resolve copies already waiting for the pass end
+    // (1.4c) and those that ran early. The gate of WP1 (stage 1a): at least
+    // 25% of load+store traffic, 8 passes per frame or 3 ms.
+    // diag_discarded_*: the WP-A.3 experiment, when its switch is on.
+    std::string FormatWhatIf() const
+    {
+        const double f = double(std::max<uint64_t>(frames, 1));
+        auto mb = [&](uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0) / f; };
+        TargetStats all;
+        for (const auto& [key, stats] : targets) { all.loadBytes += stats.loadBytes; all.storeBytes += stats.storeBytes; }
+        const uint64_t dead = flow.storeCleared[0] + flow.storeCleared[1];
+        const uint64_t merge = whatIfMergeBytes * 2;
+        const uint64_t traffic = all.loadBytes + all.storeBytes;
+        char buffer[512];
+        std::snprintf(buffer, sizeof(buffer),
+            "frame graph what-if: frames=%llu per_frame: traffic_mb=%.1f dead_store_mb=%.1f merge_passes=%.1f merge_mb=%.1f "
+            "savable_mb=%.1f savable_share=%.1f%% copies_to_pass_end=%.1f copies_early=%.1f passes=%.1f "
+            "diag_discarded_stores=%.1f diag_discarded_mb=%.1f",
+            static_cast<unsigned long long>(frames), mb(traffic), mb(dead), double(whatIfMergeablePasses) / f, mb(merge),
+            mb(dead + merge), traffic ? 100.0 * double(std::min(traffic, dead + merge)) / double(traffic) : 0.0,
+            double(copiesDeferred) / f, double(deferredFlushedEarly) / f, double(PassCount()) / f,
+            double(diagDiscardedStores) / f, mb(diagDiscardedStoreBytes));
+        return buffer;
+    }
+    uint64_t PassCount() const
+    {
+        uint64_t passes = 0;
+        for (const auto& [key, stats] : targets) passes += stats.passes;
+        return passes;
+    }
+
     // One log line: per-frame averages, then the most expensive targets.
     std::string Format(size_t topTargets = 8) const
     {
@@ -289,7 +323,9 @@ public:
         if (windowStart == std::chrono::steady_clock::time_point{}) windowStart = now;
         summary.Add(profile, presentation);
         if (now - windowStart < std::chrono::seconds(10) || summary.frames == 0) return {};
-        std::string line = summary.Format() + TakeFormatDraws(double(summary.frames));
+        // Two lines: the pass profile, then the frame graph what-if (WP1 1a).
+        std::string line = summary.Format() + TakeFormatDraws(double(summary.frames)) + TakeFormatCmdproc() +
+            "\n" + summary.FormatWhatIf();
         summary = Summary();
         windowStart = now;
         return line;
