@@ -10,12 +10,14 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 Test builds toward the 2.0 architectural update; see [Super Roadmap 2 notes](docs/notes/android-2.0-roadmap-status.md).
 
-- Fast-forward in battle no longer stalls actions and cinematics while held: in battle one game frame advances at most 83 ms (up to 2.5× at 30 FPS; the field keeps the chosen rate), and the held LT/LB is the speed control only (the game does not also see it in battle).
+- Fast-forward outside free field walking (battles, events, the intro) runs at the largest whole rate that keeps a game frame under 83 ms: 2× at 30 FPS, up to 4× at 60 FPS; game time and audio use the same rate, and the clock never stops inside a frame. Free field walking keeps the chosen rate. In battle the held LT/LB is the speed control only (the game does not also see it).
 - Official save points restore the party's HP and MP (knocked-out members are revived) when you reach them.
 - Android settings show only what does something on the phone or TV: System hides the desktop update switch, the Windows-only log upload, the debug log switch, Mods and the shader bundle/preparation maintenance; Graphics hides the scaling filter and SGSR1 while SGSR2 or FSR is on. The developer page of the first 1.9 build is gone: the logs settled its switches and the chosen values are built in.
 - Settings menu: changes are rasterized on a worker thread, so moving through the menu no longer drops frames (41–58 ms per change on a Xiaomi 14 before).
 - Diagnostics: an audio callback that spans an app pause (background) is no longer reported as an audio stall.
 - Diagnostics: an interval that spans a pause of the game (F1 / Quick tools overlay, Android background) is no longer counted as a slow frame; the Tester CSV marks it in a new `game_paused` column.
+- Fixed: a mosaic of blocks on walls and rocks after changing the render resolution (Turnip showed old tile memory where a new render target had undefined contents); such targets now start from zero.
+- Audio: the audio driver thread, which runs the game's audio callback, prefers the performance cores like the other game threads.
 - Fixed (suspected cause of the black spot after loads): the shadow projection the game feeds non-finite constants on the first frame after a load is skipped instead of turning its pixels black.
 - First 1.9 build only (removed since): a developer page under Android diagnostics with bit-exact frame samples (presented image and resolved frontbuffer, lossless PNG with hashes, in the Tester export) and A/B switches applied after restarting; `tools/android/compare-frames.py` compares two captures. The public 2.0 does not contain the page.
 - Diagnostics: the per-draw profile can sample the same frames without per-draw timestamps and fits the GPU cost of one draw over the sampled frames (WP0.4).

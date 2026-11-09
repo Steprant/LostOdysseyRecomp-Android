@@ -44,6 +44,19 @@ Third 1.9 build (9/11 night):
   about 4,300 s of logs; the remaining stalls are the game's own loads
   (`cp_idle` ~250 ms at each battle start).
 
+Fourth 1.9 build (9/11 night):
+- Fast-forward reworked after Stefano's review: the limit caps the rate
+  (largest integer rate keeping a frame under 83 ms of game time, from the
+  previous frame's real length), so the guest clock never goes flat and the
+  audio driver follows the same rate. It covers everything but free field
+  walking (battles, events, intro). Root cause still to confirm on the phone:
+  ×1/×2/×4 and Hold/Toggle on the same attack.
+- Resolution change mosaic (SGSR2 Quality 900p → 720p): new render targets'
+  first pass loaded undefined color with DONT_CARE; Turnip showed old tile
+  memory. Undefined color attachments now clear to zero
+  (`LO_VK_ZERO_UNDEFINED=0` restores the discard).
+- WP3.6: the audio driver thread prefers the performance cores.
+
 Open: 3.2/3.3 game stalls at loads, 3.7 (60 FPS per scene); D4; capture of the scene before SGSR2
 (WP0); D7 default filter; WP6 release. Nothing in 1.9 is measured on the
 phone yet beyond the logs above.
