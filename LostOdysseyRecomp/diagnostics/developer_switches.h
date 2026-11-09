@@ -1,0 +1,176 @@
+#pragma once
+// Developer page of the Steprant 1.9.x test builds (D1): A/B switches for the
+// 2.0 packages. Players cannot set environment variables on a phone, so each
+// switch is persisted in developer_switches.ini beside settings.ini and, at
+// the next start, written as the development variable the renderer, Plume,
+// the audio code or the driver already read, before any of them looks at it.
+// A variable already in the environment wins (development override). Every
+// switch applies after restarting; the startup log lists them all.
+// Only builds with LO_STEPRANT_DEVELOPER_PAGE show the page or read the file;
+// the public 2.0 keeps the confirmed values built in.
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <string_view>
+
+namespace diagnostics::developer
+{
+enum class Switch : uint32_t
+{
+    Sgsr2Smaa,            // SMAA on SGSR2's input in Quality (on)
+    DrawTimestamps,       // WP0.4: per-draw timestamps on the profiled frames (on); off measures the same frames without them
+    DeadStoreDiscard,     // WP-A.3 (diagnostic only): stores known dead are DONT_CARE (off)
+    GameThreadsOnBigCores,// WP3.2: guest main and GPU threads on the prime/big cores (off)
+    UiPrewarm,            // WP3.4: settings menu and achievement toast resources prepared ahead (on)
+    VoicePrefetch,        // WP3.8: cutscene voice streams read ahead on their own thread (on)
+    Sgsr2Reactive,        // WP5 G6 / WP7.2.5: transparent draws lower SGSR2's history weight (on)
+    UnjitteredCompensation,// WP7.2.3: unknown-camera scene draws get the jitter (on)
+    LightsAtSceneScale,   // WP5 D4: 1920x1080 light buffers follow the scene scale (off; D4 needs Steprant's yes)
+    TurnipMode,           // Turnip render mode: 0 auto, 1 sysmem, 2 gmem
+    Count
+};
+inline constexpr size_t Count = size_t(Switch::Count);
+
+struct Definition
+{
+    const char* key;          // developer_switches.ini key and log name
+    const wchar_t* label;     // English row label
+    const wchar_t* labelZh;   // Traditional Chinese row label
+    uint32_t defaultValue;    // on/off rows: 0 On, 1 Off
+    uint32_t choices;         // 2 for on/off, 3 for Turnip
+    const char* variable;     // development variable
+};
+
+inline constexpr std::array<Definition, Count> Definitions{{
+    {"sgsr2_smaa", L"SMAA in SGSR2 Quality", L"SGSR2 品質模式中的 SMAA", 0, 2, "LO_SGSR2_SMAA"},
+    {"draw_timestamps", L"Per-draw timestamps (profile)", L"逐次繪製時間戳（分析）", 0, 2, "LO_DRAW_TIMESTAMPS"},
+    {"dead_store_discard", L"Discard dead stores (test only)", L"捨棄無用儲存（僅測試）", 1, 2, "LO_VK_DIAG_DISCARD_DEAD_STORES"},
+    {"game_threads_big_cores", L"Game threads on big cores", L"遊戲執行緒使用大核心", 1, 2, "LO_PIN_GAME_THREADS"},
+    {"ui_prewarm", L"Prepare menu resources ahead", L"預先準備選單資源", 0, 2, "LO_UI_PREWARM"},
+    {"voice_prefetch", L"Read cutscene voices ahead", L"預先讀取過場語音", 0, 2, "LO_VOICE_PREFETCH"},
+    {"sgsr2_reactive", L"SGSR2 reactive mask", L"SGSR2 反應遮罩", 0, 2, "LO_SGSR2_REACTIVE"},
+    {"unjittered_compensation", L"Jitter unknown scene draws", L"抖動未知場景繪製", 0, 2, "LO_SR_COMPENSATE_UNJITTERED"},
+    {"lights_scene_scale", L"Light buffers at scene scale", L"光照緩衝跟隨場景比例", 1, 2, "LO_LIGHTS_SCENE_SCALE"},
+    {"turnip_mode", L"Turnip render mode", L"Turnip 渲染模式", 0, 3, "TU_DEBUG"},
+}};
+
+// The value each stored choice writes to its variable (nullptr: unset, the
+// built-in default).
+inline const char* VariableValue(Switch which, uint32_t value)
+{
+    switch (which)
+    {
+    case Switch::Sgsr2Smaa: return value == 1 ? "0" : nullptr;
+    case Switch::DrawTimestamps: return value == 1 ? "0" : nullptr;
+    case Switch::DeadStoreDiscard: return value == 0 ? "1" : nullptr;
+    case Switch::GameThreadsOnBigCores: return value == 0 ? "1" : nullptr;
+    case Switch::UiPrewarm: return value == 1 ? "0" : nullptr;
+    case Switch::VoicePrefetch: return value == 1 ? "0" : nullptr;
+    case Switch::Sgsr2Reactive: return value == 1 ? "0" : nullptr;
+    case Switch::UnjitteredCompensation: return value == 1 ? "0" : nullptr;
+    case Switch::LightsAtSceneScale: return value == 0 ? "1" : nullptr;
+    case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
+    case Switch::Count: break;
+    }
+    return nullptr;
+}
+
+inline std::array<uint32_t, Count>& Values()
+{
+    static std::array<uint32_t, Count> values = [] {
+        std::array<uint32_t, Count> initial{};
+        for (size_t i = 0; i < Count; ++i) initial[i] = Definitions[i].defaultValue;
+        return initial;
+    }();
+    return values;
+}
+
+inline uint32_t Get(Switch which) { return Values()[size_t(which)]; }
+
+inline std::filesystem::path& StorePath()
+{
+    static std::filesystem::path path;
+    return path;
+}
+
+inline void Load(const std::filesystem::path& path)
+{
+    StorePath() = path;
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        const std::string_view key(line.data(), equals);
+        char* end = nullptr;
+        const unsigned long number = std::strtoul(line.c_str() + equals + 1, &end, 10);
+        if (end == line.c_str() + equals + 1) continue;
+        for (size_t i = 0; i < Count; ++i)
+            if (key == Definitions[i].key && number < Definitions[i].choices) Values()[i] = uint32_t(number);
+    }
+}
+
+inline bool Save()
+{
+    if (StorePath().empty()) return false;
+    const auto temporary = std::filesystem::path(StorePath()).concat(".tmp");
+    {
+        std::ofstream out(temporary, std::ios::trunc);
+        if (!out) return false;
+        for (size_t i = 0; i < Count; ++i) out << Definitions[i].key << '=' << Values()[i] << '\n';
+        if (!out.flush()) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(temporary, StorePath(), ec);
+    return !ec;
+}
+
+inline bool Set(Switch which, uint32_t value)
+{
+    if (value >= Definitions[size_t(which)].choices) return false;
+    Values()[size_t(which)] = value;
+    return Save();
+}
+
+// Loads the store and writes the development variables of non-default
+// choices. Returns one log line with every switch, and which ones the
+// environment already overrode.
+inline std::string ApplyAtStartup(const std::filesystem::path& path)
+{
+    Load(path);
+    std::string summary = "developer switches:";
+    for (size_t i = 0; i < Count; ++i) {
+        const auto which = Switch(i);
+        const auto& definition = Definitions[i];
+        const char* existing = std::getenv(definition.variable);
+        const char* wanted = VariableValue(which, Values()[i]);
+        summary += ' ';
+        summary += definition.key;
+        summary += '=';
+        summary += std::to_string(Values()[i]);
+        if (existing && *existing) {
+            summary += "(env ";
+            summary += definition.variable;
+            summary += '=';
+            summary += existing;
+            summary += ')';
+            continue;
+        }
+        if (!wanted) continue;
+#ifdef _WIN32
+        _putenv_s(definition.variable, wanted);
+#else
+        setenv(definition.variable, wanted, 1);
+#endif
+        summary += "(set ";
+        summary += definition.variable;
+        summary += '=';
+        summary += wanted;
+        summary += ')';
+    }
+    return summary;
+}
+}

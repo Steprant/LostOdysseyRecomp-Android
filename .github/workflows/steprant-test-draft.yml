@@ -1,0 +1,107 @@
+name: Steprant test draft
+
+# Copies a finished Android APK workflow artifact from steprant/v2.0-dev into
+# a DRAFT release v1.9-steprant.<YYYYMMDD> for testing. It never publishes the
+# release and never marks it latest; the public 1.8 release is untouched.
+# Run by hand, or by pushing .github/steprant-test-draft.json
+# ({"run_id": "...", "short_name": "..."}) to steprant/v2.0-dev.
+on:
+  push:
+    branches: ['steprant/v2.0-dev']
+    paths: ['.github/steprant-test-draft.json']
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Android APK workflow run whose artifact to attach
+        required: false
+        type: string
+      short_name:
+        description: Short build name used in the APK file name (letters, digits, hyphen)
+        required: false
+        type: string
+permissions:
+  contents: write
+  actions: read
+jobs:
+  draft:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/steprant-test-draft.json
+          sparse-checkout-cone-mode: false
+      - name: Select the APK run
+        env:
+          INPUT_RUN: ${{ inputs.run_id }}
+          INPUT_NAME: ${{ inputs.short_name }}
+        run: |
+          set -euo pipefail
+          run="$INPUT_RUN"; name="$INPUT_NAME"
+          if [[ -z "$run" ]]; then
+            run=$(python3 -c 'import json;print(json.load(open(".github/steprant-test-draft.json"))["run_id"])')
+            name=$(python3 -c 'import json;print(json.load(open(".github/steprant-test-draft.json"))["short_name"])')
+          fi
+          [[ "$run" =~ ^[0-9]+$ ]] || { echo "::error::invalid run_id"; exit 1; }
+          echo "RUN_ID=$run" >> "$GITHUB_ENV"
+          echo "SHORT_NAME=$name" >> "$GITHUB_ENV"
+      - name: Wait for the APK run
+        timeout-minutes: 240
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SHORT_NAME" =~ ^[A-Za-z0-9-]{1,40}$ ]] || { echo "::error::invalid short_name"; exit 1; }
+          while true; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q '.status + " " + (.conclusion // "")')
+            case "$state" in
+              "completed success") break ;;
+              completed*) echo "::error::APK run $RUN_ID finished: $state"; exit 1 ;;
+            esac
+            sleep 60
+          done
+          branch=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_branch)
+          if [[ "$branch" != steprant/v2.0-dev ]]; then
+            echo "::error::run $RUN_ID built $branch, not steprant/v2.0-dev"; exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: LostOdysseyRecomp-android-arm64
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+          path: out/apk
+      - name: Create or update the draft test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          day=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .created_at | cut -c1-10 | tr -d -)
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_sha)
+          tag="v1.9-steprant.$day"
+          src=out/apk/LostOdyssey-Steprant-v1.9.apk
+          apk="out/apk/LostOdyssey-Steprant-v1.9-$SHORT_NAME-$day.apk"
+          mv "$src" "$apk"
+          sum=$(sha256sum "$apk" | cut -d' ' -f1)
+          echo "SHA-256 $sum"
+          notes=out/notes.md
+          {
+            echo "Steprant Android 1.9 test build (draft, not published). Branch steprant/v2.0-dev."
+            echo
+            printf -- '- `%s`: SHA-256 `%s`, commit `%s`, APK run %s\n' "$(basename "$apk")" "$sum" "$commit" "$RUN_ID"
+          } > "$notes"
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+          if [[ -n "$release_id" ]]; then
+            draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" -q .draft)
+            if [[ "$draft" != true ]]; then
+              echo "::error::release $tag is published; test builds only go to drafts"; exit 1
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" -q .body > out/previous.md || true
+            grep -F -- '- `' out/previous.md | grep -vF "$(basename "$apk")" >> "$notes" || true
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -f body="$(cat "$notes")" -F draft=true -f make_latest=false -f target_commitish="$commit" >/dev/null
+            gh release upload "$tag" "$apk" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$apk" --draft --target "$commit" \
+              --title "Lost Odyssey Steprant Android 1.9 test ($day)" --notes-file "$notes" -R "$GITHUB_REPOSITORY"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.tag_name == \"$tag\") | {draft, name, assets: [.assets[].name]}"

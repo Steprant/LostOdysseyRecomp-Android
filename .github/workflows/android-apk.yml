@@ -134,8 +134,14 @@ jobs:
             integration/v1.6-candidate-*) version=1.6 ;;
             integration/v1.7-optimization-*) version=1.7 ;;
             steprant/v1.8) version=1.8 ;;
+            steprant/v2.0-dev) version=1.9 ;;
+            steprant/v2.0) version=2.0 ;;
             *) version= ;;
           esac
+          # 1.9.x test builds carry the hidden developer page; 2.0 does not.
+          developer=0
+          [[ "$version" == 1.9 ]] && developer=1
+          echo "developer=$developer" >> "$GITHUB_OUTPUT"
           if [[ -n "$version" ]]; then
             {
               echo "version=$version"
@@ -157,6 +163,8 @@ jobs:
           ORG_GRADLE_PROJECT_loApplicationId: ${{ steps.steprant.outputs.application_id }}
           ORG_GRADLE_PROJECT_loAppLabel: ${{ steps.steprant.outputs.label }}
           ORG_GRADLE_PROJECT_loAppIcon: ${{ steps.steprant.outputs.icon }}
+          LO_STEPRANT_VERSION: ${{ steps.steprant.outputs.version }}
+          LO_STEPRANT_DEVELOPER_PAGE: ${{ steps.steprant.outputs.developer }}
         run: bash tools/android/ci_build.sh
       - name: Verify and name the integrated APK
         if: steps.steprant.outputs.version != ''

@@ -648,6 +648,8 @@ namespace gpu::renderer
                 // P4: per-draw timestamps on a sampled frame (draw_class_profile.h).
                 std::unique_ptr<RenderQueryPool> drawProfilePool;
                 std::vector<draw_profile::DrawRecord> drawProfileRecords;
+                // WP0.4 untimed sampling: draws classified without their timestamps.
+                std::vector<draw_profile::DrawRecord> drawProfileUntimed;
                 bool drawProfileActive = false;
                 // This batch wrote both timestamps (LO_RENDER_TIMING or the
                 // Detailed performance overlay); only then are they read.
@@ -4165,7 +4167,9 @@ namespace gpu::renderer
                 Gpu().srIsolatedAccepted = accepted;
                 commandList = Gpu().srContinuation.get(); if (!video::BeginGpuCommands(commandList)) return false;
                 // P4: charge the isolated SR list (and the prefix tail) to "upscaler".
-                if (Gpu().drawProfileActive && Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
+                if (Gpu().drawProfileActive && !draw_profile::Timestamps())
+                    Gpu().drawProfileUntimed.push_back({0, 0, draw_profile::DrawClass::Upscaler});
+                else if (Gpu().drawProfileActive && Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
                     commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
                     Gpu().drawProfileRecords.push_back({0, 0, draw_profile::DrawClass::Upscaler});
                 }
@@ -5111,8 +5115,13 @@ void main()
                 if (s.drawProfileActive) {
                     s.drawProfileActive = false;
                     s.drawProfilePool->queryResults();
-                    drawProfile.AddList(s.drawProfileRecords, s.drawProfilePool->getResults());
+                    if (!s.drawProfileUntimed.empty() || !draw_profile::Timestamps()) {
+                        // Untimed: index 0 at the list's start, index 1 after its last command.
+                        const uint64_t* ts = s.drawProfilePool->getResults();
+                        if (ts) drawProfile.AddUntimedList(s.drawProfileUntimed, ts[0], ts[1]);
+                    } else drawProfile.AddList(s.drawProfileRecords, s.drawProfilePool->getResults());
                     s.drawProfileRecords.clear();
+                    s.drawProfileUntimed.clear();
                 }
                 if (s.timed) {
                     s.timed = false;
@@ -5262,6 +5271,7 @@ void main()
                     }
                     Gpu().drawProfileActive = false;
                     Gpu().drawProfileRecords.clear();
+                    Gpu().drawProfileUntimed.clear();
                     if (drawProfileFrame == frame && !drawProfileUnavailable) {
                         auto& pool = Gpu().drawProfilePool;
                         if (!pool && device->getCapabilities().queryPools)
@@ -12584,7 +12594,7 @@ void main()
                     commandList->endOcclusionQuery(occlusionPool, occlusionIndex % kOcclusionPoolQueries);
                 // P4: a timestamp after each emitted guest draw on a sampled frame.
                 if (Gpu().drawProfileActive && readOnlyDepthDrawsSkipped == profileSkipsBefore &&
-                    Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList) {
+                    (Gpu().drawProfileRecords.size() < draw_profile::MaxDrawsPerList || !draw_profile::Timestamps())) {
                     const bool blending = (key.blend & 0x1FFFu) != 1u || ((key.blend >> 16) & 0x1FFFu) != 1u;
                     // Full-screen pass: a quad whose viewport covers the render
                     // size (EDRAM targets are taller than the screen, so the
@@ -12594,8 +12604,12 @@ void main()
                             0.8 * double(activePlan.width) * double(activePlan.height);
                     const auto drawClass = draw_profile::Classify(depthOnlyRaster || !(key.colorMask & 0xF),
                         key.vs == temporal::ShadowProjectionVS, depth != nullptr, blending, fullTarget);
-                    commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
-                    Gpu().drawProfileRecords.push_back({key.vs, key.ps, drawClass});
+                    if (!draw_profile::Timestamps())
+                        Gpu().drawProfileUntimed.push_back({key.vs, key.ps, drawClass});
+                    else {
+                        commandList->writeTimestamp(Gpu().drawProfilePool.get(), uint32_t(Gpu().drawProfileRecords.size() + 1));
+                        Gpu().drawProfileRecords.push_back({key.vs, key.ps, drawClass});
+                    }
                 }
                 if (countingPipeline || occlusionPool) {
                     const HostTexture* measured = depth ? depth : color;

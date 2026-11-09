@@ -12,6 +12,7 @@
 #include "register_snapshot.h"
 #include "render_timing.h"
 #include "shader_identity.h"
+#include <diagnostics/frame_samples.h>
 #include <debug/frame_timing.h>
 #include <cpu/guest_thread.h>
 #include <kernel/memory.h>
@@ -1086,6 +1087,28 @@ namespace gpu
             present_capture::Ticket captureTicket;
             present_capture::Result captureResult;
             renderer::PrepareDebugCaptureFrame(frontbuffer, swaps, captureTicket);
+            // WP0.1 frame samples (developer page): the presented image and the
+            // resolved frontbuffer of N consecutive swaps, bit-exact.
+            bool frameSample = false;
+            if (!captureTicket.active && diagnostics::frame_samples::pending.load(std::memory_order_acquire))
+            {
+                std::vector<uint32_t> front;
+                uint32_t frontWidth = 0, frontHeight = 0;
+                const bool frontOk = renderer::ReadbackResolvedSurface(frontbuffer, front, frontWidth, frontHeight);
+                const auto plan = frame_plan::CpuPlan();
+                std::string planText = fmt::format("\"render\":[{},{}],\"output\":[{},{}],\"upscaler\":{},\"quality\":{}",
+                    plan.width, plan.height, plan.output.width, plan.output.height,
+                    uint32_t(plan.requestedUpscaler), uint32_t(plan.fsrQuality));
+                frameSample = diagnostics::frame_samples::Begin(swaps, frontbuffer, std::move(front), frontWidth, frontHeight,
+                    frontOk, std::move(planText));
+                if (frameSample)
+                {
+                    captureTicket.active = true;
+                    captureTicket.swap = swaps;
+                    captureTicket.frontbuffer = frontbuffer & 0x1FFFFFFF;
+                    captureTicket.deviceEpoch = video::BackendDeviceState().deviceEpoch;
+                }
+            }
             const auto timingFlush = std::chrono::steady_clock::now();
             renderer::PreparePresent(frontbuffer);
             renderer::Flush();
@@ -1129,7 +1152,11 @@ namespace gpu
             video::PresentFrontbuffer(frontbuffer, width, height, ReadRegister(0x231B),
                 captureTicket.active ? &captureTicket : nullptr, captureTicket.active ? &captureResult : nullptr,
                 m_cinematicBars);
-            renderer::CompleteDebugCaptureFrame(captureResult);
+            if (frameSample)
+                diagnostics::frame_samples::Complete(captureResult.available, captureResult.pixels,
+                    captureResult.width, captureResult.height, captureResult.reason);
+            else
+                renderer::CompleteDebugCaptureFrame(captureResult);
             renderer::PollDebugCapture();
             pacing.presentAccepted = video::CompletedPresentCount() > presentsBefore;
             {

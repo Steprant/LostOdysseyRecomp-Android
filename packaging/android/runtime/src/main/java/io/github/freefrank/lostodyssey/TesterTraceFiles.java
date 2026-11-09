@@ -204,6 +204,19 @@ final class TesterTraceFiles {
         zipSegments(zip, dir, "frequencies", "cpu_frequencies.csv", FREQUENCY_HEADER);
         zipSegments(zip, dir, "memory", "memory.csv", MEMORY_HEADER);
         for (File f : files(dir, "event")) { zip.putNextEntry(new ZipEntry("events/" + f.getName())); copy(zip, f); zip.closeEntry(); }
+        // Steprant 2.0 WP0.1: bit-exact frame samples from the developer page
+        // (android-diagnostics/frame-samples, beside the sessions).
+        File samples = dir.getParentFile() == null ? null : new File(dir.getParentFile(), "frame-samples");
+        File[] sampleFiles = samples == null ? null : samples.listFiles();
+        if (sampleFiles != null) {
+            java.util.Arrays.sort(sampleFiles);
+            for (File f : sampleFiles) {
+                if (!f.isFile()) continue;
+                zip.putNextEntry(new ZipEntry("frame-samples/" + f.getName()));
+                copy(zip, f);
+                zip.closeEntry();
+            }
+        }
         List<Long> intervals = new ArrayList<>();
         long totalInterval = 0;
         int spikes = 0;

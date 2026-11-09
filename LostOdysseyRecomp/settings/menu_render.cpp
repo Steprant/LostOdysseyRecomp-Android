@@ -62,7 +62,10 @@ namespace
 #if LO_PLATFORM_ANDROID
     // Steprant's Android edition: one line above the upstream credit, on the
     // title screen only.
-    constexpr const wchar_t* kForkCredit = L"Steprant Android 1.8 · github.com/Steprant/LostOdysseyRecomp-Android";
+#ifndef LO_STEPRANT_VERSION_W
+#define LO_STEPRANT_VERSION_W L"2.0"
+#endif
+    constexpr const wchar_t* kForkCredit = L"Steprant Android " LO_STEPRANT_VERSION_W L" · github.com/Steprant/LostOdysseyRecomp-Android";
     constexpr int kForkCreditLines = 1;
 #else
     constexpr int kForkCreditLines = 0;

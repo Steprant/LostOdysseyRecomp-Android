@@ -1,6 +1,10 @@
 project(LostOdysseyRecomp LANGUAGES CXX)
 
 option(LO_RENDERER_P2_SELFTEST "Build the guarded scene-copy promotion bootstrap entry" OFF)
+# Steprant 1.9.x test builds (branch steprant/v2.0-dev) carry a hidden developer
+# page with the A/B switches; the public 2.0 build does not compile it in.
+option(LO_STEPRANT_DEVELOPER_PAGE "Build the Steprant test-build developer page" OFF)
+set(LO_STEPRANT_VERSION "2.0" CACHE STRING "Steprant Android edition shown on the title screen")
 if(LO_RENDERER_P2_SELFTEST AND NOT LO_BUILD_GPU)
     message(FATAL_ERROR "LO_RENDERER_P2_SELFTEST requires LO_BUILD_GPU")
 endif()
@@ -227,7 +231,11 @@ target_include_directories(LostOdysseyRecomp PRIVATE
 target_precompile_headers(LostOdysseyRecomp PRIVATE stdafx.h)
 target_compile_features(LostOdysseyRecomp PRIVATE cxx_std_20)
 target_compile_options(LostOdysseyRecomp PRIVATE -fno-strict-aliasing -Wno-switch -Wno-unused-function)
-target_compile_definitions(LostOdysseyRecomp PRIVATE NOMINMAX LO_SOURCE_VERSION="${LO_SOURCE_VERSION}")
+target_compile_definitions(LostOdysseyRecomp PRIVATE NOMINMAX LO_SOURCE_VERSION="${LO_SOURCE_VERSION}"
+    LO_STEPRANT_VERSION_W=L"${LO_STEPRANT_VERSION}")
+if(LO_STEPRANT_DEVELOPER_PAGE)
+    target_compile_definitions(LostOdysseyRecomp PRIVATE LO_STEPRANT_DEVELOPER_PAGE=1)
+endif()
 
 target_link_libraries(LostOdysseyRecomp PRIVATE
     lo_portable_shader_pack

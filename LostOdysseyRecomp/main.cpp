@@ -45,6 +45,10 @@
 #include "modding/asset_export.h"
 #include "modding/text_overlay.h"
 #include "settings/language_selection.h"
+#include "diagnostics/frame_samples.h"
+#if LO_STEPRANT_DEVELOPER_PAGE
+#include "diagnostics/developer_switches.h"
+#endif
 
 #ifdef _WIN32
 #include <timeapi.h>
@@ -413,6 +417,15 @@ int main(int argc, char* argv[])
     if (compactGameData)
         return CompactGameDataCommand(FindGameRoot(executableDirectory, explicitGamePath).root);
     InstallCrashHandler();
+#if LO_STEPRANT_DEVELOPER_PAGE
+    // Steprant 1.9.x test builds: developer-page A/B switches, written as
+    // development variables before the renderer, Plume, the audio code or the
+    // Vulkan driver read them.
+    LOG_INFO("{}", diagnostics::developer::ApplyAtStartup(os::user_paths::SettingsPath().parent_path() / "developer_switches.ini"));
+#endif
+    // WP0.1 frame samples go beside the Android Tester sessions.
+    diagnostics::frame_samples::SetDirectory(
+        os::user_paths::SettingsPath().parent_path().parent_path() / "android-diagnostics" / "frame-samples");
     // ADPF performance hints: off (they did not help the city stutter on the
     // Xiaomi 14); LO_ADPF=1 turns them on for development runs.
     os::scheduling::SetPerformanceHints(false);

@@ -7,6 +7,14 @@
 // is summed per draw class and per VS/PS pair over the session, and one
 // cumulative line goes to the runtime log after each sampled frame.
 //
+// WP0.4 (Steprant 2.0): LO_DRAW_TIMESTAMPS=0 (developer page) samples the
+// same frames without the per-draw timestamps: each list then records only its
+// start and end, the draws are still classified and counted, and the line
+// reports the whole-list GPU time. Comparing both lines gives the timestamps'
+// own cost; across the sampled frames a least-squares fit of frame time
+// against draw count gives the marginal GPU cost of one draw (the "real fixed
+// cost per draw" WP2 depends on) and the draw-independent rest of the frame.
+//
 // Caveats, kept in the log line: timestamps between draws can change how a
 // tiled GPU schedules that frame (Turnip may render it in sysmem), and
 // overlapping draws are charged where they retire. The numbers rank classes
@@ -15,12 +23,23 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace gpu::draw_profile
 {
+// LO_DRAW_TIMESTAMPS=0: sample without per-draw timestamps (WP0.4).
+inline bool Timestamps()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("LO_DRAW_TIMESTAMPS");
+        return !(value && value[0] == '0' && value[1] == 0);
+    }();
+    return enabled;
+}
+
 enum class DrawClass : uint8_t
 {
     DepthOnly,   // no colour written (depth pre-pass, shadow maps, stencil, occlusion boxes)
@@ -80,7 +99,47 @@ public:
             invalid_ += !valid;
         }
     }
-    void EndFrame() { ++frames_; }
+    // Untimed sampling (WP0.4): only the list's start and end timestamps.
+    void AddUntimedList(const std::vector<DrawRecord>& draws, uint64_t begin, uint64_t end)
+    {
+        untimed_ = true;
+        const bool valid = begin != ~0ull && end != ~0ull && end >= begin && end - begin < 1000000000ull;
+        if (valid) frameNs_ += end - begin;
+        else ++invalid_;
+        for (const auto& draw : draws) {
+            ++classes_[size_t(draw.drawClass)].draws;
+            if (draw.drawClass != DrawClass::Upscaler) ++frameDraws_;
+        }
+    }
+    void EndFrame()
+    {
+        ++frames_;
+        if (untimed_ && frameNs_ && samples_.size() < 1024) samples_.push_back({frameNs_, frameDraws_});
+        frameNs_ = 0;
+        frameDraws_ = 0;
+    }
+    // Least squares of frame GPU time (ns) against draws over the untimed
+    // samples: slope = ns per additional draw, intercept = draw-independent ns.
+    struct Fit { double nsPerDraw = 0, fixedNs = 0, r2 = 0; size_t samples = 0; };
+    Fit Regression() const
+    {
+        Fit fit;
+        fit.samples = samples_.size();
+        if (samples_.size() < 3) return fit;
+        double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        for (const auto& [ns, draws] : samples_) {
+            const double x = double(draws), y = double(ns);
+            sx += x; sy += y; sxx += x * x; sxy += x * y; syy += y * y;
+        }
+        const double n = double(samples_.size());
+        const double varX = sxx - sx * sx / n, varY = syy - sy * sy / n, cov = sxy - sx * sy / n;
+        if (varX <= 0) return fit;
+        fit.nsPerDraw = cov / varX;
+        fit.fixedNs = (sy - fit.nsPerDraw * sx) / n;
+        fit.r2 = varY > 0 ? (cov * cov) / (varX * varY) : 0;
+        return fit;
+    }
+    bool Untimed() const { return untimed_; }
     uint64_t Frames() const { return frames_; }
     const Stats& Class(DrawClass c) const { return classes_[size_t(c)]; }
 
@@ -88,6 +147,21 @@ public:
     {
         const double f = double(std::max<uint64_t>(frames_, 1));
         char buffer[256];
+        if (untimed_) {
+            uint64_t totalNs = 0, totalDraws = 0;
+            for (const auto& [ns, draws] : samples_) { totalNs += ns; totalDraws += draws; }
+            const double sampled = double(std::max<size_t>(samples_.size(), 1));
+            const auto fit = Regression();
+            std::snprintf(buffer, sizeof(buffer), "draw classes (session, untimed: list start/end only): frames=%llu per_frame: draws=%.0f ms=%.2f us_per_draw_avg=%.2f; fit: us_per_draw=%.2f fixed_ms=%.2f r2=%.2f samples=%zu;",
+                static_cast<unsigned long long>(frames_), double(totalDraws) / sampled, double(totalNs) / 1e6 / sampled,
+                totalDraws ? double(totalNs) / 1e3 / double(totalDraws) : 0.0, fit.nsPerDraw / 1e3, fit.fixedNs / 1e6, fit.r2, fit.samples);
+            std::string line = buffer;
+            for (size_t i = 0; i < ClassCount; ++i) {
+                std::snprintf(buffer, sizeof(buffer), " %s=%.0f", ClassName(DrawClass(i)), double(classes_[i].draws) / f);
+                line += buffer;
+            }
+            return line;
+        }
         uint64_t totalNs = 0, totalDraws = 0;
         for (size_t i = 0; i < ClassCount; ++i) {
             totalNs += classes_[i].ns;
@@ -130,5 +204,8 @@ private:
     std::array<Stats, ClassCount> classes_{};
     std::unordered_map<Key, PairStats, KeyHash> pairs_;
     uint64_t frames_ = 0, invalid_ = 0;
+    bool untimed_ = false;
+    uint64_t frameNs_ = 0, frameDraws_ = 0;
+    std::vector<std::pair<uint64_t, uint64_t>> samples_;
 };
 }
