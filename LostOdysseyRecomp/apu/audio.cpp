@@ -39,6 +39,9 @@ namespace apu
         SDL_AudioStream* g_stream = nullptr;
         uint32_t g_channels = 2; // interleaved channels queued to g_device
         bool g_paused = false;
+        // Counts pause and resume calls: a guest callback that spans one ran
+        // while the game was suspended (Android background, host menu).
+        std::atomic<uint32_t> g_pauseChanges{ 0 };
         bool g_audioReady = false;
         std::atomic<bool> g_surroundRequested{ false };
         bool g_surroundOpen = false; // driver thread after Init
@@ -321,9 +324,13 @@ namespace apu
                         struct RecordCallback
                         {
                             std::chrono::steady_clock::time_point start;
+                            uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
                             ~RecordCallback()
                             {
                                 const auto elapsed = std::chrono::steady_clock::now() - start;
+                                // Suspended with the game (40 s in the background
+                                // on 9/11): a pause, not a stall.
+                                if (g_pauseChanges.load(std::memory_order_relaxed) != pauseChanges) return;
                                 g_callbackPeak.Record(elapsed);
                                 // Steprant 2.0 WP3.8: a guest audio callback over 50 ms
                                 // (705 ms in the Great Gate cutscene of 8/11) stops the
@@ -660,6 +667,7 @@ namespace apu
     void SetPaused(bool paused)
     {
         std::lock_guard lock(g_deviceMutex);
+        if (g_paused != paused) g_pauseChanges.fetch_add(1, std::memory_order_relaxed);
         g_paused = paused;
         if (g_device)
         {
