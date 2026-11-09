@@ -70,7 +70,7 @@ Config Validate(Config value)
     value.dlssQuality = gpu::upscaling::NormalizeDlssQuality(value.dlssQuality);
     if (value.dlssModel > 1) value.dlssModel = 0;
     value.fsrQuality = gpu::upscaling::NormalizeFsrQuality(value.fsrQuality);
-    if (value.sgsr2Filter > 1) value.sgsr2Filter = 0;
+    if (value.sgsr2Filter > 1) value.sgsr2Filter = 1;
     value.fsrSharpnessPercent = std::min(value.fsrSharpnessPercent, 100u);
     value.dlssNeuralRendering = std::min(value.dlssNeuralRendering, DlssNeuralRenderingMaxPasses);
     value.dlssNrPreset = std::min(value.dlssNrPreset, 3u);

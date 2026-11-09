@@ -167,7 +167,7 @@ struct Config
     gpu::upscaling::FsrQuality fsrQuality = gpu::upscaling::FsrQuality::Quality;
     // SGSR2 filter (Steprant 2.0, WP7.3): 0 Standard (Qualcomm's kernel), 1 Soft
     // (no negative lobes, wider window, half the scene mip bias). Applied live.
-    uint32_t sgsr2Filter = 0;
+    uint32_t sgsr2Filter = 1; // D7 (9/11): Soft by default; 0 Standard
     uint32_t fsrSharpnessPercent = 0; // 0 disables FSR RCAS; 1-100 sets its strength.
     // DLSS 5 Neural Rendering passes on the DLSS output: 0 Off, 1-4. Needs the
     // player's nvngx_dlssnr.dll; Windows only. Applied after saving.
