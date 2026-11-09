@@ -10,6 +10,8 @@ extern std::atomic<uint32_t> g_presentedSwaps;
 #include <settings/menu.h>
 #include <debug/menu_overlay.h>
 #include <debug/frame_timing.h>
+#include <debug/fast_forward.h>
+#include <debug/battle_menu.h>
 #include "test_input_pulse.h"
 #include "controller_prompts.h"
 #include "face_buttons.h"
@@ -689,6 +691,20 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
     if (menuFiltered) {
         gp.sThumbLX=gp.sThumbLY=gp.sThumbRX=gp.sThumbRY=0;
         gp.bLeftTrigger=gp.bRightTrigger=0;
+    }
+    else if (debug_menu::CurrentBattle() != 0) {
+        // In battle the fast-forward button is the speed control only: the
+        // game does not also see the held LT (or LB), which stalled battle
+        // actions while it was held. Outside battle the game keeps it (menu
+        // pages). A pair chord (LT+RT, LB+RB) always passes.
+        namespace ff = debug_menu::fast_forward;
+        const auto speed = ff::GetStatus();
+        if (speed.enabled && speed.button == ff::Button::LB) {
+            if (ff::OwnsButton((gp.wButtons & XAMINPUT_GAMEPAD_RIGHT_SHOULDER) ? 255 : 0))
+                gp.wButtons &= ~uint16_t(XAMINPUT_GAMEPAD_LEFT_SHOULDER);
+        } else if (speed.enabled && ff::OwnsButton(gp.bRightTrigger)) {
+            gp.bLeftTrigger = 0;
+        }
     }
     if (inputTicks && traceInputSerial)
     {

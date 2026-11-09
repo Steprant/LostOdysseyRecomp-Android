@@ -29,7 +29,8 @@ namespace debug_menu
             const auto now = clock::now();
             const auto status = fast_forward::GetStatus();
             const bool changed = !logged || status.enabled != last.enabled || status.mode != last.mode ||
-                status.multiplier != last.multiplier || status.active != last.active || status.keepAudioPitch != last.keepAudioPitch;
+                status.multiplier != last.multiplier || status.active != last.active || status.keepAudioPitch != last.keepAudioPitch ||
+                status.battleLimit != last.battleLimit;
             if (changed)
             {
                 last = status;
@@ -38,10 +39,11 @@ namespace debug_menu
             if (!skipped || (logged && now - lastLine < std::chrono::seconds(2)))
                 return;
             if (logged || status.enabled)
-                LOG_NOTICE("fast-forward: {} {} {}x, {}, audio {}{}", status.enabled ? "enabled" : "disabled",
+                LOG_NOTICE("fast-forward: {} {} {}x, {}, audio {}{}{}", status.enabled ? "enabled" : "disabled",
                     status.mode == fast_forward::Mode::Toggle ? "toggle" : "hold", status.multiplier,
                     status.active ? "running" : "not running",
                     status.keepAudioPitch ? "keep pitch" : "speed up",
+                    status.battleLimit ? fmt::format(", battle limit 83 ms/frame (withheld {} ms)", status.limitedNs / 1000000) : std::string(),
                     skipped > 1 ? fmt::format(" ({} changes)", skipped) : std::string());
             logged = true;
             lastLine = now;

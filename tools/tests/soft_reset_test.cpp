@@ -1,6 +1,8 @@
 #include <debug/soft_reset_policy.h>
 #include <debug/fast_forward.h>
+#include <algorithm>
 #include <stdexcept>
+#include <utility>
 #include <cstdio>
 
 namespace
@@ -123,10 +125,61 @@ void CheckFastForwardBindingChange()
 }
 }
 
+void CheckFastForwardBattleLimit()
+{
+    using namespace debug_menu::fast_forward;
+    constexpr uint64_t Ms = 1000000;
+    const auto run = [](bool battle, unsigned rate, uint64_t frameMs, int frames, uint64_t& limited) {
+        Control control;
+        uint64_t now = 1000 * Ms;
+        control.Enable(true, now);
+        control.SetRate(rate, now);
+        control.Sample(0, 0, true, now);   // armed on release
+        control.Sample(255, 0, true, now); // held
+        const uint64_t start = control.clock.Read(now);
+        uint64_t previous = start, maxFrame = 0;
+        for (int i = 0; i < frames; ++i) {
+            control.clock.BeginFrame(now, battle ? BattleFrameLimitNs : 0);
+            const uint64_t frameStart = control.clock.Read(now);
+            for (int step = 1; step <= 4; ++step) {
+                now += frameMs * Ms / 4;
+                control.Sample(255, 0, true, now); // still held, lease renewed
+                const uint64_t value = control.clock.Read(now);
+                Check(value >= previous, "the guest clock never runs backwards");
+                previous = value;
+            }
+            maxFrame = std::max(maxFrame, control.clock.Read(now) - frameStart);
+        }
+        limited = control.Get(now).limitedNs;
+        return std::pair{control.clock.Read(now) - start, maxFrame};
+    };
+    uint64_t limited = 0;
+    // Field: 4x at 30 FPS keeps its 133 ms frames.
+    auto [field, fieldFrame] = run(false, 4, 33, 30, limited);
+    Check(field == 4 * 33 * 30 * Ms && fieldFrame == 4 * 33 * Ms && limited == 0, "outside battle the rate is unchanged");
+    // Battle: the same 4x at 30 FPS gives at most 83 ms per frame (2.5x).
+    auto [battle, battleFrame] = run(true, 4, 33, 30, limited);
+    Check(battleFrame <= BattleFrameLimitNs && battle >= 2 * 33 * 30 * Ms && battle <= 30 * BattleFrameLimitNs,
+        "in battle one 30 FPS frame advances at most the battle limit");
+    Check(limited > 0, "the withheld boost is counted");
+    // A slow real frame (120 ms) still advances 1x: never slower than normal.
+    auto [slow, slowFrame] = run(true, 8, 120, 10, limited);
+    Check(slow >= 10 * 120 * Ms && slowFrame >= 120 * Ms - Ms && slowFrame <= 121 * Ms, "a slow battle frame runs at 1x");
+    // 60 FPS: 4x of 16 ms (64 ms) is under the limit, unchanged.
+    auto [sixty, sixtyFrame] = run(true, 4, 16, 30, limited);
+    Check(sixty == 4 * 16 * 30 * Ms && limited == 0, "at 60 FPS a 4x battle frame stays under the limit");
+    // The bound button belongs to fast-forward while it is on, unless its pair is held.
+    Control control;
+    Check(!control.OwnsButton(0), "fast-forward off: the game keeps the button");
+    control.Enable(true, 1);
+    Check(control.OwnsButton(0) && !control.OwnsButton(255), "fast-forward on: the button is the speed control; the pair chord passes");
+}
+
 int main()
 {
     CheckFastForwardButtons();
     CheckFastForwardTriggerHysteresis();
+    CheckFastForwardBattleLimit();
     CheckFastForwardBindingChange();
     using namespace debug_menu::soft_reset;
     Snapshot ready;
