@@ -129,45 +129,51 @@ void CheckFastForwardBattleLimit()
 {
     using namespace debug_menu::fast_forward;
     constexpr uint64_t Ms = 1000000;
-    const auto run = [](bool battle, unsigned rate, uint64_t frameMs, int frames, uint64_t& limited) {
+    struct Result { double clockRatio; unsigned audio; bool flat; };
+    // Frames of frameNs real time; four guest clock reads per frame, the
+    // button held throughout. Ratio over the run, the audio command at the
+    // end, and whether any read inside a frame returned the previous value.
+    const auto run = [](bool limited, unsigned rate, uint64_t frameNs, int frames) {
         Control control;
         uint64_t now = 1000 * Ms;
         control.Enable(true, now);
         control.SetRate(rate, now);
-        control.Sample(0, 0, true, now);   // armed on release
-        control.Sample(255, 0, true, now); // held
+        control.Sample(0, 0, true, now);
+        control.Sample(255, 0, true, now);
+        control.BeginFrame(now, limited); // first frame: no length yet
+        now += frameNs;
         const uint64_t start = control.clock.Read(now);
-        uint64_t previous = start, maxFrame = 0;
+        uint64_t previous = start;
+        bool flat = false;
         for (int i = 0; i < frames; ++i) {
-            control.clock.BeginFrame(now, battle ? BattleFrameLimitNs : 0);
-            const uint64_t frameStart = control.clock.Read(now);
+            control.BeginFrame(now, limited);
             for (int step = 1; step <= 4; ++step) {
-                now += frameMs * Ms / 4;
-                control.Sample(255, 0, true, now); // still held, lease renewed
+                now += frameNs / 4;
+                control.Sample(255, 0, true, now);
                 const uint64_t value = control.clock.Read(now);
                 Check(value >= previous, "the guest clock never runs backwards");
+                flat = flat || value == previous;
                 previous = value;
             }
-            maxFrame = std::max(maxFrame, control.clock.Read(now) - frameStart);
         }
-        limited = control.Get(now).limitedNs;
-        return std::pair{control.clock.Read(now) - start, maxFrame};
+        return Result{double(control.clock.Read(now) - start) / double(uint64_t(frames) * (frameNs / 4 * 4)),
+                      control.ActiveRate(), flat};
     };
-    uint64_t limited = 0;
-    // Field: 4x at 30 FPS keeps its 133 ms frames.
-    auto [field, fieldFrame] = run(false, 4, 33, 30, limited);
-    Check(field == 4 * 33 * 30 * Ms && fieldFrame == 4 * 33 * Ms && limited == 0, "outside battle the rate is unchanged");
-    // Battle: the same 4x at 30 FPS gives at most 83 ms per frame (2.5x).
-    auto [battle, battleFrame] = run(true, 4, 33, 30, limited);
-    Check(battleFrame <= BattleFrameLimitNs && battle >= 2 * 33 * 30 * Ms && battle <= 30 * BattleFrameLimitNs,
-        "in battle one 30 FPS frame advances at most the battle limit");
-    Check(limited > 0, "the withheld boost is counted");
-    // A slow real frame (120 ms) still advances 1x: never slower than normal.
-    auto [slow, slowFrame] = run(true, 8, 120, 10, limited);
-    Check(slow >= 10 * 120 * Ms && slowFrame >= 120 * Ms - Ms && slowFrame <= 121 * Ms, "a slow battle frame runs at 1x");
-    // 60 FPS: 4x of 16 ms (64 ms) is under the limit, unchanged.
-    auto [sixty, sixtyFrame] = run(true, 4, 16, 30, limited);
-    Check(sixty == 4 * 16 * 30 * Ms && limited == 0, "at 60 FPS a 4x battle frame stays under the limit");
+    // Free field: 4x at 30 FPS keeps 4x.
+    auto field = run(false, 4, 33333332, 60);
+    Check(field.clockRatio > 3.999 && field.clockRatio < 4.001 && field.audio == 4 && !field.flat, "free field keeps the chosen rate");
+    // Battle/event at 30 FPS: 4x becomes 2x for the clock and the audio alike, no flat clock.
+    auto battle = run(true, 4, 33333332, 60);
+    Check(battle.clockRatio > 1.999 && battle.clockRatio < 2.001 && battle.audio == 2 && !battle.flat,
+        "limited 4x at 30 FPS runs at 2x, audio at the same rate, clock never flat");
+    // 8x at 30 FPS is also 2x; 2x stays 2x.
+    Check(run(true, 8, 33333332, 30).audio == 2 && run(true, 2, 33333332, 30).audio == 2, "limited rates at 30 FPS");
+    // 60 FPS: 4x of 16.7 ms frames is 67 ms, under the limit: 4x.
+    auto sixty = run(true, 4, 16666664, 60);
+    Check(sixty.clockRatio > 3.999 && sixty.audio == 4, "at 60 FPS a limited 4x keeps 4x");
+    // A 45 ms frame allows only 1x.
+    Check(run(true, 4, 45 * Ms, 10).audio == 1, "a slow limited frame runs at 1x");
+    Check(LimitedRate(6, 0) == 6 && LimitedRate(4, 33333333) == 2 && LimitedRate(4, 100 * Ms) == 1, "LimitedRate");
     // The bound button belongs to fast-forward while it is on, unless its pair is held.
     Control control;
     Check(!control.OwnsButton(0), "fast-forward off: the game keeps the button");

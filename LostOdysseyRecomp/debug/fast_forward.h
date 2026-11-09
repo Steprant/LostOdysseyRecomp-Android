@@ -12,13 +12,20 @@
 namespace debug_menu::fast_forward {
 inline constexpr unsigned Rates[] = {2, 3, 4, 6, 8};
 inline constexpr uint64_t InputLeaseNs = 250000000;
-// In battle, one game frame advances the guest clock by at most this much
-// (two and a half 30 FPS frames, 83 ms). The game was written for 33 ms
-// frames and survives the occasional double one; a steady 133 ms (4x) to
-// 267 ms (8x) per frame stalled battle actions and cinematics until the
-// boost stopped. Battles therefore run at up to 2.5x at 30 FPS (the full
-// rate at 60 FPS up to 5x); a slower real frame advances at 1x, unboosted.
-inline constexpr uint64_t BattleFrameLimitNs = 83333333;
+// Outside free field walking (battles, events, the intro), one game frame
+// may advance at most this much game time. The game was written for 33 ms
+// frames; a steady 133 ms (4x) to 267 ms (8x) per frame stalled battle
+// actions and the intro until the boost stopped (Stefano, 9/11). The limit
+// caps the RATE, an integer the audio driver follows too: at 30 FPS it is 2x
+// (67 ms frames), at 60 FPS up to 4x. Never a flat clock inside a frame, and
+// game time and audio keep one speed. Free field walking keeps the chosen rate.
+inline constexpr uint64_t LimitedFrameNs = 83333333;
+// The rate the limit allows for a real frame of frameNs (at least 1).
+inline constexpr unsigned LimitedRate(unsigned selected, uint64_t frameNs) {
+    if (frameNs == 0) return selected;
+    const uint64_t allowed = LimitedFrameNs / frameNs;
+    return unsigned(std::max<uint64_t>(1, std::min<uint64_t>(selected, allowed)));
+}
 enum class Mode { Hold, Toggle };
 enum class Button { LT = 0, LB = 1 };
 struct Buttons { uint8_t lt = 0, rt = 0, lb = 0, rb = 0; };
@@ -37,10 +44,6 @@ struct Clock {
     uint64_t last = 0, value = 0, lease = 0;
     unsigned rate = 1;
     bool initialized = false, paused = false;
-    // Per-frame limit (0: none): from the last BeginFrame, the clock gains at
-    // most max(frameLimit, real time) of game time.
-    uint64_t frameLimit = 0, frameValue = 0, frameReal = 0;
-    uint64_t limitedNs = 0; // boost time withheld by the limit (diagnostics)
     void Add(uint64_t elapsed, unsigned factor) {
         const auto room = std::numeric_limits<uint64_t>::max() - value;
         value += elapsed > room / factor ? room : elapsed * factor;
@@ -50,37 +53,15 @@ struct Clock {
         if (now < last) return value;
         if (!paused) {
             const auto boostedEnd = std::clamp(lease, last, now);
-            const uint64_t before = value;
             Add(boostedEnd - last, rate);
             Add(now - boostedEnd, 1);
-            if (frameLimit && rate > 1 && now >= frameReal) {
-                // The real time since the frame began always counts (1x), so
-                // the limit never slows the game below normal speed.
-                const uint64_t real = now - frameReal;
-                const uint64_t allowed = std::max(frameLimit, real);
-                const uint64_t ceiling = frameValue > std::numeric_limits<uint64_t>::max() - allowed
-                    ? std::numeric_limits<uint64_t>::max() : frameValue + allowed;
-                if (value > ceiling) {
-                    // Never backwards: a frame already at its ceiling waits.
-                    const uint64_t capped = std::max(ceiling, before);
-                    limitedNs += value - capped;
-                    value = capped;
-                }
-            }
         }
         last = now;
         if (now >= lease) rate = 1;
         return value;
     }
-    // A new game frame (engine tick): limit is the per-frame cap, 0 for none.
-    void BeginFrame(uint64_t now, uint64_t limit) {
-        Read(now);
-        frameLimit = limit;
-        frameValue = value;
-        frameReal = now;
-    }
 };
-struct Status { bool enabled = false, active = false; unsigned multiplier = 2; Mode mode = Mode::Hold; bool keepAudioPitch = true; Button button = Button::LT; bool battleLimit = false; uint64_t limitedNs = 0; };
+struct Status { bool enabled = false, active = false; unsigned multiplier = 2; Mode mode = Mode::Hold; bool keepAudioPitch = true; Button button = Button::LT; bool limited = false; unsigned effective = 1; };
 struct Control {
     Clock clock;
     bool enabled = false, armed = false, held = false;
@@ -88,6 +69,21 @@ struct Control {
     Mode mode = Mode::Hold;
     bool keepAudioPitch = true;
     Button button = Button::LT;
+    // Frame limit (see LimitedFrameNs): on outside free field walking.
+    bool limited = false;
+    unsigned rateCap = ~0u;
+    uint64_t frameStart = 0;
+    unsigned Boost() const { return std::max(1u, std::min(multiplier, rateCap)); }
+    // Engine tick, guest game thread: the previous frame's real length sets
+    // the cap for this one.
+    void BeginFrame(uint64_t now, bool limit) {
+        clock.Read(now);
+        const uint64_t frame = frameStart && now > frameStart ? now - frameStart : 0;
+        frameStart = now;
+        limited = limit;
+        rateCap = limit ? LimitedRate(multiplier, frame) : ~0u;
+        if (clock.rate > 1) clock.rate = Boost();
+    }
     void Stop(uint64_t now) {
         clock.Read(now); clock.rate = 1; clock.lease = now;
         held = armed = false;
@@ -100,7 +96,7 @@ struct Control {
     void SetRate(unsigned value, uint64_t now) {
         if (std::find(std::begin(Rates), std::end(Rates), value) == std::end(Rates)) return;
         clock.Read(now); multiplier = value;
-        if (clock.rate > 1) clock.rate = multiplier;
+        if (clock.rate > 1) clock.rate = Boost();
     }
     void Pause(bool value, uint64_t now) {
         Stop(now); clock.paused = value;
@@ -118,14 +114,14 @@ struct Control {
             else if (pair <= 32) held = !held;
             armed = false;
         }
-        clock.rate = held && pair <= 32 ? multiplier : 1;
+        clock.rate = held && pair <= 32 ? Boost() : 1;
         clock.lease = now > std::numeric_limits<uint64_t>::max() - InputLeaseNs
             ? std::numeric_limits<uint64_t>::max() : now + InputLeaseNs;
     }
     Status Get(uint64_t now) {
         clock.Read(now);
         return {enabled, clock.rate > 1 && !clock.paused, multiplier, mode, keepAudioPitch, button,
-                clock.frameLimit != 0, clock.limitedNs};
+                limited, ActiveRate()};
     }
     unsigned ActiveRate() const { return clock.rate > 1 && !clock.paused ? clock.rate : 1; }
     // The bound button is the speed control while fast-forward is on and its
@@ -163,8 +159,8 @@ inline void SetKeepAudioPitch(bool keep) {
 inline void SetPaused(bool paused) { std::lock_guard lock(mutex); control.Pause(paused, NowNs()); PublishRate(); }
 inline void Release() { std::lock_guard lock(mutex); control.Stop(NowNs()); PublishRate(); }
 // Engine tick on the guest game thread: one game frame begins.
-inline void BeginFrame(bool inBattle) {
-    std::lock_guard lock(mutex); control.clock.BeginFrame(NowNs(), inBattle ? BattleFrameLimitNs : 0); PublishRate();
+inline void BeginFrame(bool limited) {
+    std::lock_guard lock(mutex); control.BeginFrame(NowNs(), limited); PublishRate();
 }
 inline bool OwnsButton(uint8_t pair) { std::lock_guard lock(mutex); return control.OwnsButton(pair); }
 inline void Sample(uint8_t button, uint8_t pair, bool allowed) {

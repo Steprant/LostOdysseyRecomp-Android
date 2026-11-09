@@ -526,7 +526,11 @@ PPC_FUNC(sub_82290B60)
     if (teleportCommandFile && !observed.exchange(true))
         LOG_INFO("teleport scene hook this={:#x} caller={:#x}", ctx.r3.u32, uint32_t(ctx.lr));
     const bool engine = ctx.r3.u32 == PPC_LOAD_U32(0x83315FB4);
-    if (engine) { debug_menu::fast_forward::BeginFrame(debug_menu::CurrentBattle() != 0); debug_menu::soft_reset::Tick(ctx, base); debug_menu::cheats::Tick(ctx, base); debug_menu::cheats::SavePointTick(ctx, base); gpu::frame_plan::BeginCpuFrame(); frame_timing::EngineTick(ctx.f1.f64); }
+    // Fast-forward keeps its chosen rate only while the player walks freely
+    // in the field (last tick's snapshot); battles, events and the intro run
+    // under the per-frame limit (debug/fast_forward.h).
+    static std::atomic<bool> freeField{false};
+    if (engine) { debug_menu::fast_forward::BeginFrame(debug_menu::CurrentBattle() != 0 || !freeField.load(std::memory_order_relaxed)); debug_menu::soft_reset::Tick(ctx, base); debug_menu::cheats::Tick(ctx, base); debug_menu::cheats::SavePointTick(ctx, base); gpu::frame_plan::BeginCpuFrame(); frame_timing::EngineTick(ctx.f1.f64); }
     __imp__sub_82290B60(ctx, base);
     if (engine)
     {
@@ -538,6 +542,7 @@ PPC_FUNC(sub_82290B60)
             std::lock_guard lock(stateMutex);
             playerInField = snapshot.available && pendingMap.empty() && pending == Operation::None;
         }
+        freeField.store(playerInField, std::memory_order_relaxed);
         mod_hot_reload::Tick(ctx, base, playerInField);
     }
 }
