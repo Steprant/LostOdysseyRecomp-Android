@@ -158,15 +158,38 @@ int main()
     }
     {
         using gpu::upscaling::Upscaler;
-        const gpu::resolution::Size quality{1780, 800};
+        using gpu::upscaling::FsrQuality;
+        using Size = gpu::resolution::Size;
+        const Size quality{1780, 800};
         const auto low = gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 576, 2670, 1200);
         Require(low.height == 576 && low.width == 1282, "SGSR2 at the 576p row renders 576 lines on a 2670x1200 panel");
-        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 720, 2670, 1200) == quality,
-            "other render resolution rows keep the SGSR2 quality ratio");
-        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Fsr, quality, 576, 2670, 1200) == quality,
-            "the 576p input cap is SGSR2 only");
-        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1280, 576}, 576, 1280, 576) == gpu::resolution::Size{1280, 576},
-            "the cap never raises the input");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 900, 2670, 1200) == Size{2003, 900},
+            "SGSR2 900p renders 2003x900 on the phone panel (1.33x)");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1280, 720}, 900, 1920, 1080) == Size{1600, 900},
+            "SGSR2 900p renders 1600x900 on a 1080p TV (1.2x)");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1280, 720}, 720, 1920, 1080) == Size{1280, 720},
+            "SGSR2 720p renders 1280x720 on a 1080p TV");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 720, 2670, 1200) == Size{1602, 720},
+            "SGSR2 720p renders 720 lines on the phone panel");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1280, 720}, 1080, 1920, 1080) == Size{1920, 1080},
+            "SGSR2 1080p on a 1080p TV renders at the output size");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 1440, 2670, 1200) == Size{2670, 1200},
+            "a row above the output renders at the output size");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 0, 2670, 1200) == quality,
+            "Auto (row 0) keeps the SGSR2 quality ratio");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1570, 706}, 0, 2670, 1200, FsrQuality::Balanced) == Size{1570, 706},
+            "Auto Balanced keeps its ratio");
+        for (uint32_t row : {576u, 720u, 900u, 1080u})
+            Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {2670, 1200}, row, 2670, 1200, FsrQuality::NativeAA) == Size{2670, 1200},
+                "Native AA always renders 1:1");
+        for (auto q : {FsrQuality::Quality, FsrQuality::Balanced, FsrQuality::Performance})
+            Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, quality, 900, 2670, 1200, q) == Size{2003, 900},
+                "with a fixed row the quality only selects SMAA, not the base");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Fsr, quality, 576, 2670, 1200) == quality &&
+                gpu::frame_plan::Sgsr2InputCap(Upscaler::Fsr, quality, 900, 2670, 1200) == quality,
+            "the row-decided base is SGSR2 only");
+        Require(gpu::frame_plan::Sgsr2InputCap(Upscaler::Sgsr2, {1280, 576}, 576, 1280, 576) == Size{1280, 576},
+            "a row equal to the output renders at the output size");
     }
     {
         using Policy = gpu::frame_plan::Sgsr2IdlePolicy;

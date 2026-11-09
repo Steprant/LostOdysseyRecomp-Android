@@ -31,13 +31,19 @@ struct Attempt {
     uint64_t useId = 0;
 };
 
+// The colour input's format, as the caller sees it (SMAA crops into a stage
+// of the same format; 10-bit and float inputs blend into a float stage).
+enum class ColorFormat : uint8_t { Rgba8, Rgb10a2, Rgba16f, Other };
+
 // Per-frame values the controller cannot derive from the textures.
 struct FrameValues {
     float cameraFovAngleHor = 1.0f; // tan(horizontal fov / 2)
     bool sameCamera = false;        // view-projection unchanged since the last frame
-    bool smaa = false;              // SMAA 1x on the colour input before SGSR2; only for an RGBA8, SDR colour
+    bool smaa = false;              // Quality: SMAA 1x on the SDR colour input before SGSR2 (8-bit, 10-bit or float)
     float edgeClip = NAN;           // depth-edge history clip weight; NaN: LO_SGSR2_EDGE_CLIP or 1
     float kernelScale = 1.0f;       // 0.5..1: narrows the Lanczos window's bias (wider, softer kernel) below 1
+    bool softFilter = false;        // Soft filter: Gaussian kernel without negative lobes (WP7.3)
+    ColorFormat colorFormat = ColorFormat::Rgba8;
 };
 
 // Render size for an FsrQuality-style ratio (Quality 1.5, Balanced 1.7,
@@ -54,7 +60,7 @@ public:
     Status EnsureSession(plume::RenderDevice& device, const Config& config);
     // Opens, records and closes the isolated list. Inputs are SHADER_READ,
     // output (RGBA16F storage, output size) GENERAL before and after.
-    // With FrameValues::smaa and an RGBA8 SDR colour, SMAA's three passes run
+    // With FrameValues::smaa and an SDR colour (8-bit, 10-bit or float), SMAA's three passes run
     // first in the same list, on a copy of the colour's render region.
     Attempt RecordIsolated(plume::RenderCommandList& commands, const Config& config,
         const temporal::TemporalFrameInputs& inputs, const FrameValues& frame, plume::RenderTexture& output);

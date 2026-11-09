@@ -70,6 +70,7 @@ Config Validate(Config value)
     value.dlssQuality = gpu::upscaling::NormalizeDlssQuality(value.dlssQuality);
     if (value.dlssModel > 1) value.dlssModel = 0;
     value.fsrQuality = gpu::upscaling::NormalizeFsrQuality(value.fsrQuality);
+    if (value.sgsr2Filter > 1) value.sgsr2Filter = 0;
     value.fsrSharpnessPercent = std::min(value.fsrSharpnessPercent, 100u);
     value.dlssNeuralRendering = std::min(value.dlssNeuralRendering, DlssNeuralRenderingMaxPasses);
     value.dlssNrPreset = std::min(value.dlssNrPreset, 3u);
@@ -146,8 +147,8 @@ Config Read()
     Config value;
     bool hasAntialiasing = false;
     bool hasEncounterRate = false, legacyNoEncounters = false;
-    bool hasHdrPeakAuto = false, hasHdrPeakNits = false, hasAspectRatio = false, hasVsync = false;
     bool hasBattleExpMultiplier = false, legacyBattleExpDouble = false;
+    bool hasHdrPeakAuto = false, hasHdrPeakNits = false, hasAspectRatio = false, hasVsync = false;
     const auto path = os::user_paths::SettingsPath();
     std::ifstream input(path);
     std::string key;
@@ -160,8 +161,8 @@ Config Read()
         // Presence wins over the legacy key even if the new value is malformed.
         if (name == "antialiasing") { hasAntialiasing = true; value.antialiasing = 0; }
         if (name == "encounter_rate") { hasEncounterRate = true; value.encounterRate = EncounterRate::Normal; }
-        if (name == "internal_resolution") value.internalResolution = 0;
         if (name == "battle_exp_multiplier") { hasBattleExpMultiplier = true; value.battleExpMultiplier = 1; }
+        if (name == "internal_resolution") value.internalResolution = 0;
         if (name == "fast_forward_button") value.fastForwardButton = 0;
         if (name == "anisotropic_filtering") value.anisotropicFiltering = 0;
         if (name == "aspect_ratio") hasAspectRatio = true;
@@ -255,6 +256,8 @@ Config Read()
             value.dlssModel = number;
         else if (key == "fsr_quality")
             value.fsrQuality = gpu::upscaling::FsrQuality(number);
+        else if (key == "sgsr2_filter" && number <= 1)
+            value.sgsr2Filter = number;
         else if (key == "fsr_sharpness")
             value.fsrSharpnessPercent = number;
         else if (key == "dlss_neural_rendering")
@@ -363,10 +366,10 @@ Config Read()
     }
     if (!hasAntialiasing) value.antialiasing = value.fxaa ? 1u : 0u;
     if (!hasEncounterRate && legacyNoEncounters) value.encounterRate = EncounterRate::None;
+    if (!hasBattleExpMultiplier && legacyBattleExpDouble) value.battleExpMultiplier = 2;
     // Profiles written before automatic peak detection use their stored peak
     // as an explicit choice. A fresh profile follows the current display.
     if (hasHdrPeakNits && !hasHdrPeakAuto) value.hdrPeakAutomatic = false;
-    if (!hasBattleExpMultiplier && legacyBattleExpDouble) value.battleExpMultiplier = 2;
     // Before the Aspect ratio setting, a 21:9 output resolution was the
     // Widescreen switch; keep that shape.
     if (!hasAspectRatio) value.aspectRatio = gpu::aspect_ratio::Migrated(value.width, value.height);
@@ -500,6 +503,7 @@ static bool WriteConfig(const Config &value)
             << "\nupscaler=" << uint32_t(value.upscaler) << "\ndlss_quality=" << uint32_t(value.dlssQuality)
            << "\ndlss_model=" << value.dlssModel
            << "\nfsr_quality=" << uint32_t(value.fsrQuality)
+           << "\nsgsr2_filter=" << value.sgsr2Filter
            << "\nfsr_sharpness=" << value.fsrSharpnessPercent
            << "\ndlss_neural_rendering=" << value.dlssNeuralRendering
            << "\ndlss_nr_preset=" << value.dlssNrPreset << "\ndlss_nr_style=" << value.dlssNrStyle

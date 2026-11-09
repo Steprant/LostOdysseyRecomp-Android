@@ -105,16 +105,33 @@ namespace gpu::frame_plan
         if (!sourcePlan || !sourcePlan->cpuSerial) return {fallbackAA, fallbackScalingQuality, false};
         return {sourcePlan->effectiveAA, sourcePlan->scalingQuality, sceneAAApplied};
     }
-    // SGSR2 renders at its quality ratio of the output, whatever the render
-    // resolution row says, except 576p: the lowest row renders SGSR2 at 576
-    // lines (about 2.1x on a 1200-line panel), to try a very low input.
+    // SGSR2's render size (its "base"). The render resolution row decides it
+    // (Steprant 2.0, bug 1 of 8/11): 576/720/900/1080/1440/2160 render that
+    // many lines at the output's shape, e.g. 900p is 1600x900 on a 1080p TV
+    // (1.2x) and 2003x900 on a 2670x1200 panel (1.33x). A row at or above the
+    // output renders at the output size. "Auto" (row value 0, shown as
+    // "Follow output" for the other modes) keeps the quality ratio (Quality
+    // 1.5x, Balanced 1.7x, Performance 2x). Native AA always renders 1:1;
+    // otherwise the quality row only decides SMAA (Quality) or not.
     inline constexpr uint32_t kSgsr2LowInputHeight = 576;
-    inline resolution::Size Sgsr2InputCap(upscaling::Upscaler upscaler, resolution::Size optimal,
-        uint32_t internalResolution, uint32_t outputWidth, uint32_t outputHeight)
+    inline constexpr bool Sgsr2FixedBaseRow(uint32_t internalResolution)
     {
-        if (upscaler != upscaling::Upscaler::Sgsr2 || internalResolution != kSgsr2LowInputHeight) return optimal;
-        const auto low = resolution::ResolveInternalSize(internalResolution, outputWidth, outputHeight);
-        return low.width && low.height && low.width < optimal.width && low.height < optimal.height ? low : optimal;
+        switch (internalResolution) {
+        case 576: case 720: case 900: case 1080: case 1440: case 2160: return true;
+        default: return false;
+        }
+    }
+    inline resolution::Size Sgsr2InputCap(upscaling::Upscaler upscaler, resolution::Size optimal,
+        uint32_t internalResolution, uint32_t outputWidth, uint32_t outputHeight,
+        upscaling::FsrQuality quality = upscaling::FsrQuality::Quality)
+    {
+        if (upscaler != upscaling::Upscaler::Sgsr2 || quality == upscaling::FsrQuality::NativeAA ||
+            !Sgsr2FixedBaseRow(internalResolution) || !outputWidth || !outputHeight)
+            return optimal;
+        const auto base = resolution::ResolveInternalSize(internalResolution, outputWidth, outputHeight);
+        if (!base.width || !base.height) return optimal;
+        if (base.width >= outputWidth || base.height >= outputHeight) return {outputWidth, outputHeight};
+        return base;
     }
     inline uint64_t FullRequestSignature(const FramePlan& plan, uint32_t internalResolution, resolution::Size recommendedInput) {
         const auto mix = [](uint64_t value, uint64_t input) { return (value ^ input) * 0x9E3779B185EBCA87ull; };
@@ -176,7 +193,8 @@ namespace gpu::frame_plan
             if (mode.state == upscaling::SizingState::Ready && mode.optimal.width && mode.optimal.height &&
                 mode.optimal.width <= input.output.width && mode.optimal.height <= input.output.height &&
                 (request.fsrQuality != upscaling::FsrQuality::NativeAA || mode.optimal == resolution::Size{input.output.width,input.output.height}))
-                recommended = Sgsr2InputCap(input.upscaler, mode.optimal, input.internalResolution, input.output.width, input.output.height);
+                recommended = Sgsr2InputCap(input.upscaler, mode.optimal, input.internalResolution, input.output.width, input.output.height,
+                    request.fsrQuality);
         }
         return FullRequestSignature(request, input.internalResolution, recommended);
     }
@@ -310,7 +328,7 @@ namespace gpu::frame_plan
                     (input.fsrQuality != upscaling::FsrQuality::NativeAA ||
                         mode.optimal == resolution::Size{input.output.width, input.output.height});
                 const auto optimal = Sgsr2InputCap(input.upscaler, mode.optimal, input.internalResolution,
-                    input.output.width, input.output.height);
+                    input.output.width, input.output.height, input.fsrQuality);
                 if (ready) recommended = optimal;
                 if (ready && !input.readback && input.device.Available(input.upscaler)) {
                     p.width = optimal.width;

@@ -6,6 +6,7 @@
 #include "fsr_projection.h"
 #include "xess_upscaler.h"
 #include "sgsr2_upscaler.h"
+#include "sgsr2_status.h"
 #include <cmath>
 #include <algorithm>
 #include <cctype>
@@ -199,12 +200,11 @@ SrResult TemporalUpscaler::RecordIsolated(plume::VulkanCommandList& commands,
     if (request.plan.requestedUpscaler == upscaling::Upscaler::Sgsr2) {
         const auto& inputs = request.inputs;
         sgsr2::FrameValues frame{};
-        // Quality: SMAA 1x on the RGBA8 SDR input (G3; LO_SGSR2_SMAA=0, the
-        // Android diagnostics switch, turns it off). The input's edges are
-        // then anti-aliased before accumulation, so Quality keeps the
-        // reference kernel; without SMAA it widens it (kernelScale 0.8) for
-        // a softer image. Balanced and Performance keep the reference and no
-        // SMAA. No sharpening pass. LO_SGSR2_KERNEL_SCALE=0.5..1 overrides.
+        // Quality: SMAA 1x on the SDR input (G3; LO_SGSR2_SMAA=0 turns it
+        // off). The input's edges are then anti-aliased before accumulation,
+        // so the Standard filter keeps the reference kernel. Balanced and
+        // Performance keep the reference and no SMAA. No sharpening pass.
+        // LO_SGSR2_KERNEL_SCALE=0.5..1 overrides the window.
         static const bool smaaEnabled = [] {
             const char* value = std::getenv("LO_SGSR2_SMAA");
             return !(value && std::string_view(value) == "0");
@@ -214,9 +214,19 @@ SrResult TemporalUpscaler::RecordIsolated(plume::VulkanCommandList& commands,
             return value && *value ? float(std::clamp(std::atof(value), 0.5, 1.0)) : -1.0f;
         }();
         const bool quality = request.plan.fsrQuality == upscaling::FsrQuality::Quality;
-        frame.smaa = smaaEnabled && quality && inputs.color.texture &&
-            static_cast<const plume::VulkanTexture*>(inputs.color.texture)->desc.format == plume::RenderFormat::R8G8B8A8_UNORM;
-        frame.kernelScale = kernelOverride > 0.0f ? kernelOverride : quality && !frame.smaa ? 0.8f : 1.0f;
+        // The controller blends any SDR 8-bit, 10-bit or float input and logs
+        // smaa=on/off with the format (2.0, WP7.2.2).
+        frame.smaa = smaaEnabled && quality && inputs.color.texture;
+        if (inputs.color.texture) {
+            const auto format = static_cast<const plume::VulkanTexture*>(inputs.color.texture)->desc.format;
+            frame.colorFormat = format == plume::RenderFormat::R8G8B8A8_UNORM ? sgsr2::ColorFormat::Rgba8 :
+                format == plume::RenderFormat::R10G10B10A2_UNORM ? sgsr2::ColorFormat::Rgb10a2 :
+                format == plume::RenderFormat::R16G16B16A16_FLOAT ? sgsr2::ColorFormat::Rgba16f : sgsr2::ColorFormat::Other;
+        }
+        // Soft filter (WP7.3): Gaussian weights without negative lobes over a
+        // wider window (0.7); the renderer halves the scene mip bias.
+        frame.softFilter = sgsr2::softFilter.load(std::memory_order_relaxed);
+        frame.kernelScale = kernelOverride > 0.0f ? kernelOverride : frame.softFilter ? 0.7f : 1.0f;
         if (inputs.cameraValid && inputs.color.height) {
             const double aspect = double(inputs.color.width) / inputs.color.height;
             if (const auto projection = fsr::DeriveProjection(inputs.cameraViewProjection, aspect))

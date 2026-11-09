@@ -48,7 +48,8 @@ struct Sgsr2Parameters {
     float2 previousJitter;    // last frame's jitterOffset
     float  edgeClip;          // weight of the reference's depth-edge clip (1 = reference)
     float  kernelScale;       // 1 = reference; below 1 a wider, softer upsampling kernel
-    uint2  padding;
+    uint   kernelMode;        // 0: reference (fast Lanczos); 1: Soft, a Gaussian with no negative lobes
+    uint   padding;
 };
 [[vk::push_constant]] ConstantBuffer<Sgsr2Parameters> params;
 
@@ -203,10 +204,20 @@ struct Box {
     float3 center, variance, minimum, maximum;
     float weight;
 };
+// Not part of Qualcomm's SGSR2: the Soft filter (Steprant 2.0, WP7.3) swaps
+// the Lanczos-shaped weight, whose negative lobe rings around edges, for a
+// Gaussian of the same argument with the same peak (0.25), so the summed
+// weight that drives the history blend stays comparable. No negative lobe,
+// so no halo; with the wider window (kernelScale 0.7) a softer image.
+float SoftKernel(float base)
+{
+    return 0.25 * exp(-4.0 * base);
+}
 void Accumulate(inout Box box, float3 color, float2 offset, float kernelBias2, float curveBias, bool first)
 {
     const float offsetDot = dot(offset, offset);
-    const float lanczos = FastLanczos(saturate(offsetDot * kernelBias2));
+    const float base = saturate(offsetDot * kernelBias2);
+    const float lanczos = params.kernelMode == 1u ? SoftKernel(base) : FastLanczos(base);
     box.upsampled += float4(color * lanczos, lanczos);
     const float boxWeight = exp(offsetDot * curveBias);
     box.minimum = first ? color : min(box.minimum, color);

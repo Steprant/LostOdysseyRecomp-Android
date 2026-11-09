@@ -9,6 +9,7 @@
 #endif
 #include "frame_plan.h"
 #include "android_tv.h"
+#include "sgsr2_status.h"
 #if defined(LO_GPU_PLUME) || defined(LO_VIDEO_SUBMISSION_UNIT)
 #include "backend_device.h"
 #include "vulkan_submission_state.h"
@@ -4833,6 +4834,12 @@ namespace gpu::video
             sources.upscaler = upscaling::IsDlssConsumer(consumer) ? "DLSS" : consumer == TemporalConsumer::FsrSr ? "FSR" :
                 consumer == TemporalConsumer::XessSr ? "XeSS" : consumer == TemporalConsumer::MetalFxSr ? "MetalFX" :
                 consumer == TemporalConsumer::Sgsr2Sr ? "SGSR2" : "NATIVE";
+            // SGSR2: whether SMAA ran on its input and which filter (2.0, WP7.2.2).
+            if (consumer == TemporalConsumer::Sgsr2Sr) {
+                const auto status = gpu::sgsr2::LastStatus();
+                static constexpr const char* names[] = {"SGSR2", "SGSR2+SMAA", "SGSR2 SOFT", "SGSR2+SMAA SOFT"};
+                sources.upscaler = names[(status.smaaActive ? 1 : 0) + (status.soft ? 2 : 0)];
+            }
             // Name the spatial upscaler the presentation actually used.
             if (std::string_view(sources.upscaler) == "NATIVE" &&
                 g_presentation->LastSgsr1State() == gpu::Sgsr1State::Active)

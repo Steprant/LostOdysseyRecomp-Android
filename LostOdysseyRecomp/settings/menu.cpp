@@ -1205,9 +1205,11 @@ bool GraphicsRowHidden(int r)
     if (r == int(GraphicsRow::DlssQuality))
         return edit.upscaler != gpu::upscaling::Upscaler::Sgsr2 &&
             (!graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr);
-    // SGSR2 has no sharpening pass (its Quality uses SMAA instead): FSR only.
+    // FSR sharpness for FSR; with SGSR2 (no sharpening pass, Quality uses
+    // SMAA) the same row is the SGSR2 filter, Standard or Soft (2.0, WP7.3).
     if (r == int(GraphicsRow::FsrSharpness))
-        return !graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr;
+        return edit.upscaler != gpu::upscaling::Upscaler::Sgsr2 &&
+            (!graphics_menu::AndroidFsrAvailable || edit.upscaler != gpu::upscaling::Upscaler::Fsr);
 #endif
     // A single adapter or display leaves nothing to choose.
     if (r == int(GraphicsRow::Gpu))
@@ -1552,7 +1554,10 @@ void Publish(uint8_t *base, uint32_t config)
                    uint32_t(graphics_menu::PresetOf(edit))));
         std::vector<std::wstring> renderChoices;
         for (const int height : graphics_menu::RenderResolutions)
-            renderChoices.push_back(height == 0 ? Tr(L"Follow output", L"跟隨輸出") :
+            // With SGSR2 the row decides the render size; 0 keeps SGSR2's
+            // quality ratio, so it reads "Auto" there.
+            renderChoices.push_back(height == 0 ? (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2 ?
+                    Tr(L"Auto", L"自動") : Tr(L"Follow output", L"跟隨輸出")) :
                 height == InternalResolutionNative ? Tr(L"Native (Retina)", L"原生（Retina）") :
                 std::to_wstring(height) + L"p");
         placeGraphics(GraphicsRow::RenderResolution, makeChoices(L"Render resolution", L"渲染解析度",
@@ -1596,8 +1601,11 @@ void Publish(uint8_t *base, uint32_t config)
         sharpnessChoices.emplace_back(Tr(L"Off", L"關"));
         for (uint32_t percent = 1; percent <= 100; ++percent)
             sharpnessChoices.push_back(std::to_wstring(percent) + L"%");
-        auto fsrSharpness = makeChoices(L"FSR sharpness", L"FSR 銳化", std::move(sharpnessChoices),
-                                        std::min(edit.fsrSharpnessPercent, 100u));
+        auto fsrSharpness = edit.upscaler == gpu::upscaling::Upscaler::Sgsr2 ?
+            makeChoices(L"SGSR2 filter", L"SGSR2 濾鏡", {Tr(L"Standard", L"標準"), Tr(L"Soft", L"柔和")},
+                        std::min(edit.sgsr2Filter, 1u)) :
+            makeChoices(L"FSR sharpness", L"FSR 銳化", std::move(sharpnessChoices),
+                        std::min(edit.fsrSharpnessPercent, 100u));
         fsrSharpness.hidden = GraphicsRowHidden(int(GraphicsRow::FsrSharpness));
         placeGraphics(GraphicsRow::FsrSharpness, std::move(fsrSharpness));
         auto neuralRendering = makeChoices(L"DLSS 5 neural rendering", L"DLSS 5 神經渲染",
@@ -1876,10 +1884,10 @@ void Publish(uint8_t *base, uint32_t config)
 #endif
             next.help += Tr(L" An upscaler supersamples above it.",
                             L"開啟縮放器時，高於輸出即為超取樣。");
-            // U1: with SGSR2 this row is not what sets the render size.
+            // U1: with SGSR2 this row sets SGSR2's render size (2.0, bug 1).
             if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2)
-                next.help += Tr(L" With SGSR2 the SGSR2 quality row sets the render size (Quality: display size / 1.5, e.g. 1780x800 on a 2670x1200 screen); this row changes it only at 576p, which caps it at 576 lines.",
-                                L" 使用 SGSR2 時，渲染尺寸由 SGSR2 品質決定（品質：顯示尺寸 / 1.5，例如 2670x1200 螢幕為 1780x800）；此項只有 576p 會改變它，上限為 576 行。");
+                next.help += Tr(L" With SGSR2 this row sets the render size: 900p renders 900 lines (1600x900 on a 1080p TV, 2003x900 on a 2670x1200 screen). Auto uses the SGSR2 quality ratio; Native AA renders at the display size.",
+                                L" 使用 SGSR2 時，此項決定渲染尺寸：900p 渲染 900 行（1080p 電視為 1600x900，2670x1200 螢幕為 2003x900）。自動使用 SGSR2 品質比例；Native AA 以顯示尺寸渲染。");
             break;
         case GraphicsRow::ShadowResolution:
             next.help = Tr(L"Shadow-map resolution multiplier. Higher values need more GPU memory and rendering time. Applies after saving.",
@@ -1924,8 +1932,8 @@ void Publish(uint8_t *base, uint32_t config)
             break;
         case GraphicsRow::DlssQuality:
             if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2) {
-                next.help = Tr(L"Render size from the display size: Quality / 1.5 (with SMAA), Balanced / 1.7, Performance / 2, Native AA at the display size. The render resolution row does not change it, except 576p.",
-                               L"渲染尺寸依顯示尺寸計算：品質 / 1.5（含 SMAA）、平衡 / 1.7、效能 / 2，Native AA 為顯示尺寸。渲染解析度選項不會改變它，576p 除外。");
+                next.help = Tr(L"Quality applies SMAA before the upscale; Balanced and Performance do not. The render resolution row sets the render size; at Auto it is the display size / 1.5, 1.7 or 2. Native AA renders at the display size.",
+                               L"品質在放大前套用 SMAA，平衡與效能則否。渲染解析度決定渲染尺寸；設為自動時為顯示尺寸 / 1.5、1.7 或 2。Native AA 以顯示尺寸渲染。");
                 break;
             }
             next.help = gpu::upscaling::UsesFsrQuality(edit.upscaler) ?
@@ -1937,8 +1945,12 @@ void Publish(uint8_t *base, uint32_t config)
                            L"M：比舊版模型更穩定、更清晰，開銷適中。L：最穩定、拖影最少，但較慢，RTX 20/30 系列尤其明顯。");
             break;
         case GraphicsRow::FsrSharpness:
-            next.help = Tr(L"FSR sharpening: Off disables RCAS; 1-100% sets sharpening strength.",
-                           L"FSR 銳化：關閉會停用 RCAS；1-100% 調整銳化強度。");
+            if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2)
+                next.help = Tr(L"Standard keeps Qualcomm's sharp reconstruction. Soft uses a filter without dark or bright halos, a wider footprint and half the texture sharpening: a smoother, steadier image at the same cost.",
+                               L"標準保留 Qualcomm 的銳利重建。柔和使用沒有明暗光暈的濾鏡、更寬的取樣範圍與一半的紋理銳化：畫面更平滑穩定，開銷相同。");
+            else
+                next.help = Tr(L"FSR sharpening: Off disables RCAS; 1-100% sets sharpening strength.",
+                               L"FSR 銳化：關閉會停用 RCAS；1-100% 調整銳化強度。");
             break;
         case GraphicsRow::DlssNeuralRendering:
         {
@@ -3933,7 +3945,10 @@ PPC_FUNC(sub_822F19B0)
                 edit.dlssModel = cycle(std::min(edit.dlssModel, 1u), 2);
                 break;
             case GraphicsRow::FsrSharpness:
-                edit.fsrSharpnessPercent = uint32_t(std::clamp(int(edit.fsrSharpnessPercent) + delta, 0, 100));
+                if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2)
+                    edit.sgsr2Filter = cycle(std::min(edit.sgsr2Filter, 1u), 2);
+                else
+                    edit.fsrSharpnessPercent = uint32_t(std::clamp(int(edit.fsrSharpnessPercent) + delta, 0, 100));
                 break;
             case GraphicsRow::DlssNeuralRendering:
                 edit.dlssNeuralRendering = cycle(std::min(edit.dlssNeuralRendering, DlssNeuralRenderingMaxPasses),

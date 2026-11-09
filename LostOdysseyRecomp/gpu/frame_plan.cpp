@@ -135,6 +135,7 @@ namespace gpu::frame_plan
 #if LO_PLATFORM_ANDROID
         const auto tv = android_tv::Snapshot();
         const auto output = upscaling::ResolveOutputRegion(drawableSize, android_tv::Aspect(tv, config.aspectRatio));
+        // A TV output is never supersampled: its height is the region's.
         const auto internal = tv.height ? tv.height : PlannedInternalResolution(config);
 #else
         const auto output = upscaling::ResolveOutputRegion(drawableSize, config.aspectRatio);
@@ -152,7 +153,11 @@ namespace gpu::frame_plan
         const auto tv = android_tv::Snapshot();
         if (tv.height) {
             config.aspectRatio = aspect_ratio::Mode::Wide;
-            config.internalResolution = int(tv.height);
+            // The TV fixes the output; with SGSR2 the render resolution row
+            // still decides the base (900p is 1600x900 on a 1080p TV).
+            // PlannedOutputRegion keeps the TV-sized output either way.
+            if (config.upscaler != upscaling::Upscaler::Sgsr2)
+                config.internalResolution = int(tv.height);
         }
 #endif
         static const bool readback = getenv("LO_RESOLVE_READBACK") != nullptr;

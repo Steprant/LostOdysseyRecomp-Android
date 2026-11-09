@@ -3,6 +3,7 @@
 #if defined(LO_GPU_PLUME)
 #include "shader/dxc_compiler.h"
 #include "shader/sgsr2_source.h"
+#include "sgsr2_status.h"
 
 #include <plume_render_interface.h>
 #include <os/logger.h>
@@ -18,6 +19,27 @@
 #include "shader/smaa_pipeline.h"
 
 namespace gpu::sgsr2 {
+namespace {
+// The plume format SMAA crops into for each input format; UNKNOWN: no SMAA.
+plume::RenderFormat SmaaFormat(ColorFormat format)
+{
+    switch (format) {
+    case ColorFormat::Rgba8: return plume::RenderFormat::R8G8B8A8_UNORM;
+    case ColorFormat::Rgb10a2: return plume::RenderFormat::R10G10B10A2_UNORM;
+    case ColorFormat::Rgba16f: return plume::RenderFormat::R16G16B16A16_FLOAT;
+    default: return plume::RenderFormat::UNKNOWN;
+    }
+}
+const char* FormatName(ColorFormat format)
+{
+    switch (format) {
+    case ColorFormat::Rgba8: return "rgba8";
+    case ColorFormat::Rgb10a2: return "rgb10a2";
+    case ColorFormat::Rgba16f: return "rgba16f";
+    default: return "other";
+    }
+}
+}
 using namespace plume;
 
 namespace {
@@ -43,7 +65,8 @@ struct PushConstants {
     float previousJitter[2];
     float edgeClip;
     float kernelScale;
-    uint32_t padding[2];
+    uint32_t kernelMode; // 0 reference, 1 Soft (sgsr2_source.h SoftKernel)
+    uint32_t padding;
 };
 static_assert(sizeof(PushConstants) == 96);
 
@@ -89,7 +112,14 @@ struct Controller::Impl {
     // SGSR2 running without it.
     std::unique_ptr<RenderShader> smaaVs;
     std::unique_ptr<SmaaPipeline> smaa;
-    bool smaaFailed = false, smaaLogged = false;
+    bool smaaFailed = false;
+    struct SmaaState {
+        bool requested = false, active = false;
+        ColorFormat format = ColorFormat::Other;
+        uint32_t renderWidth = 0, renderHeight = 0, outputWidth = 0, outputHeight = 0;
+        bool soft = false;
+        bool operator==(const SmaaState&) const = default;
+    } smaaState{};
     std::unique_ptr<RenderSampler> linearClamp, pointClamp;
     std::unique_ptr<RenderTexture> motionDepthClip, ycocg;
     std::array<std::unique_ptr<RenderTexture>, 2> history, depthHistory;
@@ -349,17 +379,31 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     constants.previousJitter[1] = reset ? constants.jitterOffset[1] : p.previousJitter[1];
     constants.edgeClip = std::isfinite(frame.edgeClip) ? std::clamp(frame.edgeClip, 0.0f, 1.0f) : EdgeClip();
     constants.kernelScale = std::isfinite(frame.kernelScale) ? std::clamp(frame.kernelScale, 0.5f, 1.0f) : 1.0f;
+    constants.kernelMode = frame.softFilter ? 1u : 0u;
 
-    // SMAA 1x on an SDR RGBA8 input, at the render size, before the convert
-    // pass reads it (Quality). Colour in the history, YCoCg and the clamp
-    // box all start from the anti-aliased edges.
-    // FrameValues::smaa is set only for an RGBA8 colour (the caller sees the format).
-    const bool smaaWanted = frame.smaa && inputs.colorEncoding == temporal::ColorEncoding::Sdr;
+    // SMAA 1x on an SDR input, at the render size, before the convert pass
+    // reads it (Quality). Colour in the history, YCoCg and the clamp box all
+    // start from the anti-aliased edges. An 8-bit input is blended into an
+    // 8-bit stage; 10-bit and float inputs into a float stage, so SMAA never
+    // lowers the input's precision (2.0, WP7.2.2: before, only RGBA8 had it).
+    const auto colorFormat = SmaaFormat(frame.colorFormat);
+    const bool smaaWanted = frame.smaa && inputs.colorEncoding == temporal::ColorEncoding::Sdr &&
+        colorFormat != plume::RenderFormat::UNKNOWN;
     const bool smaaOn = smaaWanted && p.EnsureSmaa();
-    if (frame.smaa && !p.smaaLogged) {
-        p.smaaLogged = true;
-        LOG_INFO("SGSR2: SMAA on input {} ({})", smaaOn ? "active" : "inactive",
-            inputs.colorEncoding == temporal::ColorEncoding::Sdr ? "SDR" : "not SDR");
+    {
+        // One line whenever the SMAA state, the input format or the sizes
+        // change: the status the overlay shows, and the aliasing evidence.
+        const Impl::SmaaState state{frame.smaa, smaaOn, frame.colorFormat, config.renderWidth, config.renderHeight,
+            config.outputWidth, config.outputHeight, frame.softFilter};
+        if (!(state == p.smaaState)) {
+            p.smaaState = state;
+            LOG_INFO("SGSR2: smaa={} format={} requested={} encoding={} filter={} input={}x{} output={}x{}",
+                smaaOn ? "on" : "off", FormatName(frame.colorFormat), frame.smaa ? "yes" : "no",
+                inputs.colorEncoding == temporal::ColorEncoding::Sdr ? "sdr" : "not-sdr",
+                frame.softFilter ? "soft" : "standard",
+                config.renderWidth, config.renderHeight, config.outputWidth, config.outputHeight);
+        }
+        lastStatus.store(Sgsr2Status::Pack(smaaOn, frame.smaa, frame.softFilter), std::memory_order_relaxed);
     }
 
     slot.convert->setTexture(0, inputs.depth.texture, RenderTextureLayout::SHADER_READ);
@@ -384,7 +428,7 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     commands.begin();
     RenderTexture* colorSource = color.texture;
     if (smaaOn) {
-        colorSource = p.smaa->DrawCopied(&commands, color.texture, config.renderWidth, config.renderHeight);
+        colorSource = p.smaa->DrawCopied(&commands, color.texture, config.renderWidth, config.renderHeight, colorFormat);
         commands.setFramebuffer(nullptr);
         commands.barriers(RenderBarrierStage::COMPUTE,
             RenderTextureBarrier(colorSource, RenderTextureLayout::SHADER_READ));

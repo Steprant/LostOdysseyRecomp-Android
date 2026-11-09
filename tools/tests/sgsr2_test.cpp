@@ -2,6 +2,7 @@
 // production shaders, pipelines and lifecycle run on synthetic inputs, then
 // the output is read back and checked for finite, in-range, convergent values.
 #include <gpu/sgsr2_upscaler.h>
+#include <gpu/sgsr2_status.h>
 #include <plume_render_interface.h>
 #include <stdafx.h>
 #include <cmath>
@@ -166,7 +167,28 @@ struct Fixture {
         return true;
     }
 
+    // Fills the float colour image with per-pixel SDR values (0..1), for the
+    // 10-bit/float SMAA path (2.0, WP7.2.2).
+    bool UploadFloatSdr(const std::function<float(uint32_t, uint32_t)>& value)
+    {
+        auto* half = static_cast<uint16_t*>(upload->map());
+        if (!half) return false;
+        for (uint32_t y = 0; y < kRenderH; ++y)
+            for (uint32_t x = 0; x < kRenderW; ++x)
+                for (int c = 0; c < 4; ++c) half[(y * kRenderW + x) * 4 + c] = FloatToHalf(c < 3 ? value(x, y) : 1.0f);
+        upload->unmap();
+        setup->begin();
+        setup->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(colorHdr.get(), RenderTextureLayout::COPY_DEST));
+        setup->copyTextureRegion(RenderTextureCopyLocation::Subresource(colorHdr.get()),
+            RenderTextureCopyLocation::PlacedFootprint(upload.get(), RenderFormat::R16G16B16A16_FLOAT, kRenderW, kRenderH, 1, kRenderW));
+        setup->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(colorHdr.get(), RenderTextureLayout::SHADER_READ));
+        setup->end();
+        Submit(setup.get());
+        return true;
+    }
+
     bool hdr = false;
+    bool floatSdr = false; // colorHdr carries SDR values (a float scene target)
     gpu::temporal::TemporalFrameInputs Inputs(uint64_t frame, bool reset, double jx, double jy) const
     {
         gpu::temporal::TemporalFrameInputs inputs{};
@@ -175,7 +197,7 @@ struct Fixture {
             r.texture = texture; r.allocation = {kRenderW, kRenderH}; r.width = kRenderW; r.height = kRenderH;
             return r;
         };
-        inputs.color = region(hdr ? colorHdr.get() : color.get());
+        inputs.color = region(hdr || floatSdr ? colorHdr.get() : color.get());
         inputs.colorEncoding = hdr ? gpu::temporal::ColorEncoding::HdrLinear : gpu::temporal::ColorEncoding::Sdr;
         inputs.depth = region(depth.get());
         inputs.motion = region(motion.get());
@@ -271,13 +293,16 @@ bool Check(bool condition, const char* what)
 const gpu::sgsr2::Config kConfig{kRenderW, kRenderH, kOutW, kOutH, 1};
 bool gSmaa = false;      // SMAA on the input (Quality), off unless a check turns it on
 float gEdgeClip = NAN;   // the controller's default unless a check sets it
+bool gSoft = false;      // the Soft filter (WP7.3), with its 0.7 window
+gpu::sgsr2::ColorFormat gColorFormat = gpu::sgsr2::ColorFormat::Rgba8;
+float gKernelScale = 1.0f;
 
 // Records one frame, submits it and retires it, as the renderer does.
 gpu::sgsr2::Status RunFrame(Fixture& f, gpu::sgsr2::Controller& controller, uint64_t frame, bool reset,
     double jx, double jy, bool sameCamera, uint64_t& serial)
 {
     const auto attempt = controller.RecordIsolated(*f.sr, kConfig, f.Inputs(frame, reset, jx, jy),
-        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSmaa, gEdgeClip}, *f.output);
+        gpu::sgsr2::FrameValues{0.9f, sameCamera, gSmaa, gEdgeClip, gKernelScale, gSoft, gColorFormat}, *f.output);
     if (attempt.status != gpu::sgsr2::Status::Ready) return attempt.status;
     controller.OnBatchSubmitted(attempt.useId, ++serial);
     f.Submit(f.sr.get());
@@ -439,6 +464,77 @@ int Run(RenderDevice* device)
         pass &= Check(withSmaa[0] + withSmaa[1] + withSmaa[2] < goodSum * 1.35, "SMAA keeps most of the accumulated detail");
         pass &= Check(withSmaa[0] <= good[0] * 1.05 && withSmaa[2] <= good[2] * 1.3, "SMAA leaves gradients and hard edges close");
         gSmaa = false;
+
+        // 2b-ii. SMAA on a float SDR input (a 16-bit scene target): before
+        // 2.0 only RGBA8 inputs had SMAA. Same staircase, float colour.
+        f.colorFn = nullptr;
+        f.depthFn = [](uint32_t, uint32_t) { return 0.05f; };
+        f.floatSdr = true;
+        gColorFormat = gpu::sgsr2::ColorFormat::Rgba16f;
+        std::array<double, 2> floatError{};
+        std::array<Stats, 2> floatStats{};
+        for (int run = 0; run < 2; ++run) {
+            gSmaa = run == 1;
+            if (!f.Upload(unused, 0, 0, 0, false) ||
+                !f.UploadFloatSdr([&](uint32_t x, uint32_t y) { return (light(x + 0.5, y + 0.5) ? 220 : 30) / 255.0f; }))
+                return 1;
+            pass &= Check(RunFrame(f, controller, 700 + run, true, 0, 0, false, serial) == gpu::sgsr2::Status::Ready,
+                run ? "float staircase with SMAA recorded" : "float staircase without SMAA recorded");
+            const auto out = f.Read();
+            floatError[run] = edgeError(out);
+            floatStats[run] = Measure(out);
+        }
+        printf("  float staircase edge rmse: without SMAA %.4f, with SMAA %.4f\n", floatError[0], floatError[1]);
+        pass &= Check(gpu::sgsr2::LastStatus().smaaActive, "SMAA reported active on a float SDR input");
+        pass &= Check(floatStats[1].finite && floatStats[1].min >= 0.0f && floatStats[1].max <= 1.0f,
+            "float-input SMAA output finite and in [0, 1]");
+        pass &= Check(floatError[1] < floatError[0] * 0.9, "SMAA smooths the float staircase like the 8-bit one");
+        pass &= Check(std::abs(floatError[0] - error[0]) < 0.01, "float and 8-bit inputs agree without SMAA");
+        gSmaa = false;
+        f.floatSdr = false;
+        gColorFormat = gpu::sgsr2::ColorFormat::Rgba8;
+
+        // 2b-iii. Soft filter (WP7.3): no ring around a hard edge. With no
+        // history (reset) each output pixel is the kernel-weighted mix of
+        // its render neighbours: the Standard (Lanczos-shaped) weight has a
+        // negative lobe and can push a pixel past either plateau, the Soft
+        // Gaussian cannot.
+        const float darkV = 30 / 255.0f, lightV = 220 / 255.0f;
+        std::array<double, 2> overshoot{};
+        std::array<double, 2> stepError{};
+        for (int run = 0; run < 2; ++run) {
+            gSoft = run == 1;
+            gKernelScale = gSoft ? 0.7f : 1.0f;
+            f.colorFn = [&](uint32_t x, uint32_t y) {
+                const uint32_t v = light(x + 0.5, y + 0.5) ? 220u : 30u;
+                return 0xff000000u | (v << 16) | (v << 8) | v;
+            };
+            if (!f.Upload(unused, 0, 0, 0, false)) return 1;
+            pass &= Check(RunFrame(f, controller, 720 + run, true, 0, 0, false, serial) == gpu::sgsr2::Status::Ready,
+                run ? "edge frame with the Soft filter recorded" : "edge frame with the Standard filter recorded");
+            const auto out = f.Read();
+            const auto st = Measure(out);
+            pass &= Check(st.finite, run ? "Soft output finite" : "Standard output finite");
+            double worst = 0;
+            for (size_t i = 1; i < out.size(); i += 3)
+                worst = std::max({worst, double(out[i] - lightV), double(darkV - out[i])});
+            overshoot[run] = worst;
+            stepError[run] = edgeError(out);
+        }
+        printf("  edge overshoot past the plateaus: Standard %.4f, Soft %.4f; edge rmse Standard %.4f, Soft %.4f\n",
+            overshoot[0], overshoot[1], stepError[0], stepError[1]);
+        pass &= Check(overshoot[1] <= 0.002, "the Soft filter adds no halo past either side of an edge");
+        pass &= Check(overshoot[1] <= overshoot[0] + 1e-4, "the Soft filter rings no more than Standard");
+        pass &= Check(gpu::sgsr2::LastStatus().soft, "Soft filter reported in the status");
+        gSoft = false;
+        gKernelScale = 1.0f;
+        f.colorFn = nullptr; f.depthFn = nullptr;
+        // Soft keeps a flat colour flat through accumulation.
+        gSoft = true; gKernelScale = 0.7f;
+        if (!f.Upload(flat, 0, 0, 0, false)) return 1;
+        for (uint64_t frame = 740; frame < 746; ++frame) RunFrame(f, controller, frame, frame == 740, 0.25, -0.25, true, serial);
+        pass &= Check(flatDeviation(f.Read()) < 0.006, "the Soft filter keeps a flat colour");
+        gSoft = false; gKernelScale = 1.0f;
     }
 
     // 2c. Thin railings and a moving character, as on the device.

@@ -21,6 +21,11 @@ struct SmaaPipeline
     std::unique_ptr<plume::RenderBuffer> areaUpload, searchUpload;
     uint32_t width=0, height=0, hdrWidth=0, hdrHeight=0;
     bool uploaded=false, vulkan=false;
+    // DrawCopied crop stages for 10-bit and float SDR sources, one per format
+    // and kept for the size (a frame in flight may still read one).
+    std::unique_ptr<plume::RenderTexture> sourceStages[2];
+    plume::RenderFormat sourceStageFormats[2]{plume::RenderFormat::UNKNOWN, plume::RenderFormat::UNKNOWN};
+    uint32_t sourceStageWidth=0, sourceStageHeight=0;
 
     bool Init(Device *d, plume::RenderShader *vs, plume::RenderSampler *linear, bool useVulkan=false)
     {
@@ -136,11 +141,30 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
     // copied into the first stage instead of drawn through Presentation's
     // crop. `source` is SHADER_READ before and after. The result is RGBA8,
     // w x h, left in COLOR_WRITE; the caller transitions it for its reader.
-    plume::RenderTexture *DrawCopied(plume::RenderCommandList *c,plume::RenderTexture *source,uint32_t w,uint32_t h)
+    // `format` is the source's format. An RGBA8 source is cropped into the
+    // RGBA8 stage and blended into RGBA8, as before; a 10-bit or float SDR
+    // source is cropped into a stage of its own format and blended into the
+    // RGBA16F stage, so its precision is kept (copies need equal formats).
+    plume::RenderTexture *DrawCopied(plume::RenderCommandList *c,plume::RenderTexture *source,uint32_t w,uint32_t h,
+        plume::RenderFormat format=plume::RenderFormat::R8G8B8A8_UNORM)
     {
         using namespace plume;
-        Prepare(c,w,h,false);
+        const bool wide=format!=RenderFormat::R8G8B8A8_UNORM;
+        Prepare(c,w,h,wide);
         RenderTexture *cropped=stages[0].get();
+        if(wide) {
+            if(sourceStageWidth!=w || sourceStageHeight!=h) {
+                for(auto &stage:sourceStages) stage.reset();
+                for(auto &f:sourceStageFormats) f=RenderFormat::UNKNOWN;
+                sourceStageWidth=w;sourceStageHeight=h;
+            }
+            const int slot=format==RenderFormat::R10G10B10A2_UNORM?0:1;
+            if(!sourceStages[slot] || sourceStageFormats[slot]!=format) {
+                sourceStages[slot]=device->createTexture(RenderTextureDesc::Texture2D(w,h,1,format,RenderTextureFlag::RENDER_TARGET));
+                sourceStageFormats[slot]=format;
+            }
+            cropped=sourceStages[slot].get();
+        }
         c->barriers(RenderBarrierStage::COPY,std::vector<RenderTextureBarrier>{
             RenderTextureBarrier(source,RenderTextureLayout::COPY_SOURCE),
             RenderTextureBarrier(cropped,RenderTextureLayout::COPY_DEST)});
@@ -150,7 +174,7 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
         c->barriers(RenderBarrierStage::GRAPHICS,RenderTextureBarrier(source,RenderTextureLayout::SHADER_READ));
         RenderViewport vp(0,0,float(w),float(h));RenderRect rect(0,0,w,h);
         c->setViewports(&vp,1);c->setScissors(&rect,1);
-        return Passes(c,cropped,w,h,false);
+        return Passes(c,cropped,w,h,wide);
     }
 private:
     // Lookup textures (once) and stage images for this size.

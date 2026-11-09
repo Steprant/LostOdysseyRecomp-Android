@@ -12,6 +12,7 @@
 #include "renderer.h"
 #include <os/user_paths.h>
 #include "render_resolution.h"
+#include "sgsr2_status.h"
 #include "movie_clear.h"
 #if !defined(LO_RENDERER_P2_EMBEDDED_TEST)
 #include "movie_yuv_shader.h"
@@ -5834,13 +5835,15 @@ void main()
             // in quarter steps (1.5x -> -0.5, 2x -> -1.0), as upscaler vendors
             // recommend. Only eligible scene textures (see sampling::Eligible);
             // LO_SR_MIP_BIAS=0 turns it off, LO_SR_MIP_BIAS=<lod> overrides.
-            uint32_t SrMipBiasCode() const
+            // The SGSR2 Soft filter (WP7.3) halves it, for a softer image.
+            uint32_t SrMipBiasCode(bool softFilter) const
             {
                 if (!upscaling::IsSrConsumer(activePlan.consumer) || !activePlan.width || !activePlan.output.width ||
                     activePlan.output.width <= activePlan.width)
                     return 0;
                 static const char* overrideText = getenv("LO_SR_MIP_BIAS");
                 double lod = std::log2(double(activePlan.width) / double(activePlan.output.width));
+                if (softFilter && activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr) lod *= 0.5;
                 if (overrideText && *overrideText) lod = -std::abs(std::atof(overrideText));
                 return sampling::MipBiasCode(uint32_t(std::lround(std::min(0.0, lod) * -4.0)));
             }
@@ -5852,8 +5855,11 @@ void main()
                 // setting change, never once per texture/draw.
                 if (anisotropyConfigFrame == frame) return;
                 anisotropyConfigFrame = frame;
-                const auto requested = settings::GetConfig().anisotropicFiltering;
-                const uint32_t mipBias = SrMipBiasCode();
+                const auto config = settings::GetConfig();
+                const auto requested = config.anisotropicFiltering;
+                const bool softFilter = config.sgsr2Filter == 1;
+                sgsr2::softFilter.store(softFilter, std::memory_order_relaxed);
+                const uint32_t mipBias = SrMipBiasCode(softFilter);
                 if (requested == lastAnisotropyRequest && mipBias == lastMipBias) return;
                 if (mipBias != lastMipBias)
                     LOG_INFO("renderer: scene texture mip bias {:.2f} (render {}x{}, output {}x{})",
