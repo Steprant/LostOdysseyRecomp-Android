@@ -4,6 +4,18 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
+## Steprant Android 2.0 (branch `steprant/v2.0`) — draft, not published
+
+### English
+
+The 2.0 architectural update; every change and the measurements behind it are in the [2.0 release notes](docs/notes/steprant-2.0-release.md).
+
+- Frame graph in Plume: each frame's commands are kept and replayed unchanged, and at every render pass the GPU knows what comes next. Stores that nothing reads before the next full clear are dropped (48–54 MB per frame on a Xiaomi 14), passes begin over exactly the area they will draw, and copies between sampled textures and transitions of the next targets wait for the end of the pass. GPU time per frame −4 to −9% and render-pass memory traffic −9 to −18% in gameplay windows with matching draw counts.
+- Fixed: a sampled destination of a deferred resolve could be sampled again without a barrier after the copy.
+- Profile-guided build of the runtime and the recompiled game code (profile recorded on the phone; kept in the private build inputs).
+- Stability: the Tester ZIP explains how previous runs ended (Android exit reasons, crash traces, the previous session's log); no false "GPU progress stalled" in the background; free allocator pages are returned on low memory.
+- Everything from the 1.9 test builds below.
+
 ## Steprant Android 1.9 test builds (2.0 development, branch `steprant/v2.0-dev`) — unreleased
 
 ### English
