@@ -4,7 +4,12 @@
 //  - the pass is not split by the copy and its layout transitions,
 //  - the copy still reads the attachment as it was when the copy was
 //    recorded when a later clear touches it (the clear runs the copy first),
-//  - LO_VK_DEFER_COPY=0 copies at once.
+//  - LO_VK_DEFER_COPY=0 copies at once,
+//  - (SR4 G-2) a destination sampled before the copy returns to SHADER_READ
+//    when its user took it back there inside the pass,
+//  - (SR4 G-2) a copy between two sampled textures waits for the pass end
+//    too, and a chained copy (reading what a pending copy writes) does not;
+//    LO_VK_DEFER_TEXTURE_COPY=0 keeps texture copies immediate.
 #include <plume_render_interface.h>
 #include <cstdio>
 #include <cstdlib>
@@ -111,7 +116,101 @@ int main()
         expect(profile.passes.size() == 1, "one pass: the copy did not split it");
         expect(profile.copiesDeferred == (defer ? 1u : 0u) && profile.deferredFlushedEarly == 0, "deferred to the end of the pass");
     }
+    const char* textureSetting = std::getenv("LO_VK_DEFER_TEXTURE_COPY");
+    const bool deferTexture = defer && (!textureSetting || std::strcmp(textureSetting, "0") != 0);
+    auto texA = device->createTexture(RenderTextureDesc::ColorTarget(kSize, kSize, RenderFormat::R8G8B8A8_UNORM));
+    auto texB = device->createTexture(RenderTextureDesc::ColorTarget(kSize, kSize, RenderFormat::R8G8B8A8_UNORM));
+    auto texC = device->createTexture(RenderTextureDesc::ColorTarget(kSize, kSize, RenderFormat::R8G8B8A8_UNORM));
+    const RenderTexture* colorsA[] = {texA.get()};
+    auto fbA = device->createFramebuffer(RenderFramebufferDesc(colorsA, 1));
+    const RenderBox full{0, 0, int32_t(kSize), int32_t(kSize), 0, 1};
+
+    // Third list: the resolve destination was sampled before (SHADER_READ).
+    // Its user takes it back to SHADER_READ inside the pass; once the copy
+    // ran, Plume holds it in SHADER_READ again, so the user's next request
+    // for SHADER_READ records no barrier.
+    commands->begin();
+    commands->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(color.get(), RenderTextureLayout::COLOR_WRITE),
+        RenderTextureBarrier(dst.get(), RenderTextureLayout::SHADER_READ)});
+    commands->setFramebuffer(fb.get());
+    commands->clearColor(0, RenderColor(1, 1, 0, 1), &half, 1);
+    commands->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(color.get(), RenderTextureLayout::COPY_SOURCE));
+    commands->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(dst.get(), RenderTextureLayout::COPY_DEST));
+    commands->copyTextureRegion(RenderTextureCopyLocation::Subresource(dst.get()), RenderTextureCopyLocation::Subresource(color.get()), 0, 0, 0, &box);
+    commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(dst.get(), RenderTextureLayout::SHADER_READ));
+    commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(color.get(), RenderTextureLayout::COLOR_WRITE));
+    commands->setFramebuffer(nullptr);
+    commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(dst.get(), RenderTextureLayout::SHADER_READ));
+    commands->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(dst.get(), RenderTextureLayout::COPY_SOURCE));
+    commands->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(readback.get(), RenderFormat::R8G8B8A8_UNORM, kSize, kSize, 1, kSize),
+        RenderTextureCopyLocation::Subresource(dst.get()));
+    commands->end();
+    queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence.get());
+    queue->waitForCommandFence(fence.get());
+    data = static_cast<const uint8_t*>(readback->map());
+    expect(Pixel(data, 3, 3) == 0xff00ffffu, "the deferred copy into a sampled destination holds the yellow");
+    readback->unmap();
+    if (commands->takePassProfile(profile)) {
+        // The opening barrier and the readback barrier; the SHADER_READ
+        // request after the pass finds the destination there already.
+        std::printf("barrier_calls=%u\n", profile.barrierCalls);
+        if (defer) expect(profile.barrierCalls == 2, "the destination is back in SHADER_READ after the deferred copy");
+    }
+
+    // Fourth list: a copy between two sampled textures while a pass draws
+    // into another target. A (green) is copied to B inside the pass on
+    // `color`; then B is copied to C, which reads what the pending copy
+    // writes, so that one runs at once after the first.
+    commands->begin();
+    commands->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texA.get(), RenderTextureLayout::COLOR_WRITE),
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::COLOR_WRITE),
+        RenderTextureBarrier(texC.get(), RenderTextureLayout::COLOR_WRITE)});
+    commands->setFramebuffer(fbA.get());
+    commands->clearColor(0, RenderColor(0, 1, 0, 1), &all, 1);
+    commands->setFramebuffer(nullptr);
+    commands->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texA.get(), RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(texC.get(), RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(color.get(), RenderTextureLayout::COLOR_WRITE)});
+    commands->setFramebuffer(fb.get());
+    commands->clearColor(0, RenderColor(0, 0, 1, 1), &half, 1);
+    commands->barriers(RenderBarrierStage::COPY, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texA.get(), RenderTextureLayout::COPY_SOURCE),
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::COPY_DEST)});
+    commands->copyTextureRegion(RenderTextureCopyLocation::Subresource(texB.get()), RenderTextureCopyLocation::Subresource(texA.get()), 0, 0, 0, &full);
+    commands->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texA.get(), RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::SHADER_READ)});
+    commands->barriers(RenderBarrierStage::COPY, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::COPY_SOURCE),
+        RenderTextureBarrier(texC.get(), RenderTextureLayout::COPY_DEST)});
+    commands->copyTextureRegion(RenderTextureCopyLocation::Subresource(texC.get()), RenderTextureCopyLocation::Subresource(texB.get()), 0, 0, 0, &full);
+    commands->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+        RenderTextureBarrier(texB.get(), RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(texC.get(), RenderTextureLayout::SHADER_READ)});
+    commands->setFramebuffer(nullptr);
+    commands->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(texC.get(), RenderTextureLayout::COPY_SOURCE));
+    commands->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(readback.get(), RenderFormat::R8G8B8A8_UNORM, kSize, kSize, 1, kSize),
+        RenderTextureCopyLocation::Subresource(texC.get()));
+    commands->end();
+    queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence.get());
+    queue->waitForCommandFence(fence.get());
+    data = static_cast<const uint8_t*>(readback->map());
+    expect(Pixel(data, 3, 3) == 0xff00ff00u && Pixel(data, 30, 30) == 0xff00ff00u, "the chained copies carry A's green to C");
+    readback->unmap();
+    if (commands->takePassProfile(profile)) {
+        std::printf("texture: deferred=%u texture_deferred=%u hazards=%u barrier_other_ends=%u copy_ends=%u\n", profile.copiesDeferred,
+            profile.textureCopiesDeferred, profile.textureCopyHazards,
+            profile.passEnds[size_t(RenderPassProfile::PassEnd::BarrierOther)], profile.passEnds[size_t(RenderPassProfile::PassEnd::Copy)]);
+        expect(profile.textureCopiesDeferred == (deferTexture ? 1u : 0u), "the first texture copy waits for the pass end");
+        expect(profile.textureCopyHazards == (deferTexture ? 1u : 0u), "the chained copy is not deferred behind the one it reads");
+        if (deferTexture)
+            expect(profile.passEnds[size_t(RenderPassProfile::PassEnd::BarrierOther)] == 0, "no barrier on the sampled textures ends the pass");
+    }
     if (failures) return 1;
-    std::printf("PASS: deferred resolve copies (%s)\n", defer ? "on" : "off");
+    std::printf("PASS: deferred resolve copies (%s, texture copies %s)\n", defer ? "on" : "off", deferTexture ? "on" : "off");
     return 0;
 }

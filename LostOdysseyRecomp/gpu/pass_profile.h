@@ -82,6 +82,7 @@ public:
     uint64_t barriers = 0, copies = 0, dispatches = 0, drawsOutside = 0;
     uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
     uint64_t copiesDeferred = 0, deferredFlushedEarly = 0, deferredEarlyReasons[5] = {};
+    uint64_t textureCopiesDeferred = 0, textureCopyHazards = 0; // SR4 G-2
     uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
@@ -107,6 +108,8 @@ public:
         indexBinds += profile.indexBinds;
         copiesDeferred += profile.copiesDeferred;
         deferredFlushedEarly += profile.deferredFlushedEarly;
+        textureCopiesDeferred += profile.textureCopiesDeferred;
+        textureCopyHazards += profile.textureCopyHazards;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
         whatIfMergeablePasses += profile.whatIfMergeablePasses;
         whatIfMergeBytes += profile.whatIfMergeBytes;
@@ -219,9 +222,10 @@ public:
             double(pipelineBinds) / f, double(pipelineBindsSkipped) / f, double(descriptorBinds) / f,
             double(pushConstants) / f, double(vertexBinds) / f, double(indexBinds) / f);
         line += buffer;
-        std::snprintf(buffer, sizeof(buffer), " deferred_copies_per_frame: deferred=%.1f run_early=%.1f early_draw_over=%.1f early_sampled=%.1f early_draw_into=%.1f early_clear=%.1f early_other=%.1f;",
+        std::snprintf(buffer, sizeof(buffer), " deferred_copies_per_frame: deferred=%.1f run_early=%.1f early_draw_over=%.1f early_sampled=%.1f early_draw_into=%.1f early_clear=%.1f early_other=%.1f texture=%.1f texture_hazards=%.1f;",
             double(copiesDeferred) / f, double(deferredFlushedEarly) / f, double(deferredEarlyReasons[0]) / f, double(deferredEarlyReasons[1]) / f,
-            double(deferredEarlyReasons[2]) / f, double(deferredEarlyReasons[3]) / f, double(deferredEarlyReasons[4]) / f);
+            double(deferredEarlyReasons[2]) / f, double(deferredEarlyReasons[3]) / f, double(deferredEarlyReasons[4]) / f,
+            double(textureCopiesDeferred) / f, double(textureCopyHazards) / f);
         line += buffer;
         return line;
     }
