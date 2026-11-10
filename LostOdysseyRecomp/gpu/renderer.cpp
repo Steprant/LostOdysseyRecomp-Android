@@ -16,6 +16,7 @@
 #include "movie_clear.h"
 #if !defined(LO_RENDERER_P2_EMBEDDED_TEST)
 #include "movie_yuv_shader.h"
+#include "loading_pacing.h"
 #include <movie/movie_player.h>
 #endif
 #include "video.h"
@@ -1884,6 +1885,7 @@ namespace gpu::renderer
             // scene) or the plan's geometry epoch changes, so a menu that draws
             // depth never flips between sizes.
             idle_ui::Pause idlePromotionPause;
+            bool transitionPromotionUndone = false;
             uint64_t srReconfigureFrame = ~0ull;
             std::unique_ptr<RenderShader> sceneCopyPromotionPs, sceneCopyPromotionRgbPs;
             std::map<uint32_t, std::unique_ptr<RenderPipeline>> sceneCopyPromotionPipelines, sceneCopyPromotionRgbPipelines;
@@ -3739,17 +3741,23 @@ namespace gpu::renderer
                     activePlan.output.width && activePlan.output.height && activePlan.output.width > activePlan.width;
                 facts.sceneThisFrame = srPromotionFrame == frame;
                 facts.idleFrames = idleSceneFrames;
-                if (idlePromotionPause.active && !idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch)) {
+                if (idlePromotionPause.active && !idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch, frame)) {
                     idlePromotionPause.active = false;
                     LOG_INFO("renderer: interface promotion resumed in frame {} (plan epoch {})", frame, activePlan.geometryEpoch);
                 }
-                facts.blocked = idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch);
+                facts.blocked = idle_ui::Paused(idlePromotionPause, activePlan.geometryEpoch, frame);
+                // A transition that undid its own promotion (it draws 3D on
+                // the final target) keeps the ordinary back-off until it ends.
+                const bool transition = gpu::loading::Active() || ::movie::GuestMovieActive();
+                if (!transition) transitionPromotionUndone = false;
+                facts.transition = transition && !transitionPromotionUndone;
                 facts.promotionBusy = sceneCopyPromotion.activeMapping || sceneCopyPromotionFrame == frame || Gpu().srPrefixClosed;
                 facts.atOutputSize = color->resolutionSize.width == activePlan.output.width &&
                     color->resolutionSize.height == activePlan.output.height;
                 // Cheap checks first; the texture scan only when it decides.
                 facts.backgroundOnly = false;
                 if (!idle_ui::Wanted(facts)) return false;
+                if (facts.transition) return true;
                 facts.backgroundOnly = DrawSamplesOnlyResolved(ps);
                 return idle_ui::Wanted(facts);
             }
@@ -3832,7 +3840,8 @@ namespace gpu::renderer
                 if (promotion.idleUi && promotion.frame == frame && std::strcmp(reason, "plan_epoch") != 0) {
                     if (!idlePromotionPause.active)
                         LOG_INFO("renderer: interface promotion undone in frame {} ({}); paused until the next SGSR2 frame or plan change", frame, reason);
-                    idlePromotionPause = {true, activePlan.geometryEpoch};
+                    idlePromotionPause = {true, activePlan.geometryEpoch, frame};
+                    if (gpu::loading::Active() || ::movie::GuestMovieActive()) transitionPromotionUndone = true;
                 }
                 // The low-resolution target goes back into the map owing its
                 // pixels; the resample is drawn only when something needs them.

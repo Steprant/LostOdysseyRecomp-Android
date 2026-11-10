@@ -34,9 +34,20 @@ int main()
         Check(!Wanted(f), "the back-off after an undone promotion holds");
         f = menu; f.enabled = false;
         Check(!Wanted(f), "the fallback switch disables it");
-        Check(!Paused(Pause{}, 3), "no pause by default");
-        Check(Paused(Pause{true, 1}, 1), "an undo pauses promotions within its plan epoch");
-        Check(!Paused(Pause{true, 1}, 2), "a later plan epoch (the boot title's plan switches) resumes them");
+        Check(!Paused(Pause{}, 3, 10), "no pause by default");
+        Check(Paused(Pause{true, 1, 100}, 1, 100), "an undo pauses promotions within its plan epoch");
+        Check(Paused(Pause{true, 1, 100}, 1, 100 + kPauseFrames - 1), "the back-off holds for its frames");
+        Check(!Paused(Pause{true, 1, 100}, 1, 100 + kPauseFrames), "and ends after them, SGSR2 frame or not (2.0.1)");
+        Check(!Paused(Pause{true, 1, 100}, 2, 101), "a later plan epoch (the boot title's plan switches) resumes them");
+        // 2.0.1: loading screens and movies are promoted from their first draw.
+        f = menu; f.transition = true; f.backgroundOnly = true;
+        Check(Wanted(f), "a loading screen's or movie's picture is promoted although it is the background");
+        f = menu; f.transition = true; f.blocked = true;
+        Check(Wanted(f), "an earlier undo does not hold a transition back");
+        f = menu; f.transition = true; f.depth = true;
+        Check(!Wanted(f), "a depth draw is never promoted, transition or not");
+        f = menu; f.transition = true; f.sceneThisFrame = true;
+        Check(!Wanted(f), "a transition frame that drew a 3D scene is not promoted");
         Check(NextIdleFrames(0, false) == 1 && NextIdleFrames(5, false) == 6 && NextIdleFrames(5, true) == 0 &&
             NextIdleFrames(1u << 30, false) == 1u << 30, "idle counter");
         std::printf("PASS: %u idle UI promotion checks\n", checks);

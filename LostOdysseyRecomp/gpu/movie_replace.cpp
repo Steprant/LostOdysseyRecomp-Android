@@ -131,6 +131,7 @@ PPC_FUNC(sub_82815248)
     if (Trace())
         LOG_INFO("movie trace: start M={:08x} '{}' lr={:08x}", movie, path, uint32_t(ctx.lr));
     __imp__sub_82815248(ctx, base);
+    movie::g_guestMovieActive.store(true, std::memory_order_relaxed);
 #if defined(__ANDROID__)
     ::diagnostics::android_tester::g_recorder.SetMovieActive(true);
 #endif
@@ -201,6 +202,7 @@ PPC_FUNC(sub_82815640)
     if (Trace())
         LOG_INFO("movie trace: close M={:08x} r4={:08x} lr={:08x}", movie, ctx.r4.u32, uint32_t(ctx.lr));
     __imp__sub_82815640(ctx, base);
+    movie::g_guestMovieActive.store(false, std::memory_order_relaxed);
 #if defined(__ANDROID__)
     ::diagnostics::android_tester::g_recorder.SetMovieActive(false);
 #endif
