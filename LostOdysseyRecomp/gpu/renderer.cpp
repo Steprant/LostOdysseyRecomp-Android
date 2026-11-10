@@ -3782,6 +3782,21 @@ namespace gpu::renderer
                 return true;
             }
 
+            // A draw that samples a surface resolved in this frame (the scene
+            // copy a post-process pass reads).
+            bool DrawSamplesFrameResolved(const Shader* ps)
+            {
+                const uint32_t mask = ps ? ps->info.textureSlotMask : 0u;
+                for (uint32_t pending = mask; pending; pending &= pending - 1) {
+                    const uint32_t slot = uint32_t(std::countr_zero(pending));
+                    const uint32_t f0 = Reg(REG_FETCH_CONSTANTS + slot * 6), f1 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 1);
+                    if ((f0 & 3) != 2) continue;
+                    const auto* source = FindResolved((f1 >> 12) << 12, f1 & 0x3f);
+                    if (source && source->frame == frame) return true;
+                }
+                return false;
+            }
+
             bool IdleUiPromotionWanted(const RenderTargetKey& key, const HostTexture* color, bool hasDepth, const Shader* ps)
             {
                 if (!color || !color->texture || !sceneCopyPromotionPs) return false;
@@ -11064,8 +11079,23 @@ void main()
                     const char* value = std::getenv("LO_SR_VIEWPORT_JITTER");
                     return !(value && std::string_view(value) == "0");
                 }();
+                // Steprant 2.0.1: the same for a scene-viewport draw that does not
+                // test depth (a painted backdrop or sky quad, a glow, a decal laid
+                // in screen space) drawn before SGSR2 takes the scene. Left still
+                // while everything else moves by the jitter, SGSR2's de-jittering
+                // made its texture swim by up to half a pixel every frame: the
+                // shimmering textures of the 10/11 cutscenes. A draw that samples
+                // a surface resolved in this frame (a post-process pass over the
+                // already jittered scene) stays still. LO_SR_JITTER_SCREEN_DRAWS=0
+                // turns this part off.
+                static const bool screenJitterEnabled = [] {
+                    const char* value = std::getenv("LO_SR_JITTER_SCREEN_DRAWS");
+                    return !(value && std::string_view(value) == "0");
+                }();
+                const bool screenDraw = screenJitterEnabled && !(depth && (depthControl & 2)) && !Gpu().srPrefixClosed &&
+                    srPromotionFrame != frame && !DrawSamplesFrameResolved(ps);
                 if (viewportJitterEnabled && jitterEnabled && dlssSrRequested && !drawJitter.applied &&
-                    temporalViewport && temporalSlot < 0 && depth && (depthControl & 2) && frameRasterJitter.phase &&
+                    temporalViewport && temporalSlot < 0 && ((depth && (depthControl & 2)) || screenDraw) && frameRasterJitter.phase &&
                     drawJitter.rejection == temporal::JitterRejection::UnknownShader) {
                     rasterViewport.x += float(frameRasterJitter.pixelX);
                     rasterViewport.y += float(frameRasterJitter.pixelY);
