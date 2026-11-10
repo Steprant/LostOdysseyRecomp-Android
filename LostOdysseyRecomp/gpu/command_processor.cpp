@@ -1,4 +1,5 @@
 #include <stdafx.h>
+#include <settings/menu.h>
 #include "command_processor.h"
 #include "movie_clear.h"
 #include "movie_replace.h"
@@ -1104,7 +1105,14 @@ namespace gpu
             // WP0.1 frame samples (developer page): the presented image and the
             // resolved frontbuffer of N consecutive swaps, bit-exact.
             bool frameSample = false;
-            if (!captureTicket.active && diagnostics::frame_samples::pending.load(std::memory_order_acquire))
+            // Steprant 2.0.1: the request comes from the Tester page, so the
+            // menu covers the game when it is made (the 22:23 capture held four
+            // pictures of the menu). Start once the menu has been closed for
+            // 1.5 s and the game frame is back on screen.
+            static auto menuSeen = std::chrono::steady_clock::now();
+            if (settings::IsOpen()) menuSeen = std::chrono::steady_clock::now();
+            const bool sampleGate = std::chrono::steady_clock::now() - menuSeen >= std::chrono::milliseconds(1500);
+            if (!captureTicket.active && sampleGate && diagnostics::frame_samples::pending.load(std::memory_order_acquire))
             {
                 std::vector<uint32_t> front;
                 uint32_t frontWidth = 0, frontHeight = 0;

@@ -3507,8 +3507,9 @@ PPC_FUNC(sub_822F19B0)
             }
             else if (testerFocus == TesterCaptureFrames && (input & 0x1000)) {
                 status = ::diagnostics::frame_samples::Request(4)
-                    ? Tr(L"Capturing the next 4 frames (scene before the upscaler, frontbuffer, presented image); "
-                         L"they go in the Tester export (frame-samples/).", L"正在擷取接下來的 4 個影格。")
+                    ? Tr(L"Close the menu: 1.5 s later the next 4 frames are captured (scene before the upscaler, "
+                         L"frontbuffer, presented image, and the draws and resolved images of frame 2); "
+                         L"they go in the Tester export (frame-samples/).", L"關閉選單 1.5 秒後擷取接下來的 4 個影格。")
                     : Tr(L"A capture is already running.", L"擷取進行中。");
             } else if (testerFocus == TesterDrawTimestamps) {
                 const bool on = !gpu::draw_profile::Timestamps();
