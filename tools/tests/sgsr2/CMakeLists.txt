@@ -64,6 +64,12 @@ add_test(NAME deferred_copy_off COMMAND LoDeferredCopyTest)
 set_tests_properties(deferred_copy_off PROPERTIES TIMEOUT 60 ENVIRONMENT "LO_VK_DEFER_COPY=0")
 add_test(NAME deferred_copy_texture_off COMMAND LoDeferredCopyTest)
 set_tests_properties(deferred_copy_texture_off PROPERTIES TIMEOUT 60 ENVIRONMENT "LO_VK_DEFER_TEXTURE_COPY=0")
+# SR4 M-4: random renderer-like command sequences against a CPU model, in
+# every configuration of Plume's pass switches.
+add_executable(LoPassSequenceTest ../pass_sequence_test.cpp)
+target_link_libraries(LoPassSequenceTest PRIVATE plume X11::X11 Threads::Threads ${CMAKE_DL_LIBS})
+add_test(NAME pass_sequences COMMAND LoPassSequenceTest)
+set_tests_properties(pass_sequences PROPERTIES TIMEOUT 300)
 # Steprant 2.0 WP1 stage 1a (frame graph what-if) and the WP-A.3 dead-store diagnostic.
 add_executable(LoFrameGraphWhatIfTest ../frame_graph_whatif_test.cpp)
 target_link_libraries(LoFrameGraphWhatIfTest PRIVATE plume X11::X11 Threads::Threads ${CMAKE_DL_LIBS})

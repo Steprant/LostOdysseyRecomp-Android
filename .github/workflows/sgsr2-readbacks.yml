@@ -2,9 +2,9 @@ name: SGSR2 and kill-free module Vulkan readbacks
 on:
   workflow_dispatch:
   push:
-    paths: ['tools/patches/plume-*.patch', 'tools/tests/kill_free_module_test.cpp', 'tools/tests/pass_content_census_test.cpp', 'tools/tests/deferred_copy_test.cpp', 'LostOdysseyRecomp/gpu/sgsr2_upscaler*', 'LostOdysseyRecomp/gpu/shader/sgsr2_source.h', 'LostOdysseyRecomp/gpu/temporal_frame_inputs.h', 'tools/tests/sgsr2*', 'tools/tests/sgsr2/**', '.github/workflows/sgsr2-readbacks.yml']
+    paths: ['tools/patches/plume-*.patch', 'tools/tests/kill_free_module_test.cpp', 'tools/tests/pass_content_census_test.cpp', 'tools/tests/deferred_copy_test.cpp', 'tools/tests/pass_sequence_test.cpp', 'LostOdysseyRecomp/gpu/sgsr2_upscaler*', 'LostOdysseyRecomp/gpu/shader/sgsr2_source.h', 'LostOdysseyRecomp/gpu/temporal_frame_inputs.h', 'tools/tests/sgsr2*', 'tools/tests/sgsr2/**', '.github/workflows/sgsr2-readbacks.yml']
   pull_request:
-    paths: ['tools/patches/plume-*.patch', 'tools/tests/kill_free_module_test.cpp', 'tools/tests/pass_content_census_test.cpp', 'tools/tests/deferred_copy_test.cpp', 'LostOdysseyRecomp/gpu/sgsr2_upscaler*', 'LostOdysseyRecomp/gpu/shader/sgsr2_source.h', 'LostOdysseyRecomp/gpu/temporal_frame_inputs.h', 'tools/tests/sgsr2*', 'tools/tests/sgsr2/**', '.github/workflows/sgsr2-readbacks.yml']
+    paths: ['tools/patches/plume-*.patch', 'tools/tests/kill_free_module_test.cpp', 'tools/tests/pass_content_census_test.cpp', 'tools/tests/deferred_copy_test.cpp', 'tools/tests/pass_sequence_test.cpp', 'LostOdysseyRecomp/gpu/sgsr2_upscaler*', 'LostOdysseyRecomp/gpu/shader/sgsr2_source.h', 'LostOdysseyRecomp/gpu/temporal_frame_inputs.h', 'tools/tests/sgsr2*', 'tools/tests/sgsr2/**', '.github/workflows/sgsr2-readbacks.yml']
 permissions:
   contents: read
 jobs:
