@@ -81,6 +81,7 @@
 #include "pass_profile.h"
 #if defined(__ANDROID__)
 #include <time.h>
+#include <malloc.h>
 #endif
 #include <host_ui/host_ui.h>
 #include <host_ui/rasterizer.h>
@@ -457,6 +458,23 @@ namespace gpu::video
             }
             else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
                 host_ui::SetBackgrounded(false);
+            else if (event->type == SDL_EVENT_LOW_MEMORY) {
+                // SR4 S-4: Android asks for memory back (onTrimMemory). Hand
+                // the allocator's free pages to the system: all of them while
+                // the game is hidden, the cheap pass while it runs. Nothing the
+                // game uses is released.
+                static std::atomic<uint32_t> trims{0};
+                const bool hidden = host_ui::IsBackgrounded();
+#if defined(M_PURGE_ALL)
+                const int done = mallopt(hidden ? M_PURGE_ALL : M_PURGE, 0);
+#elif defined(M_PURGE)
+                const int done = mallopt(M_PURGE, 0);
+#else
+                const int done = 0;
+#endif
+                if (trims.fetch_add(1, std::memory_order_relaxed) < 32)
+                    LOG_INFO("memory trim: low memory from Android, allocator purge={} hidden={}", done, hidden ? 1 : 0);
+            }
             return true;
         }
 #endif
