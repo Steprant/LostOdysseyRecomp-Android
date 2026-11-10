@@ -1324,6 +1324,160 @@ namespace gpu::renderer
                 bool publishedSubmitted = false;
                 frame_plan::FramePlan publishedPlan{};
             } dlssFrame;
+            // Steprant 2.0.1: SGSR2 spatial continuation. A scene frame whose
+            // motion is not ready (replay pipelines of new shaders compiling
+            // after a load or a cutscene cut, a draw that stops the tracker)
+            // used to leave SGSR2 for the SGSR1 presentation path: no SMAA, a
+            // sharper filter, a visible change for 0.5-3 s (10/11 22:23 log).
+            // It now runs SGSR2 over zero motion with its history reset: the
+            // same anti-aliasing and filter, spatial for that frame only.
+            // LO_SGSR2_CONTINUATION=0 restores the fallback.
+            struct Sgsr2Continuation {
+                std::unique_ptr<RenderTexture> motion, invalidity;
+                std::unique_ptr<RenderFramebuffer> framebuffer;
+                std::vector<std::unique_ptr<RenderTexture>> retiredTextures;
+                std::vector<std::unique_ptr<RenderFramebuffer>> retiredFramebuffers;
+                uint32_t width = 0, height = 0;
+                uint64_t runStart = ~0ull, lastFrame = ~0ull, runFrames = 0;
+                uint32_t runPending = 0, runIncomplete = 0, logs = 0;
+                uint64_t total = 0;
+            } sgsr2Continuation;
+            static bool Sgsr2ContinuationEnabled()
+            {
+                static const bool enabled = [] {
+                    const char* value = std::getenv("LO_SGSR2_CONTINUATION");
+                    return !value || std::string_view(value) != "0";
+                }();
+                return enabled;
+            }
+            // Zero motion and validity at least width x height, cleared once.
+            bool Sgsr2ZeroMotion(uint32_t width, uint32_t height, temporal::TextureRegion& motion,
+                temporal::TextureRegion& invalidity)
+            {
+                auto& c = sgsr2Continuation;
+                if (!width || !height || width > 7680 || height > 4320) return false;
+                if (!c.motion || width > c.width || height > c.height) {
+                    // Earlier images may still be read by batches in flight;
+                    // sizes only grow, so these stay few.
+                    if (c.framebuffer) c.retiredFramebuffers.push_back(std::move(c.framebuffer));
+                    if (c.motion) c.retiredTextures.push_back(std::move(c.motion));
+                    if (c.invalidity) c.retiredTextures.push_back(std::move(c.invalidity));
+                    c.width = std::max(c.width, width);
+                    c.height = std::max(c.height, height);
+                    c.motion = device->createTexture(RenderTextureDesc::Texture2D(c.width, c.height, 1,
+                        RenderFormat::R16G16_FLOAT, RenderTextureFlag::RENDER_TARGET));
+                    c.invalidity = device->createTexture(RenderTextureDesc::Texture2D(c.width, c.height, 1,
+                        RenderFormat::R8_UNORM, RenderTextureFlag::RENDER_TARGET));
+                    if (!c.motion || !c.invalidity) {
+                        c.motion.reset(); c.invalidity.reset(); c.width = c.height = 0;
+                        return false;
+                    }
+                    const RenderTexture* colors[] = {c.motion.get(), c.invalidity.get()};
+                    c.framebuffer = device->createFramebuffer(RenderFramebufferDesc(colors, 2));
+                    if (!c.framebuffer) {
+                        c.motion.reset(); c.invalidity.reset(); c.width = c.height = 0;
+                        return false;
+                    }
+                    // The next guest draw binds its own targets again (BindTargets).
+                    commandList->barriers(RenderBarrierStage::GRAPHICS, std::vector<RenderTextureBarrier>{
+                        RenderTextureBarrier(c.motion.get(), RenderTextureLayout::COLOR_WRITE),
+                        RenderTextureBarrier(c.invalidity.get(), RenderTextureLayout::COLOR_WRITE)});
+                    commandList->setFramebuffer(c.framebuffer.get());
+                    commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+                    commandList->clearColor(1, RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+                    commandList->setFramebuffer(nullptr);
+                    lastFramebuffer = nullptr;
+                    commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, std::vector<RenderTextureBarrier>{
+                        RenderTextureBarrier(c.motion.get(), RenderTextureLayout::SHADER_READ),
+                        RenderTextureBarrier(c.invalidity.get(), RenderTextureLayout::SHADER_READ)});
+                }
+                motion = {c.motion.get(), {c.width, c.height}, 0, 0, width, height};
+                invalidity = {c.invalidity.get(), {c.width, c.height}, 0, 0, width, height};
+                return true;
+            }
+            void NoteSgsr2Continuation(uint64_t renderFrame, bool pending)
+            {
+                auto& c = sgsr2Continuation;
+                if (c.lastFrame == ~0ull || renderFrame != c.lastFrame + 1) {
+                    c.runStart = renderFrame;
+                    c.runFrames = 0;
+                    c.runPending = c.runIncomplete = 0;
+                }
+                ++c.runFrames; ++c.total;
+                ++(pending ? c.runPending : c.runIncomplete);
+                c.lastFrame = renderFrame;
+            }
+            // One line per run of continued frames, when the next scene frame
+            // has its motion again.
+            void EndSgsr2ContinuationRun(uint64_t renderFrame)
+            {
+                auto& c = sgsr2Continuation;
+                if (c.lastFrame == ~0ull || c.runFrames == 0 || renderFrame <= c.lastFrame) return;
+                if (c.logs < 256) {
+                    ++c.logs;
+                    LOG_INFO("SGSR2: spatial continuation frames={} first={} motion_pending={} motion_incomplete={} total={}",
+                        c.runFrames, c.runStart, c.runPending, c.runIncomplete, c.total);
+                }
+                c.runFrames = 0;
+                c.lastFrame = ~0ull;
+            }
+            // Steprant 2.0.1: why SGSR2 left a frame that drew a 3D scene (100
+            // draws or more). One line per run, so the next session tells which
+            // fallbacks remain after the spatial continuation.
+            struct Sgsr2FallbackRun {
+                uint64_t first = ~0ull, last = ~0ull, frames = 0, draws = 0;
+                const char* causes[4] = {};
+                uint32_t counts[4] = {};
+                uint32_t logs = 0;
+            } sgsr2FallbackRun;
+            const char* Sgsr2FallbackCause(frame_plan::DlssEffectReason reason) const
+            {
+                using R = temporal::SceneObservation::Rejection;
+                if (temporalScene.Frame() != frame || !temporalScene.Draws()) return "no_scene_camera";
+                switch (temporalScene.Reason()) {
+                case R::InvalidCamera: return "scene_invalid_camera";
+                case R::AmbiguousCamera: return "scene_two_cameras";
+                case R::PartialDepth: return "scene_partial_depth";
+                case R::RepeatedDepth: return "scene_repeated_depth";
+                case R::InvalidColor: return "scene_invalid_color";
+                case R::RepeatedColor: return "scene_repeated_color";
+                default: break;
+                }
+                if (!temporalScene.Depth().ordinal) return "scene_no_depth_resolve";
+                if (!temporalScene.Color().ordinal) return "scene_no_color_resolve";
+                if (temporalHistory && temporalHistory->LastInputCaptureFailure() != temporal::InputCaptureFailure::None)
+                    return temporal::InputCaptureFailureName(temporalHistory->LastInputCaptureFailure());
+                return reason == frame_plan::DlssEffectReason::MotionPipelinePending ? "motion_pipeline_pending" : "inputs_incomplete";
+            }
+            void NoteSgsr2FallbackRun(bool submitted, frame_plan::DlssEffectReason reason)
+            {
+                auto& r = sgsr2FallbackRun;
+                const bool scene = !submitted && drawsThisFrame >= 100;
+                const bool continues = scene && r.frames && r.last != ~0ull && frame == r.last + 1;
+                if (r.frames && !continues) {
+                    if (r.logs < 256) {
+                        ++r.logs;
+                        std::string causes;
+                        for (uint32_t i = 0; i < 4 && r.causes[i]; ++i)
+                            causes += fmt::format("{}{}={}", causes.empty() ? "" : ",", r.causes[i], r.counts[i]);
+                        LOG_INFO("SGSR2: fallback with a 3D scene frames={} first={} draws_per_frame={} causes={}",
+                            r.frames, r.first, r.draws / r.frames, causes);
+                    }
+                    const uint32_t logs = r.logs;
+                    r = {};
+                    r.logs = logs;
+                }
+                if (!scene) return;
+                if (!r.frames) r.first = frame;
+                ++r.frames;
+                r.draws += drawsThisFrame;
+                r.last = frame;
+                const char* cause = Sgsr2FallbackCause(reason);
+                for (uint32_t i = 0; i < 4; ++i) {
+                    if (!r.causes[i]) r.causes[i] = cause;
+                    if (r.causes[i] == cause || std::string_view(r.causes[i]) == cause) { ++r.counts[i]; break; }
+                }
+            }
             static bool SameDlssIdentity(const frame_plan::FramePlan& a, const frame_plan::FramePlan& b)
             {
                 return a.deviceEpoch == b.deviceEpoch && a.requestSignature == b.requestSignature &&
@@ -1433,6 +1587,8 @@ namespace gpu::renderer
                     observation.reason = frame_plan::DlssEffectReason::NoEligibleScene;
                 }
                 observation.actualProvider = observation.plan.requestedUpscaler;
+                if (activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr)
+                    NoteSgsr2FallbackRun(observation.outcome == frame_plan::DlssExecutionOutcome::Submitted, observation.reason);
 #if defined(LO_RENDERER_P2_EMBEDDED_TEST)
                 frame_plan::ReportDlssExecution(observation);
 #else
@@ -11639,7 +11795,35 @@ void main()
                                     if (nativeFgInputs && inputs.CompleteForFrameGeneration() &&
                                         qualifiedEncoding == temporal::ColorEncoding::Sdr)
                                         nativeFgSceneCopyInputs = inputs;
-                                    const auto selected = nativeFgInputs ? DlssSceneInputSelection{} : SelectDlssSceneCopyInputs(inputs);
+                                    auto selected = nativeFgInputs ? DlssSceneInputSelection{} : SelectDlssSceneCopyInputs(inputs);
+                                    // Steprant 2.0.1: SGSR2 spatial continuation (see Sgsr2Continuation).
+                                    if (!nativeFgInputs && Sgsr2ContinuationEnabled() && dlssSrRequested &&
+                                        activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr &&
+                                        (selected.kind == DlssSceneInputSelection::Kind::Pending ||
+                                         selected.kind == DlssSceneInputSelection::Kind::Incomplete) &&
+                                        inputs.color.Complete() && inputs.depth.Complete() &&
+                                        temporal::KnownDepthConvention(inputs.depthConvention) &&
+                                        inputs.colorEncoding == temporal::ColorEncoding::Sdr) {
+                                        const bool resourceFailed = motionInitFailed || temporalHistory->HybridResourceFailed() ||
+                                            (motionReplay && motionReplay->ResourceFailedThisFrame());
+                                        const bool frameOnly = selected.kind == DlssSceneInputSelection::Kind::Pending ||
+                                            temporal::ClassifySrIncomplete(inputs, resourceFailed) == temporal::SrSceneInputFailure::FrameFallback;
+                                        temporal::TextureRegion zeroMotion, zeroInvalidity;
+                                        if (frameOnly && Sgsr2ZeroMotion(inputs.color.width, inputs.color.height, zeroMotion, zeroInvalidity)) {
+                                            NoteSgsr2Continuation(frame, selected.kind == DlssSceneInputSelection::Kind::Pending);
+                                            auto continued = inputs;
+                                            continued.motion = zeroMotion;
+                                            continued.motionInvalidity = zeroInvalidity;
+                                            continued.motionState = temporal::MotionState::ResetInitialization;
+                                            continued.currentInputsComplete = true;
+                                            continued.resetHistory = true;
+                                            continued.resetReasons = continued.resetReasons | temporal::TemporalResetReason::IncompleteInputs;
+                                            selected.kind = DlssSceneInputSelection::Kind::Selected;
+                                            selected.inputs = continued;
+                                        }
+                                    } else if (selected.kind == DlssSceneInputSelection::Kind::Selected) {
+                                        EndSgsr2ContinuationRun(frame);
+                                    }
                                     if (selected.kind == DlssSceneInputSelection::Kind::Pending) {
                                         static uint64_t loggedPendingSignature = 0;
                                         if (loggedPendingSignature != activePlan.requestSignature) {
