@@ -36,7 +36,7 @@ enum class Switch : uint32_t
     ScissorRenderArea,    // 1.4a/G-4: render passes over the drawn area, not the whole target (on)
     CompactTargets,       // 1.6: 8_8_8_8 and 2_10_10_10 targets in 32-bit host formats (on)
     Sgsr2Continuation,    // 2.0.1: SGSR2 keeps scene frames whose motion is not ready (on)
-    DisplayTiming,        // 2.0.1: frames held for the same number of refreshes (on)
+    DisplayTiming,        // 2.0.1: frames held for the same number of refreshes (off: it made the cadence worse on the phone)
     ScreenDrawJitter,     // 2.0.1: screen-space scene draws move with the SGSR2 jitter (on)
     Count
 };
@@ -66,7 +66,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"scissor_render_area", L"Render area of the draws", L"依繪製範圍的渲染區域", 0, 2, "LO_VK_RENDER_AREA"},
     {"compact_targets", L"Compact render targets", L"精簡渲染目標", 0, 2, "LO_COMPACT_RT"},
     {"sgsr2_continuation", L"SGSR2 without motion ready", L"動態向量未就緒時保持 SGSR2", 0, 2, "LO_SGSR2_CONTINUATION"},
-    {"display_timing", L"Display timing (even frames)", L"顯示時序（均勻影格）", 0, 2, "LO_DISPLAY_TIMING"},
+    {"display_timing_test", L"Display timing (test)", L"顯示時序（測試）", 1, 2, "LO_DISPLAY_TIMING"},
     {"screen_draw_jitter", L"SGSR2 jitter on screen draws", L"螢幕繪製套用 SGSR2 抖動", 0, 2, "LO_SR_JITTER_SCREEN_DRAWS"},
 }};
 
@@ -89,7 +89,7 @@ inline const char* VariableValue(Switch which, uint32_t value)
     case Switch::ScissorRenderArea:
     case Switch::CompactTargets:
     case Switch::Sgsr2Continuation:
-    case Switch::DisplayTiming:
+    case Switch::DisplayTiming: return value == 0 ? "1" : nullptr;
     case Switch::ScreenDrawJitter: return value == 1 ? "0" : nullptr;
     case Switch::Count: break;
     }

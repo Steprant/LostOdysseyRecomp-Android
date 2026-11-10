@@ -5122,10 +5122,13 @@ namespace gpu::video
 
     static bool DisplayTimingEnabled()
     {
-        // LO_DISPLAY_TIMING=0: present as soon as possible, as before 2.0.1.
+        // Off by default since the 11/11 00:10 sessions: on the phone the held
+        // images made the swapchain acquire wait 30-70 ms and the cadence got
+        // worse, not better (exact 4-refresh intervals fell to 0-30%).
+        // LO_DISPLAY_TIMING=1 (developer page) turns it on for tests.
         static const bool enabled = [] {
             const char* value = getenv("LO_DISPLAY_TIMING");
-            return !value || std::strcmp(value, "0") != 0;
+            return value && std::strcmp(value, "1") == 0;
         }();
         return enabled;
     }

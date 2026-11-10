@@ -2188,6 +2188,10 @@ namespace gpu::renderer
                 uint32_t frame = ~0u;
                 std::string text;
                 uint32_t draws = 0, resolves = 0;
+                // 2.0.1b: each colour resolve as it was written, before a later
+                // resolve to the same address replaces it.
+                struct Snapshot { std::unique_ptr<HostTexture> tex; uint32_t seq, address, format; };
+                std::vector<Snapshot> snapshots;
             } dissection;
             static constexpr size_t kDissectionTextLimit = 6u << 20;
             void DissectDraw(uint64_t vs, uint64_t ps, const Shader* pixelShader, const HostTexture* color,
@@ -8614,6 +8618,11 @@ void main()
                     if (prev != renderTargets.end() && prev->second && prev->second->texture && target && target->texture) {
                         // The transfer reads the old owner and may cover only part of the new one.
                         if (prev->second.get() == restoreDebt.target || target == restoreDebt.target) SettleRestoreDebt();
+                        if (dissection.frame == frame && dissection.text.size() < kDissectionTextLimit)
+                            dissection.text += fmt::format("transfer after_draw {} base={:#x} class{} -> class{} guest {}x{} -> {}x{} host {}x{} -> {}x{} pending_clear_src={}\n",
+                                drawsThisFrame, base, owner->second, colorClass, prev->second->guestWidth, prev->second->guestHeight,
+                                target->guestWidth, target->guestHeight, prev->second->width, prev->second->height,
+                                target->width, target->height, prev->second->pendingClear.Size());
                         TransferRegion(*prev->second, *target, owner->second, colorClass);
                     }
                 }
@@ -15339,6 +15348,28 @@ void main()
                 consecutiveResolveCopies.EndResolve();
             }
 
+            // 2.0.1b: a copy of the resolve just written, for the dissection.
+            void SnapshotDissectionResolve(uint32_t destBase, uint32_t destFormat)
+            {
+                if (dissection.frame != frame || dissection.snapshots.size() >= 24) return;
+                ResolvedSurface& rs = ResolvedSlot(destBase, destFormat);
+                if (!rs.tex || !rs.tex->texture || rs.frame != frame) return;
+                auto snap = std::make_unique<HostTexture>();
+                snap->format = rs.tex->format; snap->width = rs.tex->width; snap->height = rs.tex->height;
+                snap->guestWidth = rs.tex->guestWidth; snap->guestHeight = rs.tex->guestHeight;
+                snap->resolutionSize = rs.tex->resolutionSize;
+                snap->texture = device->createTexture(RenderTextureDesc::Texture2D(snap->width, snap->height, 1, snap->format, RenderTextureFlag::RENDER_TARGET));
+                snap->layout = RenderTextureLayout::UNKNOWN;
+                if (!snap->texture) return;
+                Transition(*rs.tex, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
+                Transition(*snap, RenderTextureLayout::COPY_DEST, RenderBarrierStage::COPY);
+                RenderBox box{0, 0, int32_t(snap->width), int32_t(snap->height), 0, 1};
+                commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(snap->texture.get()),
+                    RenderTextureCopyLocation::Subresource(rs.tex->texture.get()), 0, 0, 0, &box);
+                Transition(*rs.tex, RenderTextureLayout::SHADER_READ, RenderBarrierStage::GRAPHICS);
+                dissection.snapshots.push_back({std::move(snap), dissection.resolves ? dissection.resolves - 1 : 0, destBase, destFormat});
+            }
+
             void ResolveImpl()
             {
                 uint32_t copyControl = Reg(REG_RB_COPY_CONTROL);
@@ -15417,6 +15448,7 @@ void main()
                 {
                     if (!ResolveOnGpu(*color, destBase, destFormat, destPitch, destHeight, x0, y0, copyWidth, copyHeight))
                         return;
+                    SnapshotDissectionResolve(destBase, destFormat);
                     InvalidateRange(destBase, ((destPitch + 31) & ~31u) * copyHeight * (destFormat == 32 ? 8 : 4));
                 }
                 else
@@ -16768,6 +16800,26 @@ void main()
         std::string text = std::move(d.text);
         d.text.clear();
         text += fmt::format("summary: draws={} resolves={}\n", d.draws, d.resolves);
+        // 2.0.1b: every colour resolve as written (resolve sequence number).
+        auto snapshots = std::move(d.snapshots);
+        d.snapshots.clear();
+        uint32_t snapshotWritten = 0;
+        std::vector<uint32_t> snapPixels;
+        for (auto& snapshot : snapshots) {
+            uint32_t width = 0, height = 0;
+            if (!ReadbackTexture(*snapshot.tex, snapPixels, width, height) || !width || !height) continue;
+            uint32_t step = 1;
+            while (width / step > 1024 || height / step > 1024) ++step;
+            const uint32_t ow = width / step, oh = height / step;
+            std::vector<uint32_t> out(size_t(ow) * oh);
+            for (uint32_t y = 0; y < oh; ++y)
+                for (uint32_t x = 0; x < ow; ++x)
+                    out[size_t(y) * ow + x] = snapPixels[size_t(y * step) * width + x * step] | 0xFF000000u;
+            const auto name = fmt::format("dissect-resolve{:02}-{:08x}-fmt{}-{}x{}.png", snapshot.seq, snapshot.address, snapshot.format, width, height);
+            if (diagnostics::frame_samples::WriteFile(directory / name, diagnostics::frame_samples::EncodePng(out, ow, oh))) ++snapshotWritten;
+            r.Gpu().retiredTextures.push_back(std::move(snapshot.tex));
+        }
+        text += fmt::format("resolve snapshots written: {}\n", snapshotWritten);
         // Every surface this frame resolved, oldest address first.
         using Surface = std::remove_reference_t<decltype(r.resolved.begin()->second.front())>;
         std::vector<std::pair<uint32_t, Surface*>> surfaces;
