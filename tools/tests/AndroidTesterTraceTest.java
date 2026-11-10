@@ -46,6 +46,36 @@ public final class AndroidTesterTraceTest {
         check(!window.contains("\n4000000000,") && !window.contains("\n46000000000,"), "bounded event window");
         check(!files.get("runtime.log").contains("/storage/emulated/0/"), "redact shared path");
         check(files.get("thermal.csv").contains("1,2,,35.0"), "unavailable thermal data remains empty");
+        check(!files.containsKey("previous-runtime.log"), "no previous run with one log");
+
+        // SR4 S-2: after a restart the run before the newest one is the one
+        // that may have crashed; its tail goes in as previous-runtime.log, and
+        // the caller's extra entries (exit reasons) are written into the ZIP.
+        File older = new File(dir, "runtime-122.log");
+        Files.writeString(older.toPath(), "crashed run /data/user/0/io.github.example/files/x\n");
+        bytes = new ByteArrayOutputStream();
+        TesterTraceFiles.export(dir, java.util.Arrays.asList(older, log), zip -> {
+            zip.putNextEntry(new ZipEntry("exit-reasons.json"));
+            zip.write("{\"available\":true}\n".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }, bytes);
+        files.clear();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;)
+                files.put(entry.getName(), new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        check(files.get("runtime.log").contains("path [shared-path]"), "newest log stays runtime.log");
+        check(files.get("previous-runtime.log") != null && files.get("previous-runtime.log").contains("crashed run [app-private]"),
+            "previous run's log, redacted");
+        check("{\"available\":true}\n".equals(files.get("exit-reasons.json")), "extra entries");
+        bytes = new ByteArrayOutputStream();
+        TesterTraceFiles.export(dir, java.util.Arrays.asList(older, log), zip -> { throw new java.io.IOException("no service"); }, bytes);
+        files.clear();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;)
+                files.put(entry.getName(), new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        check(files.get("exit-reasons.json").contains("\"available\":false"), "a failing extra does not break the export");
         System.out.println("PASS: Android tester trace export and event window (JVM)");
     }
 }

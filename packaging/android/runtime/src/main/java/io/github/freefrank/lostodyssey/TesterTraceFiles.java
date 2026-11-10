@@ -190,7 +190,40 @@ final class TesterTraceFiles {
         }
         zip.closeEntry();
     }
+    // Extra entries written into the Tester ZIP by the caller (SR4 S-2: exit
+    // reasons, which need an Android Context).
+    interface Extras { void write(ZipOutputStream zip) throws IOException; }
+
+    static String redactPaths(String text) {
+        return text.replaceAll("/data/user/[0-9]+/[^\\s]+", "[app-private]")
+            .replaceAll("/data/(?:user_de|data)/[^\\s]+", "[app-private]")
+            .replaceAll("/storage/emulated/[0-9]+/[^\\s]+", "[shared-path]")
+            .replaceAll("luid=[^\\s]+", "luid=[redacted]");
+    }
+
+    // The last `limit` bytes of a log, with private paths redacted.
+    static String logTail(File log, long limit) throws IOException {
+        try (java.io.RandomAccessFile in = new java.io.RandomAccessFile(log, "r")) {
+            long end = in.length();
+            long start = Math.max(0, end - limit);
+            in.seek(start);
+            long remaining = end - start;
+            ByteArrayOutputStream tail = new ByteArrayOutputStream();
+            byte[] buffer = new byte[16384];
+            while (remaining > 0) {
+                int n = in.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (n <= 0) break;
+                tail.write(buffer, 0, n); remaining -= n;
+            }
+            return redactPaths(new String(tail.toByteArray(), StandardCharsets.UTF_8));
+        }
+    }
+
     static void export(File dir, List<File> logs, OutputStream output) throws IOException {
+        export(dir, logs, null, output);
+    }
+
+    static void export(File dir, List<File> logs, Extras extras, OutputStream output) throws IOException {
         ZipOutputStream zip = new ZipOutputStream(output);
         for (String name : new String[]{"device.json", "session.json"}) {
             File file = new File(dir, name);
@@ -260,29 +293,28 @@ final class TesterTraceFiles {
             ",\"slow_interval_timestamps_ns\":[" + spikeTimes + "]" +
             ",\"context\":\"up to 30 seconds before and 10 seconds after; truncated if recording stopped or at the size cap\"}\n");
         // The existing export already warns that runtime logs can contain paths.
-        // Keep at most the tail of the newest runtime log rather than all history.
-        File newest = null;
-        for (File log : logs) if (log.getName().startsWith("runtime-") && (newest == null || log.getName().compareTo(newest.getName()) > 0)) newest = log;
-        if (newest != null) {
-            try (java.io.RandomAccessFile in = new java.io.RandomAccessFile(newest, "r")) {
-                long end = in.length();
-                long start = Math.max(0, end - 2L * 1024 * 1024);
-                in.seek(start);
-                long remaining = end - start;
-                ByteArrayOutputStream tail = new ByteArrayOutputStream();
-                byte[] buffer = new byte[16384];
-                while (remaining > 0) {
-                    int n = in.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                    if (n <= 0) break;
-                    tail.write(buffer, 0, n); remaining -= n;
-                }
-                String text = new String(tail.toByteArray(), StandardCharsets.UTF_8)
-                    .replaceAll("/data/user/[0-9]+/[^\\s]+", "[app-private]")
-                    .replaceAll("/data/(?:user_de|data)/[^\\s]+", "[app-private]")
-                    .replaceAll("/storage/emulated/[0-9]+/[^\\s]+", "[shared-path]")
-                    .replaceAll("luid=[^\\s]+", "luid=[redacted]");
-                zipText(zip, "runtime.log", text);
-            }
+        // Keep at most the tail of the newest runtime log rather than all history,
+        // and (SR4 S-2) the end of the one before it: after a crash and a restart
+        // that is the run that crashed.
+        File newest = null, previous = null;
+        for (File log : logs) {
+            if (!log.getName().startsWith("runtime-")) continue;
+            if (newest == null || log.getName().compareTo(newest.getName()) > 0) { previous = newest; newest = log; }
+            else if (previous == null || log.getName().compareTo(previous.getName()) > 0) previous = log;
+        }
+        if (newest != null) zipText(zip, "runtime.log", logTail(newest, 2L * 1024 * 1024));
+        if (previous != null) zipText(zip, "previous-runtime.log", logTail(previous, 256L * 1024));
+        // What the previous process printed to stderr (aborts, sanitizer and
+        // libc messages) and the newest Java crash, both kept by PlayerLogs.
+        File javaCrash = null;
+        for (File log : logs) {
+            if (log.getName().equals("native-stderr.previous.log")) zipText(zip, "previous-native-stderr.log", logTail(log, 64L * 1024));
+            if (log.getName().startsWith("java-crash-") && (javaCrash == null || log.lastModified() > javaCrash.lastModified())) javaCrash = log;
+        }
+        if (javaCrash != null) zipText(zip, "java-crash.txt", logTail(javaCrash, 64L * 1024));
+        if (extras != null) {
+            try { extras.write(zip); }
+            catch (IOException | RuntimeException error) { zipText(zip, "exit-reasons.json", "{\"available\":false,\"reason\":\"export failed\"}\n"); }
         }
         zip.finish(); zip.flush();
     }

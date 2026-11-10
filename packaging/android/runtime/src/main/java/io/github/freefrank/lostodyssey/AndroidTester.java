@@ -299,7 +299,7 @@ final class AndroidTester {
                 File[] sessions = sessions();
                 if (sessions.length == 0) throw new IOException("No diagnostic session available");
                 List<File> logs = PlayerLogs.exportable(PlayerLogs.directory(context));
-                TesterTraceFiles.export(sessions[sessions.length - 1], logs, out);
+                TesterTraceFiles.export(sessions[sessions.length - 1], logs, zip -> TesterExitReasons.write(context, zip), out);
                 return null;
             }).get();
         } catch (InterruptedException error) {
