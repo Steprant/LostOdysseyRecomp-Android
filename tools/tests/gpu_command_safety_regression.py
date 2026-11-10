@@ -57,6 +57,11 @@ struct GuestThreadContext {
 };
 namespace os { void SetCurrentThreadName(const char*) {} }
 void DumpGuestThreadStates() {}
+namespace host_ui {
+inline uint32_t SuspendEpoch() { return 0; }
+inline bool IsGamePaused() { return false; }
+inline bool IsBackgrounded() { return false; }
+}
 static std::array<uint32_t, 0x10000> memory{};
 static std::atomic<uint32_t> translations{0};
 struct FakeMemory {
