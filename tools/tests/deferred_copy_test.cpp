@@ -210,6 +210,31 @@ int main()
         if (deferTexture)
             expect(profile.passEnds[size_t(RenderPassProfile::PassEnd::BarrierOther)] == 0, "no barrier on the sampled textures ends the pass");
     }
+    // Fifth list: a sampled texture getting ready to be the next target
+    // (SHADER_READ to COLOR_WRITE) while a pass draws into another one: the
+    // transition waits for the pass end; the next pass on it still works.
+    commands->begin();
+    commands->setFramebuffer(fb.get());
+    commands->clearColor(0, RenderColor(1, 0, 1, 1), &half, 1);
+    commands->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(texA.get(), RenderTextureLayout::COLOR_WRITE));
+    commands->setFramebuffer(fbA.get());
+    commands->clearColor(0, RenderColor(1, 0, 0, 1), &half, 1);
+    commands->setFramebuffer(nullptr);
+    commands->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(texA.get(), RenderTextureLayout::COPY_SOURCE));
+    commands->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(readback.get(), RenderFormat::R8G8B8A8_UNORM, kSize, kSize, 1, kSize),
+        RenderTextureCopyLocation::Subresource(texA.get()));
+    commands->end();
+    queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence.get());
+    queue->waitForCommandFence(fence.get());
+    data = static_cast<const uint8_t*>(readback->map());
+    expect(Pixel(data, 3, 3) == 0xff0000ffu && Pixel(data, 30, 30) == 0xff00ff00u, "the next pass on A loads its green and clears the top red");
+    readback->unmap();
+    if (commands->takePassProfile(profile)) {
+        std::printf("target: barrier_other_ends=%u framebuffer_ends=%u\n",
+            profile.passEnds[size_t(RenderPassProfile::PassEnd::BarrierOther)], profile.passEnds[size_t(RenderPassProfile::PassEnd::Framebuffer)]);
+        if (deferTexture)
+            expect(profile.passEnds[size_t(RenderPassProfile::PassEnd::BarrierOther)] == 0, "the target transition does not end the pass");
+    }
     if (failures) return 1;
     std::printf("PASS: deferred resolve copies (%s, texture copies %s)\n", defer ? "on" : "off", deferTexture ? "on" : "off");
     return 0;
