@@ -20,6 +20,9 @@ PREAMBLE = r'''
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <mutex>
 #include <hid/glyph_atlases.h>
 #include <apu/audio.h>
