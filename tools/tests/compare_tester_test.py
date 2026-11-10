@@ -41,6 +41,10 @@ def archive(path, frame_ms, gpu_busy, paused=()):
         z.writestr("session/frame_timing.csv", header + "".join(rows))
         z.writestr("session/gpu.csv", gpu)
         z.writestr("session/runtime.log", log)
+        # M-7: two unplugged rows at 2 A / 4000 mV (8 W) and one plugged row left out.
+        z.writestr("session/thermal.csv", "monotonic_ns,android_thermal_status,thermal_headroom,battery_temperature_c,"
+                   "battery_current_ua,battery_voltage_mv,battery_plugged\n"
+                   f"1,0,,35.0,-2000000,4000,0\n2,0,,36.0,-2000000,4000,0\n{t},0,,37.0,500000,4400,2\n")
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +68,7 @@ with tempfile.TemporaryDirectory() as tmp:
     paused_result = compare.analyse(c)
     assert paused_result["paused_intervals"] == 1 and paused_result["frames"] == 99, paused_result
     assert paused_result["frames_over_50ms"] == 1 and paused_result["frame_max_ms"] == 80.0, paused_result
+    assert abs(paused_result["battery_power_w_mean"] - 8.0) < 1e-9 and paused_result["battery_power_samples"] == 2, paused_result
     assert result["draw_fit_us_per_draw"] == 12.0 and result["draw_fit_fixed_ms"] == 3.0, result
     output = io.StringIO()
     with redirect_stdout(output):

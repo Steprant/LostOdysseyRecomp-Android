@@ -291,6 +291,46 @@ static void LogVulkanProfilingSupport(VkPhysicalDevice device)
     LOG_INFO("vulkan profiling: VK_KHR_performance_query={} counters={} VK_EXT_multi_draw={}",
         performanceQuery ? "yes" : "no", counterCount, multiDraw ? "yes" : "no");
     if (!names.empty()) LOG_INFO("vulkan profiling counters (queue family 0): {}", names);
+
+    // Steprant 2.0 M-1: what the structural packages can build on (C-1 dynamic
+    // rendering, push/descriptor buffers, dynamic state; G-1 multi-draw; G-2
+    // local read / attachment access; F-1 present wait/id, display timing).
+    static constexpr const char* Interesting[] = {
+        "VK_KHR_dynamic_rendering", "VK_KHR_dynamic_rendering_local_read", "VK_KHR_push_descriptor",
+        "VK_EXT_descriptor_buffer", "VK_EXT_extended_dynamic_state", "VK_EXT_extended_dynamic_state2",
+        "VK_EXT_extended_dynamic_state3", "VK_EXT_vertex_input_dynamic_state", "VK_EXT_graphics_pipeline_library",
+        "VK_EXT_shader_object", "VK_EXT_rasterization_order_attachment_access", "VK_ARM_rasterization_order_attachment_access",
+        "VK_EXT_attachment_feedback_loop_layout", "VK_KHR_present_wait", "VK_KHR_present_id", "VK_KHR_present_wait2",
+        "VK_KHR_present_id2", "VK_GOOGLE_display_timing", "VK_EXT_present_timing", "VK_KHR_maintenance5",
+        "VK_KHR_maintenance6", "VK_KHR_maintenance7", "VK_EXT_host_image_copy", "VK_KHR_pipeline_binary",
+        "VK_EXT_pipeline_creation_cache_control", "VK_KHR_draw_indirect_count", "VK_EXT_memory_budget",
+        "VK_EXT_device_fault", "VK_KHR_shader_draw_parameters", "VK_EXT_nested_command_buffer",
+        "VK_QCOM_tile_properties", "VK_QCOM_render_pass_shader_resolve", "VK_EXT_load_store_op_none",
+        "VK_KHR_load_store_op_none", "VK_EXT_subpass_merge_feedback", "VK_EXT_frame_boundary"};
+    std::string present, missing;
+    for (const char* name : Interesting) {
+        std::string& target = has(name) ? present : missing;
+        if (!target.empty()) target += ' ';
+        target += name;
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device, &properties);
+    VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan14Features v14{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    const uint32_t api = properties.apiVersion;
+    if (VK_API_VERSION_MINOR(api) >= 3 || VK_API_VERSION_MAJOR(api) > 1) features.pNext = &v13;
+    if (VK_API_VERSION_MINOR(api) >= 4 || VK_API_VERSION_MAJOR(api) > 1) v13.pNext = &v14;
+    if (vkGetPhysicalDeviceFeatures2) vkGetPhysicalDeviceFeatures2(device, &features);
+    LOG_INFO("vulkan capabilities: api={}.{}.{} dynamicRendering={} synchronization2={} maintenance4={} "
+             "pushDescriptor={} dynamicRenderingLocalRead={} maintenance5={} maintenance6={} hostImageCopy={} "
+             "indexTypeUint8={} multiDrawIndirect={} drawIndirectFirstInstance={}",
+        VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api), VK_API_VERSION_PATCH(api),
+        v13.dynamicRendering, v13.synchronization2, v13.maintenance4, v14.pushDescriptor,
+        v14.dynamicRenderingLocalRead, v14.maintenance5, v14.maintenance6, v14.hostImageCopy, v14.indexTypeUint8,
+        features.features.multiDrawIndirect, features.features.drawIndirectFirstInstance);
+    LOG_INFO("vulkan extensions present: {}", present);
+    LOG_INFO("vulkan extensions missing: {}", missing);
 }
 
 // Every GPU the instance reports, before device creation can fail or crash:

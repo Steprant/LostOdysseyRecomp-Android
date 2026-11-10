@@ -145,12 +145,27 @@ final class AndroidTester {
                 if (Double.isFinite(headroom)) thermalHeadroom = String.format(Locale.US, "%.3f", headroom);
             }
         } catch (RuntimeException unavailable) { lastHeadroom = now; }
+        // Steprant 2.0 M-7: battery current (raw microamperes as the device
+        // reports them; the sign differs between vendors), voltage and charger,
+        // so a session gives power draw per hour on battery.
+        String current = "", voltage = "", plugged = "";
         try {
             Intent intent = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             if (intent != null && intent.hasExtra(BatteryManager.EXTRA_TEMPERATURE))
                 battery = String.format(Locale.US, "%.1f", intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0);
+            if (intent != null && intent.hasExtra(BatteryManager.EXTRA_VOLTAGE))
+                voltage = Integer.toString(intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0));
+            if (intent != null && intent.hasExtra(BatteryManager.EXTRA_PLUGGED))
+                plugged = Integer.toString(intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
         } catch (RuntimeException unavailable) { }
-        trace.appendThermal(now + "," + thermalStatus + "," + thermalHeadroom + "," + battery + "\n");
+        try {
+            BatteryManager manager = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
+            if (manager != null) {
+                int value = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+                if (value != Integer.MIN_VALUE) current = Integer.toString(value);
+            }
+        } catch (RuntimeException unavailable) { }
+        trace.appendThermal(now + "," + thermalStatus + "," + thermalHeadroom + "," + battery + "," + current + "," + voltage + "," + plugged + "\n");
     }
     private void sampleThreads(long now) throws IOException {
         File[] tasks = new File("/proc/self/task").listFiles();

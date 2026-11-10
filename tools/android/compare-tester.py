@@ -155,12 +155,26 @@ def analyse(path, start=None, end=None):
         if wall > 0:
             out["gpu_busy_pct"] = 100.0 * busy / wall
 
-    thermal = [number(r.get("battery_temperature_c")) for r in rows(source.read("thermal.csv"))
-               if in_window(number(r["monotonic_ns"]))]
+    thermal_rows = [r for r in rows(source.read("thermal.csv")) if in_window(number(r["monotonic_ns"]))]
+    thermal = [number(r.get("battery_temperature_c")) for r in thermal_rows]
     thermal = [t for t in thermal if t is not None]
     if thermal:
         out["battery_c_max"] = max(thermal)
         out["battery_c_last"] = thermal[-1]
+    # Steprant 2.0 M-7: average power on battery (unplugged rows only). The
+    # current's unit and sign differ between vendors: microamperes are the
+    # norm, a magnitude under 20000 is read as milliamperes.
+    power = []
+    for r in thermal_rows:
+        current, voltage = number(r.get("battery_current_ua")), number(r.get("battery_voltage_mv"))
+        plugged = (r.get("battery_plugged") or "").strip()
+        if current is None or voltage is None or plugged not in ("", "0"):
+            continue
+        amps = abs(current) / (1e3 if abs(current) < 20000 else 1e6)
+        power.append(amps * voltage / 1000.0)
+    if power:
+        out["battery_power_w_mean"] = statistics.mean(power)
+        out["battery_power_samples"] = len(power)
 
     threads = {}
     for r in rows(source.read("threads.csv")):
