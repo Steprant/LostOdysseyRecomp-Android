@@ -83,6 +83,7 @@ public:
     uint64_t pipelineBinds = 0, pipelineBindsSkipped = 0, descriptorBinds = 0, pushConstants = 0, vertexBinds = 0, indexBinds = 0;
     uint64_t copiesDeferred = 0, deferredFlushedEarly = 0, deferredEarlyReasons[5] = {};
     uint64_t textureCopiesDeferred = 0, textureCopyHazards = 0; // SR4 G-2
+    uint64_t frameGraphCommands = 0, frameGraphReplays = 0, frameGraphDeadStores = 0, frameGraphDeadStoreBytes = 0; // SR4 G-2 1b/1c
     uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
@@ -109,6 +110,10 @@ public:
         copiesDeferred += profile.copiesDeferred;
         deferredFlushedEarly += profile.deferredFlushedEarly;
         textureCopiesDeferred += profile.textureCopiesDeferred;
+        frameGraphCommands += profile.frameGraphCommands;
+        frameGraphReplays += profile.frameGraphReplays;
+        frameGraphDeadStores += profile.frameGraphDeadStores;
+        frameGraphDeadStoreBytes += profile.frameGraphDeadStoreBytes;
         textureCopyHazards += profile.textureCopyHazards;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
         whatIfMergeablePasses += profile.whatIfMergeablePasses;
@@ -250,15 +255,16 @@ public:
         const uint64_t dead = flow.storeCleared[0] + flow.storeCleared[1];
         const uint64_t merge = whatIfMergeBytes * 2;
         const uint64_t traffic = all.loadBytes + all.storeBytes;
-        char buffer[512];
+        char buffer[768];
         std::snprintf(buffer, sizeof(buffer),
             "frame graph what-if: frames=%llu per_frame: traffic_mb=%.1f dead_store_mb=%.1f merge_passes=%.1f merge_mb=%.1f "
             "savable_mb=%.1f savable_share=%.1f%% copies_to_pass_end=%.1f copies_early=%.1f passes=%.1f "
-            "diag_discarded_stores=%.1f diag_discarded_mb=%.1f",
+            "diag_discarded_stores=%.1f diag_discarded_mb=%.1f commands=%.0f replays=%.1f discarded_stores=%.1f discarded_mb=%.1f",
             static_cast<unsigned long long>(frames), mb(traffic), mb(dead), double(whatIfMergeablePasses) / f, mb(merge),
             mb(dead + merge), traffic ? 100.0 * double(std::min(traffic, dead + merge)) / double(traffic) : 0.0,
             double(copiesDeferred) / f, double(deferredFlushedEarly) / f, double(PassCount()) / f,
-            double(diagDiscardedStores) / f, mb(diagDiscardedStoreBytes));
+            double(diagDiscardedStores) / f, mb(diagDiscardedStoreBytes), double(frameGraphCommands) / f,
+            double(frameGraphReplays) / f, double(frameGraphDeadStores) / f, mb(frameGraphDeadStoreBytes));
         return buffer;
     }
     uint64_t PassCount() const
