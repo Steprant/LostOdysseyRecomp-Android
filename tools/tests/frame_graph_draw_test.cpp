@@ -202,6 +202,15 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores)
                 if (boundIndex == 3 && rng() % 2) list->clearDepthStencil(true, false, 1.0f, 0);
             } else if (kind < 7) {
                 if (boundIndex < 0) bind(int(rng() % 4));
+                // Draws inside a scissor (partial render areas, SR4 G-4).
+                if (rng() % 2) {
+                    float r[4]; randomRect(r);
+                    const RenderRect scissor{int32_t(r[0]), int32_t(r[1]), int32_t(r[2]), int32_t(r[3])};
+                    list->setScissors(&scissor, 1);
+                } else {
+                    const RenderRect scissor{0, 0, int32_t(kSize), int32_t(kSize)};
+                    list->setScissors(&scissor, 1);
+                }
                 Push push{};
                 randomRect(push.rect); randomColor(push.color);
                 push.depth = float(rng() % 8) / 8.0f;
