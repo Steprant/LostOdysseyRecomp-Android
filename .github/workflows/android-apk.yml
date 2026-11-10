@@ -40,7 +40,7 @@ jobs:
       - name: Pin this build before the development branch advances
         run: |
           set -euo pipefail
-          version=1.9
+          version=2.0.1
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.0 ]] && version=2.0
           pin="steprant/build-$version-$GITHUB_RUN_ID"
           if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
@@ -182,14 +182,17 @@ jobs:
             integration/v1.6-candidate-*) version=1.6 ;;
             integration/v1.7-optimization-*) version=1.7 ;;
             steprant/v1.8) version=1.8 ;;
-            steprant/v2.0-dev) version=1.9 ;;
+            steprant/v2.0-dev) version=2.0.1 ;;
             steprant/v2.0) version=2.0 ;;
             *) version= ;;
           esac
-          # The developer page (A/B switches) is compiled out: the 1.9 logs
-          # settled every switch (D8), and its built-in values are the chosen
-          # ones. LO_STEPRANT_DEVELOPER_PAGE=1 in a local build brings it back.
+          # The developer page (A/B switches) is compiled out of the release
+          # branch: the 1.9 logs settled every switch (D8), and its built-in
+          # values are the chosen ones. The 2.0.x test builds of the
+          # development branch carry it again for the A/B switches of the
+          # 10/11 reports (water, flicker, pacing).
           developer=0
+          [[ "$REF_NAME" == steprant/v2.0-dev ]] && developer=1
           echo "developer=$developer" >> "$GITHUB_OUTPUT"
           if [[ -n "$version" ]]; then
             {

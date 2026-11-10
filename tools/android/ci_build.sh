@@ -96,7 +96,7 @@ export LO_ANDROID_BUILD_DIR="$repo/out/build/android-runtime"
 export LO_ANDROID_DXC="$repo/out/android-dxc/libdxcompiler.so"
 export LO_BUILD_JOBS=$jobs
 steprant_args=()
-# Steprant builds name their edition on the title screen; 1.9.x test builds
+# Steprant builds name their edition on the title screen; 1.9.x and 2.0.x test builds
 # also compile the hidden developer page (A/B switches).
 if [[ -n "${LO_STEPRANT_VERSION:-}" ]]; then
     steprant_args+=("-DLO_STEPRANT_VERSION=$LO_STEPRANT_VERSION")
