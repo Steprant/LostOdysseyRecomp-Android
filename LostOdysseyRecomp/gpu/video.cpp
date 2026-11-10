@@ -453,10 +453,10 @@ namespace gpu::video
             if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
                 g_androidWasBackgrounded = true;
                 g_androidSurfaceReady = false;
-                host_ui::NoteSuspendChange();
+                host_ui::SetBackgrounded(true);
             }
             else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
-                host_ui::NoteSuspendChange();
+                host_ui::SetBackgrounded(false);
             return true;
         }
 #endif

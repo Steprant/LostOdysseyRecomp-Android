@@ -769,10 +769,21 @@ namespace gpu
             ++m_counter;
 
             // Watchdog: no swap for 5 seconds -> dump what every guest thread waits on.
+            // A pause of the game or the app in the background (SR4 S-3: the
+            // share sheet of the Tester export) owes no swaps; the count starts
+            // again from the resume, so a real stall after it is still caught.
             {
                 static uint32_t lastSwaps = 0, stillFrames = 0, dumps = 0;
+                static uint32_t lastEpoch = host_ui::SuspendEpoch();
                 uint32_t swaps = g_completedSwaps.load();
-                if (swaps == lastSwaps)
+                const uint32_t epoch = host_ui::SuspendEpoch();
+                if (epoch != lastEpoch || host_ui::IsGamePaused() || host_ui::IsBackgrounded())
+                {
+                    lastEpoch = epoch;
+                    lastSwaps = swaps;
+                    stillFrames = 0;
+                }
+                else if (swaps == lastSwaps)
                 {
                     if (++stillFrames == 300 && swaps > 0 && dumps++ < 2)
                     {

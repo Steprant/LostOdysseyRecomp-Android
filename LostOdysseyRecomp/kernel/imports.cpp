@@ -233,7 +233,7 @@ void Run()
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         const uint64_t now = NowNs();
         const uint64_t lastSwap = g_lastSwapNs.load(std::memory_order_relaxed);
-        const bool paused = host_ui::IsGamePaused();
+        const bool paused = host_ui::IsGamePaused() || host_ui::IsBackgrounded();
         // Frame stalls: no swap for 60 ms.
         if (lastSwap && !paused && now > lastSwap + 60'000'000ull) {
             if (!frameStallStart) { frameStallStart = lastSwap; frameEpoch = host_ui::SuspendEpoch(); frame.Clear(); }

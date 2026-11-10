@@ -20,6 +20,16 @@ namespace host_ui
     inline std::atomic<uint32_t> g_suspendEpoch{0};
     inline void NoteSuspendChange() { g_suspendEpoch.fetch_add(1, std::memory_order_relaxed); }
     inline uint32_t SuspendEpoch() { return g_suspendEpoch.load(std::memory_order_relaxed); }
+    // True between Android WILL_ENTER_BACKGROUND and DID_ENTER_FOREGROUND (the
+    // share sheet of the Tester export, the home screen): no swaps arrive and
+    // none are due, so the GPU watchdog and the stall sampler stand down.
+    inline std::atomic<bool> g_backgrounded{false};
+    inline void SetBackgrounded(bool backgrounded)
+    {
+        g_backgrounded.store(backgrounded, std::memory_order_relaxed);
+        NoteSuspendChange();
+    }
+    inline bool IsBackgrounded() { return g_backgrounded.load(std::memory_order_relaxed); }
     inline std::atomic<bool> g_stopping{false};
     inline std::mutex g_pauseMutex;
     inline std::condition_variable g_pauseCv;
