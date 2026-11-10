@@ -47,6 +47,7 @@
 #include "loading_pacing.h"
 #include "vrr_policy.h"
 #include "frame_pacer.h"
+#include "display_pacing.h"
 #include "deadline_wait.h"
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
@@ -4300,6 +4301,13 @@ namespace gpu::video
     // Sole presentation-thread entry for mode changes and swap-chain recovery.
     // Both guest frames and host-only frames call this BEFORE reading dimensions
     // or rasterizing UI. The returned ticket belongs to these prepared operations.
+#if defined(__ANDROID__)
+    // Steprant 2.0.1 (display_pacing.h): the game frame rate PreparePresentation
+    // paces to, 0 while loading or without vsync.
+    static std::atomic<uint32_t> g_displayPacingFps{0};
+    static gpu::display_pacing::Scheduler g_displayPacing;
+#endif
+
     static bool PreparePresentation(uint64_t& displayTicket, uint32_t& width, uint32_t& height)
     {
         PresentScope progress(g_presentProgress, PresentStage::Prepare);
@@ -4376,6 +4384,9 @@ namespace gpu::video
                 LOG_INFO("video output: display frame rate hint {} FPS", wanted);
             }
         }
+#endif
+#if defined(__ANDROID__)
+        g_displayPacingFps.store(loading::Active() ? 0u : GetFramePacingTarget(nativeTarget), std::memory_order_relaxed);
 #endif
         auto& nativePolicy = g_presentationDisplay;
         if (!nativePolicy.nativeVsyncInitialized) {
@@ -5107,10 +5118,58 @@ namespace gpu::video
         return acquired;
     }
 
+#if defined(__ANDROID__)
+
+    static bool DisplayTimingEnabled()
+    {
+        // LO_DISPLAY_TIMING=0: present as soon as possible, as before 2.0.1.
+        static const bool enabled = [] {
+            const char* value = getenv("LO_DISPLAY_TIMING");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        return enabled;
+    }
+
+    // Ask the display for the refresh this frame belongs to, and read back
+    // when the previous frames were really shown.
+    static void ScheduleDisplayTime()
+    {
+        if (!g_vulkan || !g_swapChain || !g_device || !g_device->getCapabilities().displayTiming) return;
+        static uint64_t refreshNs = 0;
+        static uint32_t refreshPolls = 0;
+        if (!refreshNs || ++refreshPolls >= 60) {
+            refreshPolls = 0;
+            refreshNs = g_swapChain->getRefreshDurationNs();
+        }
+        plume::RenderPresentTiming past[16];
+        for (uint32_t round = 0; round < 4; ++round) {
+            const uint32_t count = g_swapChain->getPastPresentTimings(past, 16);
+            for (uint32_t i = 0; i < count; ++i)
+                g_displayPacing.Observe({past[i].presentId, past[i].desiredPresentTime, past[i].actualPresentTime});
+            if (count < 16) break;
+        }
+        const uint32_t fps = g_displayPacingFps.load(std::memory_order_relaxed);
+        const bool enabled = DisplayTimingEnabled() && fps && g_swapChain->isVsyncEnabled() && !loading::Active();
+        const uint64_t period = fps ? 1000000000ull / fps : 0;
+        const uint64_t desired = g_displayPacing.Next(g_swapChain->getNextPresentTimingId(),
+            ::diagnostics::android_tester::NowNs(), refreshNs, period, enabled);
+        g_swapChain->setNextPresentTime(desired);
+        static uint32_t presents = 0;
+        if (++presents >= 300) {
+            presents = 0;
+            const auto stats = g_displayPacing.TakeStats();
+            LOG_INFO("display pacing: refresh_ms={:.3f} refreshes_per_frame={} fps={} shown={} exact={} shorter={} longer={} late={} immediate={} restarts={}",
+                double(stats.refreshNs) / 1e6, stats.refreshes, fps, stats.shown, stats.exact, stats.shorter, stats.longer,
+                stats.late, stats.immediate, stats.restarts);
+        }
+    }
+#endif
+
     static bool PresentSwapchainImage(uint32_t imageIndex, plume::RenderCommandSemaphore** waits, uint32_t waitCount)
     {
         PresentScope progress(g_presentProgress, PresentStage::QueuePresent);
 #if defined(__ANDROID__)
+        ScheduleDisplayTime();
         auto& tester = ::diagnostics::android_tester::g_recorder;
         if (tester.recording.load(std::memory_order_relaxed)) {
             const auto threadTime = []() -> uint64_t {
