@@ -54,6 +54,10 @@ namespace gpu::renderer
     void ScaleResolvedSize(uint32_t physicalAddress, uint32_t& width, uint32_t& height);
     // UI thread requests; render thread captures the next three complete frames.
     void RequestDebugCapture();
+    // Steprant 2.0.1: Tester frame dissection of the next frame, written into
+    // the frame-samples directory once that frame has been flushed.
+    void RequestFrameDissection();
+    void CompleteFrameDissection();
     std::wstring DebugCaptureStatus();
     bool DebugCaptureBusy();
     // Fixes this XE_SWAP's guest export and ticket before presentation.

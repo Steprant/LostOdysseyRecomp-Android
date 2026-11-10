@@ -145,6 +145,20 @@ inline bool Request(uint32_t count)
     return true;
 }
 
+// Steprant 2.0.1: the capture directory (frame dissection writes beside
+// the samples), and whether the sample being taken is a request's first.
+inline std::filesystem::path Directory()
+{
+    std::lock_guard lock(Get().mutex);
+    return Get().directory;
+}
+inline bool IsFirstSample()
+{
+    auto& s = Get();
+    std::lock_guard lock(s.mutex);
+    return s.remaining && s.activeSwap && s.activeSwap == s.firstSwap;
+}
+
 inline std::wstring Status()
 {
     auto& s = Get();

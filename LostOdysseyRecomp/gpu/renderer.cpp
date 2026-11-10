@@ -17,6 +17,7 @@
 #if !defined(LO_RENDERER_P2_EMBEDDED_TEST)
 #include "movie_yuv_shader.h"
 #include "loading_pacing.h"
+#include <diagnostics/frame_samples.h>
 #include <movie/movie_player.h>
 #endif
 #include "video.h"
@@ -2177,6 +2178,58 @@ namespace gpu::renderer
             std::map<RelativeDrawKey, RelativeDrawStats> relativeDraws;
             uint32_t frame = 0;
             uint32_t captureFrame = 0;
+            // Steprant 2.0.1: Tester frame dissection (frame-samples/dissect-*).
+            // The frame after the first sample of a "Capture 4 frames" request
+            // (sample 2) is written as text, one line per draw and resolve, and
+            // every surface it resolved as a PNG: which pass samples which
+            // image (water, loading screens) from one capture on the phone.
+            struct Dissection {
+                bool armed = false;
+                uint32_t frame = ~0u;
+                std::string text;
+                uint32_t draws = 0, resolves = 0;
+            } dissection;
+            static constexpr size_t kDissectionTextLimit = 6u << 20;
+            void DissectDraw(uint64_t vs, uint64_t ps, const Shader* pixelShader, const HostTexture* color,
+                const HostTexture* depth, uint32_t colorInfo, uint32_t depthControl, uint32_t blend, uint32_t colorMask,
+                uint32_t prim, uint32_t indices, const RenderViewport& viewport, bool jittered)
+            {
+                auto& d = dissection;
+                if (d.text.size() > kDissectionTextLimit) return;
+                const uint32_t tl = Reg(REG_PA_SC_WINDOW_SCISSOR_TL), br = Reg(REG_PA_SC_WINDOW_SCISSOR_BR);
+                d.text += fmt::format("draw {} vs={:016x} ps={:016x} rt=base{:#x}/fmt{}/{}x{}(host {}x{}) depth={} dc={:#x} blend={:#x} mask={:#x} prim={} idx={} vp={}x{}+{}+{} scissor=({},{})-({},{}) jitter={}",
+                    drawsThisFrame, vs, ps, colorInfo & 0xFFF, (colorInfo >> 16) & 0xF,
+                    color ? color->guestWidth : 0, color ? color->guestHeight : 0, color ? color->width : 0, color ? color->height : 0,
+                    depth ? fmt::format("{}x{}", depth->width, depth->height) : std::string("none"), depthControl, blend, colorMask,
+                    prim, indices, uint32_t(viewport.width), uint32_t(viewport.height), int32_t(viewport.x), int32_t(viewport.y),
+                    tl & 0x3FFF, (tl >> 16) & 0x3FFF, br & 0x3FFF, (br >> 16) & 0x3FFF, jittered ? 1 : 0);
+                const uint32_t mask = pixelShader ? pixelShader->info.textureSlotMask : 0u;
+                for (uint32_t pending = mask; pending; pending &= pending - 1) {
+                    const uint32_t slot = uint32_t(std::countr_zero(pending));
+                    const uint32_t f0 = Reg(REG_FETCH_CONSTANTS + slot * 6), f1 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 1);
+                    const uint32_t f2 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 2);
+                    const uint32_t address = (f1 >> 12) << 12, format = f1 & 0x3f;
+                    const uint32_t gw = (f2 & 0x1fff) + 1, gh = ((f2 >> 13) & 0x1fff) + 1;
+                    d.text += fmt::format(" t{}=fmt{}:{}x{}@{:#x}", slot, format, gw, gh, address);
+                    const auto* source = (f0 & 3) == 2 ? FindResolved(address, format) : nullptr;
+                    if (source && source->tex)
+                        d.text += fmt::format("[resolved host {}x{}{}]", source->tex->width, source->tex->height,
+                            source->frame == frame ? "" : " earlier_frame");
+                }
+                d.text += '\n';
+                ++d.draws;
+            }
+            void DissectResolve(bool depthCopy, uint32_t srcBase, uint32_t srcFormat, uint32_t pitch, uint32_t x, uint32_t y,
+                uint32_t width, uint32_t height, uint32_t destBase, uint32_t destFormat, uint32_t destPitch, uint32_t destHeight,
+                uint32_t copyControl)
+            {
+                auto& d = dissection;
+                if (d.text.size() > kDissectionTextLimit) return;
+                d.text += fmt::format("resolve {} after_draw {} {} src=base{:#x}/fmt{}/pitch{} rect=({},{}) {}x{} -> {:#x} fmt{} pitch{} h{} clear={:#x}\n",
+                    d.resolves, drawsThisFrame, depthCopy ? "depth" : "color", srcBase, srcFormat, pitch, x, y, width, height,
+                    destBase, destFormat, destPitch, destHeight, copyControl & 0x300);
+                ++d.resolves;
+            }
             uint64_t captureRequest = 0;
             std::string debugCaptureDir;
             std::filesystem::path debugCaptureRoot;
@@ -11121,6 +11174,9 @@ void main()
                             uint32_t(rasterViewport.width), uint32_t(rasterViewport.height));
                 }
                 taaJitter.AddTo(tTaa);
+                if (dissection.frame == frame)
+                    DissectDraw(key.vs, key.ps, ps, color, depth, colorInfo, depthControl, key.blend, key.colorMask, key.prim,
+                        info.indexCount, rasterViewport, drawJitter.applied);
                 // Range of the bound colour format, clamped in the shader epilogue.
                 {
                     const uint32_t cfmt = (colorInfo >> 16) & 0xF;
@@ -14677,6 +14733,21 @@ void main()
                 OcclusionFrameEnd();
                 if (record_timing::Enabled()) recordTiming.EndFrame(frame);
                 ++frame; drawsThisFrame = 0; drops = {};
+                if (dissection.armed) {
+                    dissection.armed = false;
+                    dissection.frame = frame;
+                    dissection.draws = dissection.resolves = 0;
+                    const auto config = settings::GetConfig();
+                    dissection.text = fmt::format("Lost Odyssey frame dissection: renderer frame {}\nplan render={}x{} output={}x{} upscaler={} consumer={} "
+                        "settings internal_resolution={} upscaler={} antialiasing={}\n"
+                        "Lines: draw <index> vs/ps hashes, render target (EDRAM base, colour format, guest and host size), depth, depth control, "
+                        "blend, colour mask, primitive, index count, viewport, guest scissor, jittered; t<slot>=fmt:<guest size>@<address> with "
+                        "[resolved host WxH] when it samples a surface this renderer resolved. resolve <n> after_draw <draw>: source and destination.\n"
+                        "Images: dissect-r<seq>-<address>-fmt<format>-<w>x<h>.png, every surface resolved in this frame (downscaled to 1024 px at most).\n",
+                        frame, activePlan.width, activePlan.height, activePlan.output.width, activePlan.output.height,
+                        uint32_t(activePlan.requestedUpscaler), uint32_t(activePlan.consumer),
+                        config.internalResolution, uint32_t(config.upscaler), config.antialiasing);
+                }
             }
             frame_generation::ResolveIdentity FgIdentity(const ResolvedSurface& rs) const
             {
@@ -15265,6 +15336,13 @@ void main()
                 uint32_t copyWidth = std::min(x1 - x0, destPitch), copyHeight = std::min(y1 - y0, destHeight);
 
                 bool depthCopy = srcSelect == 4;
+                if (dissection.frame == frame)
+                {
+                    const uint32_t sourceInfo = depthCopy ? Reg(REG_RB_DEPTH_INFO)
+                        : Reg(REG_RB_COLOR_INFO + (srcSelect < 4 ? (srcSelect == 0 ? 0 : 2 + (srcSelect - 1)) : 0));
+                    DissectResolve(depthCopy, sourceInfo & 0xFFF, depthCopy ? (sourceInfo >> 16) & 1 : (sourceInfo >> 16) & 0xF, pitch,
+                        x0, y0, copyWidth, copyHeight, destBase, destFormat, destPitch, destHeight, copyControl);
+                }
                 if (depthCopy)
                 {
                     uint32_t depthInfo = Reg(REG_RB_DEPTH_INFO);
@@ -16640,6 +16718,72 @@ void main()
         return ReadbackTexture(*g_renderer->upscaleInputCapture, pixels, width, height);
     }
 
+    void RequestFrameDissection()
+    {
+        if (g_renderer) g_renderer->dissection.armed = true;
+    }
+
+    void CompleteFrameDissection()
+    {
+        if (!g_renderer) return;
+        auto& r = *g_renderer;
+        auto& d = r.dissection;
+        if (d.frame == ~0u || r.frame <= d.frame) return;
+        const uint32_t dissected = d.frame;
+        d.frame = ~0u;
+        const auto directory = diagnostics::frame_samples::Directory();
+        if (directory.empty()) { d.text.clear(); return; }
+        std::error_code ec;
+        std::filesystem::create_directories(directory, ec);
+        std::string text = std::move(d.text);
+        d.text.clear();
+        text += fmt::format("summary: draws={} resolves={}\n", d.draws, d.resolves);
+        // Every surface this frame resolved, oldest address first.
+        using Surface = std::remove_reference_t<decltype(r.resolved.begin()->second.front())>;
+        std::vector<std::pair<uint32_t, Surface*>> surfaces;
+        for (auto& [address, list] : r.resolved)
+            for (auto& rs : list)
+                if (rs.frame == dissected && rs.tex && rs.tex->texture) surfaces.emplace_back(address, &rs);
+        std::sort(surfaces.begin(), surfaces.end(), [](const auto& a, const auto& b) {
+            return a.second->writeOrdinal < b.second->writeOrdinal;
+        });
+        uint32_t written = 0;
+        std::vector<uint32_t> pixels;
+        for (const auto& [address, rs] : surfaces) {
+            if (written >= 64) break;
+            uint32_t width = 0, height = 0;
+            if (!ReadbackTexture(*rs->tex, pixels, width, height) || !width || !height) {
+                text += fmt::format("image {:#x} fmt{} unavailable (format {})\n", address, rs->destFormat, uint32_t(rs->tex->format));
+                continue;
+            }
+            // Downscale by whole steps to 1024 px at most (box filter).
+            uint32_t step = 1;
+            while (width / step > 1024 || height / step > 1024) ++step;
+            const uint32_t ow = width / step, oh = height / step;
+            std::vector<uint32_t> out(size_t(ow) * oh);
+            for (uint32_t y = 0; y < oh; ++y)
+                for (uint32_t x = 0; x < ow; ++x) {
+                    uint32_t sum[4] = {};
+                    for (uint32_t sy = 0; sy < step; ++sy)
+                        for (uint32_t sx = 0; sx < step; ++sx) {
+                            const uint32_t p = pixels[size_t(y * step + sy) * width + x * step + sx];
+                            for (uint32_t c = 0; c < 4; ++c) sum[c] += (p >> (c * 8)) & 0xFF;
+                        }
+                    const uint32_t n = step * step;
+                    out[size_t(y) * ow + x] = (sum[0] / n) | ((sum[1] / n) << 8) | ((sum[2] / n) << 16) | 0xFF000000u;
+                }
+            const auto name = fmt::format("dissect-r{:02}-{:08x}-fmt{}-{}x{}.png", written, address, rs->destFormat, width, height);
+            if (diagnostics::frame_samples::WriteFile(directory / name, diagnostics::frame_samples::EncodePng(out, ow, oh))) {
+                text += fmt::format("image {} write_ordinal={} written=({},{} {}x{}) guest={}x{}\n", name, rs->writeOrdinal,
+                    rs->writeX, rs->writeY, rs->writeWidth, rs->writeHeight, rs->tex->guestWidth, rs->tex->guestHeight);
+                ++written;
+            }
+        }
+        std::ofstream out(directory / fmt::format("dissect-f{}.txt", dissected), std::ios::trunc);
+        out << text;
+        LOG_INFO("renderer: frame dissection f{} written: {} draws, {} resolves, {} images", dissected, d.draws, d.resolves, written);
+    }
+
     void DumpRenderTargets(const char* prefix)
     {
         if (!g_renderer)
@@ -16830,6 +16974,8 @@ void main()
     void SetFrameGenerationInputCaptureEnabled(bool) {}
     bool ReadbackResolvedSurface(uint32_t, std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }
     void RequestUpscalerInputCapture() {}
+    void RequestFrameDissection() {}
+    void CompleteFrameDissection() {}
     bool ReadbackUpscalerInput(std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }
     std::vector<uint32_t> GetResolvedAddresses() { return {}; }
     void DumpRenderTargets(const char*) {}

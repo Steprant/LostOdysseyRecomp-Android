@@ -1117,6 +1117,8 @@ namespace gpu
                     frontOk, std::move(planText));
                 if (frameSample)
                 {
+                    // Steprant 2.0.1: dissect the next frame (sample 2).
+                    if (diagnostics::frame_samples::IsFirstSample()) renderer::RequestFrameDissection();
                     captureTicket.active = true;
                     captureTicket.swap = swaps;
                     captureTicket.frontbuffer = frontbuffer & 0x1FFFFFFF;
@@ -1140,6 +1142,7 @@ namespace gpu
                 }
                 if (diagnostics::frame_samples::pending.load(std::memory_order_acquire))
                     renderer::RequestUpscalerInputCapture();
+                renderer::CompleteFrameDissection();
                 if (profiled)
                 {
                     // WP-A.5: this swap's thread CPU time, and the flush as recording.

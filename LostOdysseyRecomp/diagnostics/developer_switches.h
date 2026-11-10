@@ -28,6 +28,15 @@ enum class Switch : uint32_t
     VoicePrefetch,        // WP3.8: cutscene voice streams read ahead on their own thread (on)
     Sgsr2Reactive,        // WP5 G6 / WP7.2.5: SGSR2 does not keep history no current neighbour explains (on)
     TurnipMode,           // Turnip render mode: 0 auto, 1 sysmem, 2 gmem
+    // Steprant 2.0.1 A/B switches for the reflection, flicker and stutter
+    // reports of 10/11 (each on by default; off restores the 2.0 path or the
+    // one before the package).
+    FrameGraph,           // SR4 G-2: commands kept and replayed, dead stores, exact render areas (on)
+    DeferredCopies,       // 1.4c/G-2: resolves and texture copies wait for the end of the pass (on)
+    ScissorRenderArea,    // 1.4a/G-4: render passes over the drawn area, not the whole target (on)
+    CompactTargets,       // 1.6: 8_8_8_8 and 2_10_10_10 targets in 32-bit host formats (on)
+    Sgsr2Continuation,    // 2.0.1: SGSR2 keeps scene frames whose motion is not ready (on)
+    DisplayTiming,        // 2.0.1: frames held for the same number of refreshes (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -51,6 +60,12 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"voice_prefetch", L"Read cutscene voices ahead", L"預先讀取過場語音", 0, 2, "LO_VOICE_PREFETCH"},
     {"sgsr2_reactive", L"SGSR2 reactive mask", L"SGSR2 反應遮罩", 0, 2, "LO_SGSR2_REACTIVE"},
     {"turnip_mode", L"Turnip render mode", L"Turnip 渲染模式", 0, 3, "TU_DEBUG"},
+    {"frame_graph", L"Frame graph (2.0)", L"幀圖（2.0）", 0, 2, "LO_VK_FRAME_GRAPH"},
+    {"deferred_copies", L"Copies at the end of the pass", L"於渲染通道結束時複製", 0, 2, "LO_VK_DEFER_COPY"},
+    {"scissor_render_area", L"Render area of the draws", L"依繪製範圍的渲染區域", 0, 2, "LO_VK_RENDER_AREA"},
+    {"compact_targets", L"Compact render targets", L"精簡渲染目標", 0, 2, "LO_COMPACT_RT"},
+    {"sgsr2_continuation", L"SGSR2 without motion ready", L"動態向量未就緒時保持 SGSR2", 0, 2, "LO_SGSR2_CONTINUATION"},
+    {"display_timing", L"Display timing (even frames)", L"顯示時序（均勻影格）", 0, 2, "LO_DISPLAY_TIMING"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the
@@ -67,6 +82,12 @@ inline const char* VariableValue(Switch which, uint32_t value)
     case Switch::VoicePrefetch: return value == 1 ? "0" : nullptr;
     case Switch::Sgsr2Reactive: return value == 1 ? "0" : nullptr;
     case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
+    case Switch::FrameGraph:
+    case Switch::DeferredCopies:
+    case Switch::ScissorRenderArea:
+    case Switch::CompactTargets:
+    case Switch::Sgsr2Continuation:
+    case Switch::DisplayTiming: return value == 1 ? "0" : nullptr;
     case Switch::Count: break;
     }
     return nullptr;
