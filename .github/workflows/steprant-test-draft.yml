@@ -1,8 +1,9 @@
 name: Steprant test draft
 
-# Copies a finished Android APK workflow artifact from steprant/v2.0-dev into
-# a DRAFT release v1.9-steprant.<YYYYMMDD>-<short_name> for testing. It never publishes the
-# release and never marks it latest; the public 1.8 release is untouched.
+# Copies a finished Android APK workflow artifact from steprant/v2.0-dev (1.9
+# test builds) or steprant/v2.0 (2.0) into a DRAFT release
+# v<version>-steprant.<YYYYMMDD>-<short_name>. It never publishes the release
+# and never marks it latest; the public 1.8 release is untouched.
 # Run by hand, or by pushing .github/steprant-test-draft.json
 # ({"run_id": "...", "short_name": "..."}) to steprant/v2.0-dev.
 on:
@@ -61,9 +62,12 @@ jobs:
             sleep 60
           done
           branch=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_branch)
-          if [[ "$branch" != steprant/v2.0-dev ]]; then
-            echo "::error::run $RUN_ID built $branch, not steprant/v2.0-dev"; exit 1
-          fi
+          case "$branch" in
+            steprant/v2.0-dev) echo "VERSION=1.9" >> "$GITHUB_ENV" ;;
+            steprant/v2.0) echo "VERSION=2.0" >> "$GITHUB_ENV" ;;
+            *) echo "::error::run $RUN_ID built $branch, not steprant/v2.0-dev or steprant/v2.0"; exit 1 ;;
+          esac
+          echo "BRANCH=$branch" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           name: LostOdysseyRecomp-android-arm64
@@ -77,14 +81,14 @@ jobs:
           set -euo pipefail
           day=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .created_at | cut -c1-10 | tr -d -)
           commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .head_sha)
-          src=out/apk/LostOdyssey-Steprant-v1.9.apk
-          apk="out/apk/LostOdyssey-Steprant-v1.9-$SHORT_NAME-$day.apk"
+          src="out/apk/LostOdyssey-Steprant-v$VERSION.apk"
+          apk="out/apk/LostOdyssey-Steprant-v$VERSION-$SHORT_NAME-$day.apk"
           mv "$src" "$apk"
           sum=$(sha256sum "$apk" | cut -d' ' -f1)
           echo "SHA-256 $sum"
           notes=out/notes.md
           {
-            echo "Steprant Android 1.9 test build (draft, not published). Branch steprant/v2.0-dev."
+            echo "Steprant Android $VERSION build (draft, not published). Branch $BRANCH."
             echo
             printf -- '- `%s`: SHA-256 `%s`, commit `%s`, APK run %s\n' "$(basename "$apk")" "$sum" "$commit" "$RUN_ID"
           } > "$notes"
@@ -92,11 +96,11 @@ jobs:
           # finishes. GITHUB_TOKEN cannot create a release for such a SHA
           # when workflow files differ. android-apk.yml preserves a ref at
           # the start of each build, with no extra token or repository-wide grant.
-          pin="steprant/build-1.9-$RUN_ID"
+          pin="steprant/build-$VERSION-$RUN_ID"
           actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha)
           [[ "$actual" == "$commit" ]] || { echo "::error::Build ref does not match APK source"; exit 1; }
-          tag="v1.9-steprant.$day-$SHORT_NAME"
-          title="Lost Odyssey Steprant Android 1.9 test ($day, $SHORT_NAME)"
+          tag="v$VERSION-steprant.$day-$SHORT_NAME"
+          title="Lost Odyssey Steprant Android $VERSION ($day, $SHORT_NAME, draft)"
           id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             -q ".[] | select(.tag_name == \"$tag\" or .name == \"$title\") | .id" | head -n 1)
           if [[ -n "$id" ]]; then
