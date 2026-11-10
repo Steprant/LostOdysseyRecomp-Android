@@ -685,3 +685,30 @@ namespace apu
         }
     }
 }
+
+// Steprant 2.0.1: the game's audio worker thread (its entry is the guest
+// function at 0x82CC4D98). The guest audio callback hands it work, sets its
+// request event and waits, without a timeout, until the worker sets its
+// completion event. The callback runs on the host audio thread at Android's
+// audio priority; the worker was an ordinary game thread, so on a busy frame
+// it ran late and the callback waited with it: 14 "audio callback stall"
+// lines of 50-322 ms in the 10/11 22:23 session, all sampled at that wait.
+// The worker now runs at the audio priority too. LO_AUDIO_WORKER_PRIORITY=0
+// turns it off.
+extern "C" PPC_FUNC(__imp__sub_82CC4D98);
+PPC_FUNC(sub_82CC4D98)
+{
+#if LO_PLATFORM_ANDROID
+    static const bool raise = [] {
+        const char* value = std::getenv("LO_AUDIO_WORKER_PRIORITY");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
+    if (raise) {
+        os::scheduling::RaiseAudioThreadPriority();
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed))
+            LOG_INFO("audio: game audio worker thread at audio priority");
+    }
+#endif
+    __imp__sub_82CC4D98(ctx, base);
+}
