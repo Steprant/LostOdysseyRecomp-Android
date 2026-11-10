@@ -46,6 +46,21 @@ add_test(NAME kill_free_modules COMMAND LoKillFreeModuleTest)
 set_tests_properties(kill_free_modules PROPERTIES TIMEOUT 120 ENVIRONMENT
     "LO_SHADER_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/shader-cache"
     ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${DEPS}/tools/XenosRecomp/thirdparty/dxc-bin/lib/x64")
+# SR4 G-2 1c: random frames with draws (blending, sampling, depth), frame
+# graph with poisoned discards against direct recording.
+add_executable(LoFrameGraphDrawTest ../frame_graph_draw_test.cpp ../motion_replay/platform_stub.cpp
+    "${ROOT}/LostOdysseyRecomp/gpu/shader/dxc_compiler.cpp")
+target_include_directories(LoFrameGraphDrawTest BEFORE PRIVATE ../presentation/stubs
+    "${ROOT}/LostOdysseyRecomp"
+    "${DEPS}/tools/XenonRecomp/thirdparty/fmt/include"
+    "${DEPS}/tools/XenonRecomp/thirdparty/xxHash"
+    "${DEPS}/tools/XenosRecomp/thirdparty/dxc-bin/inc")
+target_compile_definitions(LoFrameGraphDrawTest PRIVATE LO_GPU_PLUME NOMINMAX FMT_HEADER_ONLY XXH_INLINE_ALL)
+target_link_libraries(LoFrameGraphDrawTest PRIVATE plume X11::X11 Threads::Threads ${CMAKE_DL_LIBS})
+add_test(NAME frame_graph_draws COMMAND LoFrameGraphDrawTest)
+set_tests_properties(frame_graph_draws PROPERTIES TIMEOUT 300 ENVIRONMENT
+    "LO_SHADER_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/shader-cache"
+    ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${DEPS}/tools/XenosRecomp/thirdparty/dxc-bin/lib/x64")
 # Roadmap 1.1: Plume's attachment content census (RenderPassProfile::ContentFlow).
 add_executable(LoPassContentCensusTest ../pass_content_census_test.cpp)
 target_link_libraries(LoPassContentCensusTest PRIVATE plume X11::X11 Threads::Threads ${CMAKE_DL_LIBS})
