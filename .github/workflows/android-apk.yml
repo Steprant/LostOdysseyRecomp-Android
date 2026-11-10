@@ -11,6 +11,10 @@ on:
         type: choice
         options: ['off', 'generate', 'use']
         default: 'off'
+      pgo_ref:
+        description: 'Build-inputs commit with pgo/lostodyssey.profdata (empty: its default branch)'
+        type: string
+        default: ''
   push:
     branches: ['**']
     paths:
@@ -127,6 +131,20 @@ jobs:
             /default.xex
             /android/libdxcompiler.so
             /android/debug.keystore
+            /pgo/lostodyssey.profdata
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Retrieve the PGO profile
+        # SR4 C-4: the merged profile lives next to the private inputs; it
+        # moves faster than their pinned commit, so it has its own checkout.
+        if: steps.build-input.outputs.source == 'repository' && inputs.pgo == 'use'
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.LO_BUILD_INPUT_KEY }}
+          repository: ${{ vars.LO_BUILD_INPUT_REPOSITORY || 'freefrank/LostOdysseyRecomp-build-inputs' }}
+          ref: ${{ inputs.pgo_ref }}
+          path: out/build-input-pgo
+          sparse-checkout: |
             /pgo/lostodyssey.profdata
           sparse-checkout-cone-mode: false
           persist-credentials: false

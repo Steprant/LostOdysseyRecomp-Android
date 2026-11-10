@@ -116,7 +116,8 @@ case "${LO_PGO:-off}" in
     # Racy counters keep the instrumented game playable on the phone.
     generate) pgo_args+=(-DLO_PGO_MODE=generate -DLO_PGO_UPDATE=single); echo "== Instrumented build (profile generation)" ;;
     use)
-        profile="$repo/out/build-input/pgo/lostodyssey.profdata"
+        profile="$repo/out/build-input-pgo/pgo/lostodyssey.profdata"
+        [[ -f "$profile" ]] || profile="$repo/out/build-input/pgo/lostodyssey.profdata"
         if [[ ! -f "$profile" ]]; then
             echo "LO_PGO=use needs $profile from the build-inputs checkout" >&2
             exit 1
