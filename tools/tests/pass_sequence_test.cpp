@@ -13,7 +13,10 @@
 //
 // The sequences run in child processes, one per configuration of Plume's
 // switches (they are read once per process): the defaults, every deferral
-// off, texture copies immediate, and the whole framebuffer as render area.
+// off, texture copies immediate, the whole framebuffer as render area, and
+// (SR4 G-2 1b/1c) the frame graph, alone and with every attachment it stores
+// with DONT_CARE cleared to magenta after its pass: a store it wrongly thought
+// dead shows in the targets.
 // Any byte that differs from the model fails the test with the seed and the
 // first differing pixel. LO_PASS_SEQUENCE_SEEDS sets the number of seeds.
 #include <plume_render_interface.h>
@@ -168,7 +171,7 @@ int RunAll(uint32_t seeds, const char* name) {
         s.readbacks[t] = device->createBuffer(RenderBufferDesc::ReadbackBuffer(kSize * kSize * 4));
     }
     int failures = 0;
-    uint64_t deferred = 0, textureDeferred = 0, passes = 0;
+    uint64_t deferred = 0, textureDeferred = 0, passes = 0, deadStores = 0, replayed = 0;
     for (uint32_t seed = 1; seed <= seeds; ++seed) {
         Model model;
         commands->setPassProfiling(true);
@@ -183,6 +186,8 @@ int RunAll(uint32_t seeds, const char* name) {
             deferred += profile.copiesDeferred;
             textureDeferred += profile.textureCopiesDeferred;
             passes += profile.passes.size();
+            deadStores += profile.frameGraphDeadStores;
+            replayed += profile.frameGraphCommands;
         }
         for (int t = 0; t < kTargets && failures < 4; ++t) {
             const auto* data = static_cast<const uint32_t*>(s.readbacks[t]->map());
@@ -197,8 +202,14 @@ int RunAll(uint32_t seeds, const char* name) {
             s.readbacks[t]->unmap();
         }
     }
-    std::printf("[%s] %u sequences, %llu passes, %llu deferred copies (%llu texture copies), %d failures\n", name, seeds,
-        (unsigned long long)passes, (unsigned long long)deferred, (unsigned long long)textureDeferred, failures);
+    std::printf("[%s] %u sequences, %llu passes, %llu deferred copies (%llu texture copies), %llu commands replayed, %llu dead stores, %d failures\n",
+        name, seeds, (unsigned long long)passes, (unsigned long long)deferred, (unsigned long long)textureDeferred,
+        (unsigned long long)replayed, (unsigned long long)deadStores, failures);
+    const char* graph = std::getenv("LO_VK_FRAME_GRAPH");
+    if (graph && std::strcmp(graph, "1") == 0 && deadStores == 0) {
+        std::printf("FAIL [%s]: the frame graph found no dead store to test\n", name);
+        ++failures;
+    }
     return failures;
 }
 }
@@ -213,6 +224,9 @@ int main() {
         {"texture copies immediate", {{"LO_VK_DEFER_TEXTURE_COPY", "0"}}},
         {"full render area", {{"LO_VK_RENDER_AREA", "0"}}},
         {"keep DONT_CARE", {{"LO_VK_ZERO_UNDEFINED", "0"}}},
+        {"frame graph", {{"LO_VK_FRAME_GRAPH", "1"}}},
+        {"frame graph, poisoned discards", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}}},
+        {"frame graph, no deferral, poisoned", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_DEFER_COPY", "0"}}},
     };
     int failed = 0;
     for (const auto& config : configs) {

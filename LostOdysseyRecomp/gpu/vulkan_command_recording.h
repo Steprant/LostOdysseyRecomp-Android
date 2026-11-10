@@ -19,11 +19,17 @@ inline VkResult BeginCommands(plume::VulkanCommandList& list) {
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     const auto result = vkBeginCommandBuffer(list.vk, &info);
     list.recording = result == VK_SUCCESS;
-    if (list.recording) list.startPassProfile();
+    if (list.recording) {
+        list.startPassProfile();
+        // SR4 G-2: the frame graph keeps the list's commands until it ends.
+        list.beginCapture();
+    }
     return result;
 }
 inline VkResult EndCommands(plume::VulkanCommandList& list) {
     if (!list.vk || !list.recording || list.externalCommandsOpen) return VK_ERROR_UNKNOWN;
+    list.flushCapture();
+    list.capturing = false;
     list.endActiveRenderPass();
     list.finishPassProfile();
     const auto result = vkEndCommandBuffer(list.vk);
