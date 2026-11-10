@@ -1,6 +1,7 @@
 #include <stdafx.h>
 #include "audio.h"
 #include "audio_callback.h"
+#include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
 #include "audio_timing.h"
 #include "fast_forward_audio.h"
@@ -368,7 +369,9 @@ namespace apu
                                 g_lastAudioSamples.fill(0);
                             }
                             ctx.ppcContext.r3.u64 = param;
+                            diagnostics::stall_sampler::NoteAudioCallback(&ctx.ppcContext); // SR4 M-6
                             g_memory.FindFunction(callback)(ctx.ppcContext, g_memory.base);
+                            diagnostics::stall_sampler::NoteAudioCallback(nullptr);
                         });
                     }
                 };

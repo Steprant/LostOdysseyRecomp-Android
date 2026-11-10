@@ -13,6 +13,7 @@
 #include "render_timing.h"
 #include "shader_identity.h"
 #include <diagnostics/frame_samples.h>
+#include <diagnostics/stall_sampler.h>
 #include "cmdproc_profile.h"
 #include <debug/frame_timing.h>
 #include <cpu/guest_thread.h>
@@ -1117,6 +1118,17 @@ namespace gpu
                 const uint64_t start = profiled ? pass_profile::ThreadCpuNs() : 0;
                 renderer::PreparePresent(frontbuffer);
                 renderer::Flush();
+                // SR4 M-3: the scene before the upscaler of this frame (copied
+                // on the GPU during the frame), then ask for the next one.
+                if (frameSample)
+                {
+                    std::vector<uint32_t> scene;
+                    uint32_t sceneWidth = 0, sceneHeight = 0;
+                    const bool sceneOk = renderer::ReadbackUpscalerInput(scene, sceneWidth, sceneHeight);
+                    diagnostics::frame_samples::SetScene(sceneOk, std::move(scene), sceneWidth, sceneHeight);
+                }
+                if (diagnostics::frame_samples::pending.load(std::memory_order_acquire))
+                    renderer::RequestUpscalerInputCapture();
                 if (profiled)
                 {
                     // WP-A.5: this swap's thread CPU time, and the flush as recording.
@@ -1162,6 +1174,7 @@ namespace gpu
                 if (dumpAt && swaps == dumpAt)
                     ::DumpGuestThreadStates();
             }
+            diagnostics::stall_sampler::NoteSwap(); // SR4 M-6
             g_workerStage.store("frontbuffer present", std::memory_order_relaxed);
             const auto presentsBefore = video::CompletedPresentCount();
             video::PresentFrontbuffer(frontbuffer, width, height, ReadRegister(0x231B),

@@ -109,6 +109,11 @@ struct State {
     std::vector<uint32_t> frontbuffer;
     uint32_t frontWidth = 0, frontHeight = 0, frontAddress = 0;
     bool frontAvailable = false;
+    // SR4 M-3: the upscaler's color input of the same frame (scene before
+    // SGSR2), when an upscaler ran; 10-bit and float inputs are stored as 8 bits.
+    std::vector<uint32_t> scene;
+    uint32_t sceneWidth = 0, sceneHeight = 0;
+    bool sceneAvailable = false;
     uint32_t activeSwap = 0;
     std::string planText;            // render/output size and upscaler at the sample
 };
@@ -182,6 +187,16 @@ inline bool Begin(uint32_t swap, uint32_t frontbuffer, std::vector<uint32_t>&& f
     return true;
 }
 
+// Between Begin and Complete: the scene before the upscaler for this swap.
+inline void SetScene(bool available, std::vector<uint32_t>&& pixels, uint32_t width, uint32_t height)
+{
+    auto& s = Get();
+    std::lock_guard lock(s.mutex);
+    s.sceneAvailable = available && width && height && pixels.size() == size_t(width) * height;
+    s.scene = std::move(pixels);
+    s.sceneWidth = width; s.sceneHeight = height;
+}
+
 // presented: the swapchain image of the same swap (present_capture pixels).
 inline void Complete(bool presentedAvailable, const std::vector<uint32_t>& presented,
     uint32_t presentedWidth, uint32_t presentedHeight, std::string_view reason)
@@ -210,6 +225,14 @@ inline void Complete(bool presentedAvailable, const std::vector<uint32_t>& prese
         entry += ",\"frontbuffer\":{\"file\":\"" + std::string(stem) + "-frontbuffer.png\",\"width\":" + std::to_string(s.frontWidth) +
             ",\"height\":" + std::to_string(s.frontHeight) + ",\"fnv1a64\":\"" + HashText(Hash(s.frontbuffer)) + "\"}";
     } else entry += ",\"frontbuffer\":{\"unavailable\":\"readback\"}";
+    if (s.sceneAvailable) {
+        ok &= WriteFile(s.directory / (std::string(stem) + "-scene.png"), EncodePng(s.scene, s.sceneWidth, s.sceneHeight));
+        entry += ",\"scene\":{\"file\":\"" + std::string(stem) + "-scene.png\",\"width\":" + std::to_string(s.sceneWidth) +
+            ",\"height\":" + std::to_string(s.sceneHeight) + ",\"fnv1a64\":\"" + HashText(Hash(s.scene)) + "\"}";
+    } else entry += ",\"scene\":{\"unavailable\":\"no upscaler input this frame\"}";
+    s.scene.clear();
+    s.scene.shrink_to_fit();
+    s.sceneAvailable = false;
     entry += "}";
     s.json += (s.json.empty() ? "" : ",\n  ") + entry;
     s.frontbuffer.clear();

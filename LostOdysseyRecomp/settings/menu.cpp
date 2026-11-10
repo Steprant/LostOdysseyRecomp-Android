@@ -35,6 +35,7 @@
 #include <SDL3/SDL_system.h>
 #include <diagnostics/android_tester.h>
 #include <diagnostics/frame_samples.h>
+#include <gpu/draw_class_profile.h>
 #if LO_STEPRANT_DEVELOPER_PAGE
 #include <diagnostics/developer_switches.h>
 #endif
@@ -160,12 +161,14 @@ std::atomic<bool> testerOpen{false};
 int testerFocus = 0;
 // 1.9.x test builds add the developer page below Export: frame samples (WP0.1)
 // and the A/B switches (diagnostics/developer_switches.h), applied after restarting.
+// SR4 M-2/M-3: frame capture and per-draw timestamps are diagnostic actions
+// of every build (no setting); the developer switches only in test builds.
 #if LO_STEPRANT_DEVELOPER_PAGE
 enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterCaptureFrames, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
+    TesterCaptureFrames, TesterDrawTimestamps, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
 #else
 enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterRowCount };
+    TesterCaptureFrames, TesterDrawTimestamps, TesterRowCount };
 #endif
 constexpr uint32_t TesterPeriodsMs[]{250, 500, 1000, 2000};
 #endif
@@ -1384,12 +1387,14 @@ void Publish(uint8_t *base, uint32_t config)
         const std::wstring duration = std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") + std::to_wstring(seconds % 60);
         next.rows.push_back({Tr(L"Recording", L"記錄"), (recording ? Tr(L"Stop", L"停止") : Tr(L"Start", L"開始")) + std::wstring(L"  ") + duration, d.enabled.load(), {}, 0});
         addAction(L"Export diagnostics", L"匯出診斷", Tr(L"Export", L"匯出"));
-#if LO_STEPRANT_DEVELOPER_PAGE
         {
             const auto sampleStatus = ::diagnostics::frame_samples::Status();
-            next.rows.push_back({L"Capture 4 frames (developer)", sampleStatus.empty() ? std::wstring(L"Capture") : sampleStatus,
-                true, {}, 0});
+            next.rows.push_back({Tr(L"Capture 4 frames", L"擷取 4 個影格"),
+                sampleStatus.empty() ? Tr(L"Capture", L"擷取") : sampleStatus, true, {}, 0});
         }
+        addChoices(L"Per-draw timestamps (profile)", L"逐次繪製時間戳（分析）", onOff(),
+            gpu::draw_profile::Timestamps() ? 0 : 1);
+#if LO_STEPRANT_DEVELOPER_PAGE
         for (size_t i = 0; i < ::diagnostics::developer::Count; ++i) {
             const auto& definition = ::diagnostics::developer::Definitions[i];
             const auto value = ::diagnostics::developer::Get(::diagnostics::developer::Switch(i));
@@ -2622,9 +2627,9 @@ void PointerClick(float x, float y, bool reverse)
     if (listPage) {
 #if LO_PLATFORM_ANDROID
 #if LO_STEPRANT_DEVELOPER_PAGE
-        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit >= size_t(TesterDevFirst))) {
+        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit == size_t(TesterDrawTimestamps) || hit >= size_t(TesterDevFirst))) {
 #else
-        if (testerOpen.load() && hit <= size_t(TesterThermal)) {
+        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit == size_t(TesterDrawTimestamps))) {
 #endif
             if (x >= 386) mouseAction = reverse ? 4 : 8;
         }
@@ -3494,12 +3499,20 @@ PPC_FUNC(sub_822F19B0)
             } else if (testerFocus == TesterExport && (input & 0x1000)) {
                 if (!SDL_SendAndroidMessage(0x8004, 0)) status = Tr(L"Could not open export.", L"無法開啟匯出。");
             }
-#if LO_STEPRANT_DEVELOPER_PAGE
             else if (testerFocus == TesterCaptureFrames && (input & 0x1000)) {
                 status = ::diagnostics::frame_samples::Request(4)
-                    ? std::wstring(L"Capturing the next 4 presented frames; they go in the Tester export (frame-samples/).")
-                    : std::wstring(L"A capture is already running.");
-            } else if (testerFocus >= TesterDevFirst && testerFocus < TesterRowCount) {
+                    ? Tr(L"Capturing the next 4 frames (scene before the upscaler, frontbuffer, presented image); "
+                         L"they go in the Tester export (frame-samples/).", L"正在擷取接下來的 4 個影格。")
+                    : Tr(L"A capture is already running.", L"擷取進行中。");
+            } else if (testerFocus == TesterDrawTimestamps) {
+                const bool on = !gpu::draw_profile::Timestamps();
+                gpu::draw_profile::SetTimestamps(on);
+                LOG_INFO("tester: per-draw timestamps {} for this session", on ? "on" : "off");
+                status = on ? Tr(L"Per-draw timestamps on (indicative per-class times).", L"逐次繪製時間戳：開。")
+                            : Tr(L"Per-draw timestamps off: the profile measures the real cost per draw.", L"逐次繪製時間戳：關。");
+            }
+#if LO_STEPRANT_DEVELOPER_PAGE
+            else if (testerFocus >= TesterDevFirst && testerFocus < TesterRowCount) {
                 const auto which = ::diagnostics::developer::Switch(testerFocus - TesterDevFirst);
                 const auto choices = ::diagnostics::developer::Definitions[size_t(which)].choices;
                 const int delta = (input & 4) ? -1 : 1;

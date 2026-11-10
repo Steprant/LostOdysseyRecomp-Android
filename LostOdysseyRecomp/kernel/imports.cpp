@@ -28,6 +28,10 @@
 #include <os/user_paths.h>
 #include <host_ui/host_ui.h>
 #include <achievements/achievements.h>
+#include <diagnostics/stall_sampler.h>
+#include <thread>
+#include <unordered_map>
+#include <algorithm>
 #include <atomic>
 #include <csetjmp>
 
@@ -133,6 +137,168 @@ void DumpGuestThreadStates()
         const uint64_t elapsed = !running && now >= since ? now - since : 0;
         LOG_WARNING("  tid={:#x} pcr={:#x} {} obj={:#x} lr={:#x} liveLr={:#x} for {} ms bt:{}", st->threadId, st->pcr, st->what, st->object, st->lr, liveLr, elapsed, bt);
     }
+}
+
+// ---------------------------------------------------------------------------
+// SR4 M-6: stall sampler (see diagnostics/stall_sampler.h).
+// ---------------------------------------------------------------------------
+namespace diagnostics::stall_sampler
+{
+namespace
+{
+std::atomic<uint64_t> g_lastSwapNs{0};
+std::atomic<PPCContext*> g_audioCtx{nullptr};
+std::atomic<uint64_t> g_audioStartNs{0};
+std::once_flag g_startOnce;
+
+uint64_t NowNs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// One place: the live LR and the first two return addresses of the back chain.
+struct Place { uint32_t lr = 0, caller = 0, caller2 = 0; };
+struct PlaceHash { size_t operator()(uint64_t key) const { return std::hash<uint64_t>{}(key); } };
+
+Place Read(uint32_t liveLr, uint32_t r1)
+{
+    Place place{liveLr};
+    uint32_t frame = r1;
+    for (int i = 0; i < 2 && frame >= 0x1000 && frame < 0x7C000000; ++i) {
+        const uint32_t caller = *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(frame));
+        if (caller <= frame || caller >= 0x7C000000) break;
+        const uint32_t ret = *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(caller - 8));
+        if (ret < 0x82000000 || ret >= 0x83400000) break;
+        (i == 0 ? place.caller : place.caller2) = ret;
+        frame = caller;
+    }
+    return place;
+}
+
+struct Tally
+{
+    std::unordered_map<uint64_t, uint32_t> counts; // (lr << 32 | caller) -> samples
+    std::unordered_map<uint64_t, uint32_t> second; // same key -> caller2
+    std::unordered_map<uint64_t, uint32_t> thread; // same key -> guest thread id
+    uint32_t samples = 0;
+    void Add(uint32_t threadId, const Place& place)
+    {
+        const uint64_t key = (uint64_t(place.lr) << 32) | place.caller;
+        ++counts[key];
+        second[key] = place.caller2;
+        thread[key] = threadId;
+    }
+    void Clear() { counts.clear(); second.clear(); thread.clear(); samples = 0; }
+    std::string Top(size_t limit) const
+    {
+        std::vector<std::pair<uint64_t, uint32_t>> sorted(counts.begin(), counts.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::string out;
+        for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
+            const uint64_t key = sorted[i].first;
+            out += fmt::format(" tid={:#x} {:#x}<-{:#x}<-{:#x} x{};", thread.at(key), uint32_t(key >> 32), uint32_t(key),
+                second.at(key), sorted[i].second);
+        }
+        return out;
+    }
+};
+
+void SampleRunning(Tally& tally, PPCContext* only)
+{
+    bool matched = false;
+    {
+        std::lock_guard lock(g_waitStatesMutex);
+        for (auto* st : g_waitStates) {
+            if (!st->ctx || (only && st->ctx != only)) continue;
+            const bool running = st->what[0] == 'r';
+            const uint32_t liveLr = uint32_t(st->ctx->lr);
+            if (!only && (!running || liveLr == 0x82BECACC || liveLr == 0)) continue; // idle pool / unknown
+            tally.Add(st->threadId, Read(liveLr, running ? st->ctx->r1.u32 : st->r1));
+            matched = true;
+        }
+    }
+    // The audio driver thread may never have waited (no record): read it directly.
+    if (only && !matched)
+        tally.Add(0, Read(uint32_t(only->lr), only->r1.u32));
+    ++tally.samples;
+}
+
+void Run()
+{
+    Tally frame, audio;
+    uint64_t frameStallStart = 0, frameEpoch = 0, audioStart = 0;
+    uint32_t frameLines = 0, audioLines = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const uint64_t now = NowNs();
+        const uint64_t lastSwap = g_lastSwapNs.load(std::memory_order_relaxed);
+        const bool paused = host_ui::IsGamePaused();
+        // Frame stalls: no swap for 60 ms.
+        if (lastSwap && !paused && now > lastSwap + 60'000'000ull) {
+            if (!frameStallStart) { frameStallStart = lastSwap; frameEpoch = host_ui::SuspendEpoch(); frame.Clear(); }
+            SampleRunning(frame, nullptr);
+        } else if (frameStallStart && lastSwap > frameStallStart) {
+            const uint64_t stallMs = (lastSwap - frameStallStart) / 1'000'000ull;
+            if (stallMs >= 100 && frame.samples && frameEpoch == host_ui::SuspendEpoch() && frameLines < 64) {
+                ++frameLines;
+                LOG_INFO("stall samples: kind=frame ms={} samples={} top:{}", stallMs, frame.samples, frame.Top(6));
+            }
+            frameStallStart = 0;
+            frame.Clear();
+        } else if (paused) {
+            frameStallStart = 0;
+            frame.Clear();
+        }
+        // Audio callbacks running for more than 30 ms.
+        PPCContext* audioCtx = g_audioCtx.load(std::memory_order_acquire);
+        const uint64_t started = g_audioStartNs.load(std::memory_order_acquire);
+        if (audioCtx && started && now > started + 30'000'000ull) {
+            if (audioStart != started) { audioStart = started; audio.Clear(); }
+            SampleRunning(audio, audioCtx);
+        } else if (audioStart && (started != audioStart || !audioCtx)) {
+            // The sampled callback ended; its length is up to now.
+            const uint64_t lengthMs = (now - audioStart) / 1'000'000ull;
+            if (lengthMs >= 50 && audio.samples && !paused && audioLines < 32) {
+                ++audioLines;
+                LOG_INFO("stall samples: kind=audio_callback ms~{} samples={} top:{}", lengthMs, audio.samples, audio.Top(4));
+            }
+            audioStart = 0;
+            audio.Clear();
+        }
+    }
+}
+
+void StartOnce()
+{
+    std::call_once(g_startOnce, [] {
+        const char* value = std::getenv("LO_STALL_SAMPLER");
+        if (value && value[0] == '0') return;
+        std::thread([] {
+#ifdef __ANDROID__
+            pthread_setname_np(pthread_self(), "Stall sampler");
+#endif
+            Run();
+        }).detach();
+    });
+}
+}
+
+void NoteSwap()
+{
+    g_lastSwapNs.store(NowNs(), std::memory_order_relaxed);
+    StartOnce();
+}
+
+void NoteAudioCallback(PPCContext* ctx)
+{
+    if (ctx) {
+        g_audioCtx.store(ctx, std::memory_order_release);
+        g_audioStartNs.store(NowNs(), std::memory_order_release);
+    } else {
+        g_audioStartNs.store(0, std::memory_order_release);
+    }
+}
 }
 
 // ---------------------------------------------------------------------------

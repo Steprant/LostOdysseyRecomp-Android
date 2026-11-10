@@ -135,6 +135,10 @@ namespace gpu::renderer
     bool SceneAAApplied(uint32_t physicalAddress);
     // Reads such a surface back as R8G8B8A8 pixels (screenshots, debugging).
     bool ReadbackResolvedSurface(uint32_t physicalAddress, std::vector<uint32_t>& pixels, uint32_t& width, uint32_t& height);
+    // SR4 M-3: copy the upscaler's color input (the scene before SGSR2) of the
+    // next frame that runs the upscaler; read it back after that frame's flush.
+    void RequestUpscalerInputCapture();
+    bool ReadbackUpscalerInput(std::vector<uint32_t>& pixels, uint32_t& width, uint32_t& height);
     // Physical addresses of every surface currently held (debugging dumps).
     std::vector<uint32_t> GetResolvedAddresses();
     // Writes every colour render target as <prefix>_rt_<base>_<fmt>_<w>x<h>.ppm (debugging).

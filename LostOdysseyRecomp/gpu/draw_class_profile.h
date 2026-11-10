@@ -19,6 +19,7 @@
 // tiled GPU schedules that frame (Turnip may render it in sysmem), and
 // overlapping draws are charged where they retire. The numbers rank classes
 // and shaders; they are not exact per-draw costs.
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -31,13 +32,18 @@
 namespace gpu::draw_profile
 {
 // LO_DRAW_TIMESTAMPS=0: sample without per-draw timestamps (WP0.4).
+// SR4 M-2: the Tester page can turn the per-draw timestamps off for the
+// session (-1: the LO_DRAW_TIMESTAMPS default, 0 off, 1 on).
+inline std::atomic<int> g_timestampsOverride{-1};
+inline void SetTimestamps(bool on) { g_timestampsOverride.store(on ? 1 : 0, std::memory_order_relaxed); }
 inline bool Timestamps()
 {
     static const bool enabled = [] {
         const char* value = std::getenv("LO_DRAW_TIMESTAMPS");
         return !(value && value[0] == '0' && value[1] == 0);
     }();
-    return enabled;
+    const int forced = g_timestampsOverride.load(std::memory_order_relaxed);
+    return forced < 0 ? enabled : forced != 0;
 }
 
 enum class DrawClass : uint8_t

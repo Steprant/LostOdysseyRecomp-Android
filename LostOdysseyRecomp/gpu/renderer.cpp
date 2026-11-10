@@ -1052,6 +1052,11 @@ namespace gpu::renderer
                 ~LibraryPrecompile() { stop = true; if (thread.joinable()) thread.join(); }
             } libraryPrecompile;
             std::unordered_map<RenderTargetKey, std::unique_ptr<HostTexture>, RenderTargetKeyHash> renderTargets;
+            // SR4 M-3: the upscaler's color input of one frame, copied on the GPU
+            // when a frame sample asks for it and read back after the swap.
+            std::atomic<bool> upscaleInputCaptureRequested{false};
+            std::unique_ptr<HostTexture> upscaleInputCapture;
+            bool upscaleInputCaptured = false;
             // The targets of the previous internal size, kept across a resize so
             // that the SGSR2 menu switch (quality size <-> output size) and back
             // reuses their allocations instead of making 20-40 new ones on the
@@ -3963,6 +3968,27 @@ namespace gpu::renderer
                 }
                 TraceFsrAlphaBridge(std::move(event));
             }
+            void CaptureUpscalerInput(HostTexture* color)
+            {
+                if (!color || !color->texture || !upscaleInputCaptureRequested.exchange(false, std::memory_order_acq_rel))
+                    return;
+                if (!upscaleInputCapture || upscaleInputCapture->width != color->width ||
+                    upscaleInputCapture->height != color->height || upscaleInputCapture->format != color->format) {
+                    auto capture = std::make_unique<HostTexture>();
+                    capture->width = capture->guestWidth = color->width;
+                    capture->height = capture->guestHeight = color->height;
+                    capture->format = color->format;
+                    capture->texture = device->createTexture(RenderTextureDesc::Texture2D(color->width, color->height, 1,
+                        color->format, RenderTextureFlag::NONE));
+                    if (!capture->texture) return;
+                    upscaleInputCapture = std::move(capture);
+                }
+                Transition(*color, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
+                Transition(*upscaleInputCapture, RenderTextureLayout::COPY_DEST, RenderBarrierStage::COPY);
+                commandList->copyTexture(upscaleInputCapture->texture.get(), color->texture.get());
+                upscaleInputCaptured = true;
+            }
+
             template<class SrController>
             bool RecordSceneCopyDlssUsing(SrController& controller, HostTexture*& color, [[maybe_unused]] HostTexture*& rasterTarget)
             {
@@ -3970,6 +3996,7 @@ namespace gpu::renderer
                 if (!promotion.activeMapping || !Gpu().srIsolated || !Gpu().srContinuation) return false;
                 if (activePlan.requestedUpscaler == upscaling::Upscaler::Fsr)
                     CaptureFsrAlphaAtSceneCopy();
+                CaptureUpscalerInput(color);
                 dlss::SrConfig config{};
                 config.renderExtent = {promotion.inputs.color.width, promotion.inputs.color.height};
                 config.outputExtent = {activePlan.output.width, activePlan.output.height};
@@ -16299,6 +16326,7 @@ void main()
         switch (tex.format)
         {
         case RenderFormat::R8G8B8A8_UNORM: bpp = 4; break;
+        case RenderFormat::R10G10B10A2_UNORM: bpp = 4; break;
         case RenderFormat::R16G16B16A16_FLOAT: bpp = 8; break;
         case RenderFormat::D32_FLOAT_S8_UINT: bpp = 4; copyFormat = RenderFormat::R32_FLOAT; break; // depth plane only
         case RenderFormat::R32_FLOAT: bpp = 4; break;
@@ -16328,6 +16356,13 @@ void main()
                     uint32_t g = uint32_t(std::clamp(d, 0.0f, 1.0f) * 255.0f + 0.5f);
                     pixels[size_t(y) * width + x] = g | (g << 8) | (g << 16) | 0xFF000000u;
                 }
+                else if (tex.format == RenderFormat::R10G10B10A2_UNORM)
+                {
+                    // 10-bit channels to 8 bits (top bits), 2-bit alpha to 8 bits.
+                    uint32_t v; memcpy(&v, row + size_t(x) * 4, 4);
+                    const uint32_t r = (v >> 2) & 0xFF, g = (v >> 12) & 0xFF, b = (v >> 22) & 0xFF, a = (v >> 30) * 85;
+                    pixels[size_t(y) * width + x] = r | (g << 8) | (b << 16) | (a << 24);
+                }
                 else if (bpp == 4)
                     memcpy(&pixels[size_t(y) * width + x], row + size_t(x) * 4, 4);
                 else
@@ -16354,6 +16389,23 @@ void main()
         if (!rs)
             return false;
         return ReadbackTexture(*rs->tex, pixels, width, height);
+    }
+
+    void RequestUpscalerInputCapture()
+    {
+        if (g_renderer) {
+            g_renderer->upscaleInputCaptured = false;
+            g_renderer->upscaleInputCaptureRequested.store(true, std::memory_order_release);
+        }
+    }
+
+    bool ReadbackUpscalerInput(std::vector<uint32_t>& pixels, uint32_t& width, uint32_t& height)
+    {
+        if (!g_renderer) return false;
+        g_renderer->upscaleInputCaptureRequested.store(false, std::memory_order_release);
+        if (!g_renderer->upscaleInputCaptured || !g_renderer->upscaleInputCapture) return false;
+        g_renderer->upscaleInputCaptured = false;
+        return ReadbackTexture(*g_renderer->upscaleInputCapture, pixels, width, height);
     }
 
     void DumpRenderTargets(const char* prefix)
@@ -16545,6 +16597,8 @@ void main()
     void CancelFgHandoffs() {}
     void SetFrameGenerationInputCaptureEnabled(bool) {}
     bool ReadbackResolvedSurface(uint32_t, std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }
+    void RequestUpscalerInputCapture() {}
+    bool ReadbackUpscalerInput(std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }
     std::vector<uint32_t> GetResolvedAddresses() { return {}; }
     void DumpRenderTargets(const char*) {}
 #endif
