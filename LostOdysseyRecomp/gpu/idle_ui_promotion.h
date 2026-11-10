@@ -20,13 +20,18 @@ struct DrawFacts
     bool promotionBusy = false;    // a promotion is active or was already made this frame
     bool atOutputSize = false;     // the target already has the output size
     bool backgroundOnly = false;   // the draw samples only resolved surfaces, or nothing
+    // Steprant 2.0.1: a loading screen or a movie. Its picture is the
+    // background, so it is promoted from the first draw (drawn once at the
+    // output size from its own texture instead of at the render size and
+    // enlarged twice), and an earlier undo does not hold it back.
+    bool transition = false;
 };
 
 inline bool Wanted(const DrawFacts& f)
 {
     return f.enabled && f.finalTargetKnown && f.finalTarget && !f.depth && f.sgsr2Upscaling &&
-        !f.sceneThisFrame && f.idleFrames > 0 && !f.blocked && !f.promotionBusy && !f.atOutputSize &&
-        !f.backgroundOnly;
+        !f.sceneThisFrame && f.idleFrames > 0 && (f.transition || !f.blocked) && !f.promotionBusy && !f.atOutputSize &&
+        (f.transition || !f.backgroundOnly);
 }
 
 // A promotion undone in its own frame pauses promotions until SGSR2 runs
@@ -34,15 +39,21 @@ inline bool Wanted(const DrawFacts& f)
 // caused by the plan changing under it (the boot title screen switches plans
 // in its first frames) must not keep a screen without a 3D scene, like the
 // title, at the render size for good.
+// Steprant 2.0.1: the back-off lasts kPauseFrames (2 s at 30 FPS). Until
+// 2.0 it lasted until the next SGSR2 frame: a movie or a loading screen that
+// followed an undo stayed at the render size to its end.
+inline constexpr uint64_t kPauseFrames = 60;
+
 struct Pause
 {
     bool active = false;
     uint64_t epoch = 0;
+    uint64_t frame = 0; // render frame of the undo
 };
 
-inline bool Paused(const Pause& pause, uint64_t currentEpoch)
+inline bool Paused(const Pause& pause, uint64_t currentEpoch, uint64_t currentFrame)
 {
-    return pause.active && pause.epoch == currentEpoch;
+    return pause.active && pause.epoch == currentEpoch && currentFrame < pause.frame + kPauseFrames;
 }
 
 inline uint32_t NextIdleFrames(uint32_t previous, bool sceneFrame)

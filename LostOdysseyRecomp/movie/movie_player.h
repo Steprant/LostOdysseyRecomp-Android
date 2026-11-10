@@ -1,5 +1,6 @@
 #pragma once
 #include "movie_decoder.h"
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -11,6 +12,11 @@
 // Threads: StartReplacement on the game thread; StopReplacement and the clock
 // calls on the guest render thread; FrameForDraw on the command processor thread.
 namespace movie {
+// Steprant 2.0.1: the native WMV is playing, on every platform. Set by the
+// guest's movie start hook, cleared after the movie's last draw; read by the
+// renderer (movie frames are drawn at the output size).
+inline std::atomic<bool> g_guestMovieActive{false};
+inline bool GuestMovieActive() { return g_guestMovieActive.load(std::memory_order_relaxed); }
 // The native WMV lifecycle, whether or not a mod provides replacement video.
 // Read-only from any thread; contains no movie filename or scenario identifier.
 #if !defined(__ANDROID__) && !defined(__SWITCH__) && !defined(__NX__)
