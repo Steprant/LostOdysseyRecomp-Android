@@ -61,6 +61,7 @@
 #include <ui/achievement_overlay.h>
 #include <ui/performance_overlay.h>
 #include <kernel/memory.h>
+#include <os/pgo_profile.h>
 #include <os/main_thread.h>
 #include <os/platform.h>
 #if LO_PLATFORM_MACOS
@@ -455,6 +456,8 @@ namespace gpu::video
                 g_androidWasBackgrounded = true;
                 g_androidSurfaceReady = false;
                 host_ui::SetBackgrounded(true);
+                // SR4 C-4: Android may kill a backgrounded app without an exit.
+                os::pgo::Write("background");
             }
             else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
                 host_ui::SetBackgrounded(false);

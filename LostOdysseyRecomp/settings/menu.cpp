@@ -1,3 +1,4 @@
+#include <os/pgo_profile.h>
 #include <os/log_collection.h>
 #include <future>
 #include <condition_variable>
@@ -3500,6 +3501,8 @@ PPC_FUNC(sub_822F19B0)
                     ? Tr(L"Could not start collector.", L"無法啟動收集器。")
                     : Tr(L"Finishing the previous recording. Try again.", L"正在完成上一段記錄，請稍後再試。");
             } else if (testerFocus == TesterExport && (input & 0x1000)) {
+                // SR4 C-4: an instrumented build puts its profile so far in the ZIP.
+                os::pgo::Write("export");
                 if (!SDL_SendAndroidMessage(0x8004, 0)) status = Tr(L"Could not open export.", L"無法開啟匯出。");
             }
             else if (testerFocus == TesterCaptureFrames && (input & 0x1000)) {

@@ -161,6 +161,19 @@ final class TesterTraceFiles {
             for (int n; (n = in.read(buffer)) != -1;) zip.write(buffer, 0, n);
         }
     }
+    // SR4 C-4: the files of a directory ending in suffix, newest first, as
+    // prefix + name (the profiles of an instrumented build).
+    static void zipFiles(ZipOutputStream zip, File dir, String suffix, String prefix) throws IOException {
+        File[] found = dir == null ? null : dir.listFiles((d, name) -> name.endsWith(suffix));
+        if (found == null) return;
+        java.util.Arrays.sort(found, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        for (File f : found) {
+            if (!f.isFile()) continue;
+            zip.putNextEntry(new ZipEntry(prefix + f.getName()));
+            copy(zip, f);
+            zip.closeEntry();
+        }
+    }
     private static void zipSegments(ZipOutputStream zip, File dir, String prefix, String name, String header) throws IOException {
         zip.putNextEntry(new ZipEntry(name));
         zip.write(header.getBytes(StandardCharsets.UTF_8));

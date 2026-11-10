@@ -50,6 +50,7 @@ PREAMBLE = r'''
 #include <diagnostics/android_tester.h>
 #include <diagnostics/frame_samples.h>
 #include <gpu/draw_class_profile.h>
+#include <os/pgo_profile.h>
 int androidMessage = 0;
 bool SDL_SendAndroidMessage(int command, int) { androidMessage = command; return true; }
 #endif

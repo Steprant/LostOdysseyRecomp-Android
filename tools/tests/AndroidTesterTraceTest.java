@@ -68,6 +68,20 @@ public final class AndroidTesterTraceTest {
         check(files.get("previous-runtime.log") != null && files.get("previous-runtime.log").contains("crashed run [app-private]"),
             "previous run's log, redacted");
         check("{\"available\":true}\n".equals(files.get("exit-reasons.json")), "extra entries");
+        // SR4 C-4: the profiles of an instrumented build, and nothing else.
+        File pgo = Files.createTempDirectory("lo-pgo").toFile();
+        Files.write(new File(pgo, "lostodyssey-42.profraw").toPath(), new byte[]{1, 2, 3});
+        Files.writeString(new File(pgo, "notes.txt").toPath(), "x");
+        bytes = new ByteArrayOutputStream();
+        TesterTraceFiles.export(dir, Collections.emptyList(), zip -> TesterTraceFiles.zipFiles(zip, pgo, ".profraw", "pgo/"), bytes);
+        files.clear();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;)
+                files.put(entry.getName(), new String(zip.readAllBytes(), StandardCharsets.ISO_8859_1));
+        }
+        check("\u0001\u0002\u0003".equals(files.get("pgo/lostodyssey-42.profraw")) && !files.containsKey("pgo/notes.txt"), "profiles only");
+        TesterTraceFiles.export(dir, Collections.emptyList(), zip -> TesterTraceFiles.zipFiles(zip, new File(pgo, "missing"), ".profraw", "pgo/"),
+            new ByteArrayOutputStream());
         bytes = new ByteArrayOutputStream();
         TesterTraceFiles.export(dir, java.util.Arrays.asList(older, log), zip -> { throw new java.io.IOException("no service"); }, bytes);
         files.clear();

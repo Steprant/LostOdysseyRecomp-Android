@@ -106,8 +106,27 @@ if [[ "${LO_STEPRANT_DEVELOPER_PAGE:-0}" == 1 ]]; then
 else
     steprant_args+=(-DLO_STEPRANT_DEVELOPER_PAGE=OFF)
 fi
+# SR4 C-4: LO_PGO=generate builds the instrumented APK (its profile goes in
+# the Tester ZIP); LO_PGO=use compiles with the merged profile from the
+# private build-inputs checkout (pgo/lostodyssey.profdata, derived from the
+# game code: never in this repository).
+pgo_args=()
+case "${LO_PGO:-off}" in
+    off|"") ;;
+    # Racy counters keep the instrumented game playable on the phone.
+    generate) pgo_args+=(-DLO_PGO_MODE=generate -DLO_PGO_UPDATE=single); echo "== Instrumented build (profile generation)" ;;
+    use)
+        profile="$repo/out/build-input/pgo/lostodyssey.profdata"
+        if [[ ! -f "$profile" ]]; then
+            echo "LO_PGO=use needs $profile from the build-inputs checkout" >&2
+            exit 1
+        fi
+        pgo_args+=(-DLO_PGO_MODE=use "-DLO_PGO_FILE=$profile")
+        echo "== Profile-guided build ($(sha256sum "$profile" | cut -c1-16))" ;;
+    *) echo "LO_PGO must be off, generate or use; got '$LO_PGO'" >&2; exit 1 ;;
+esac
 bash "$repo/tools/android/build-runtime.sh" \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "${steprant_args[@]}"
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "${steprant_args[@]}" "${pgo_args[@]}"
 ccache --show-stats || true
 
 echo "== JVM tests"

@@ -5,6 +5,12 @@ name: Android APK
 # caches are shared with release builds; a green run is packaging validation.
 on:
   workflow_dispatch:
+    inputs:
+      pgo:
+        description: 'Profile-guided build (SR4 C-4): off, generate (instrumented APK) or use (profile from build-inputs)'
+        type: choice
+        options: ['off', 'generate', 'use']
+        default: 'off'
   push:
     branches: ['**']
     paths:
@@ -121,6 +127,7 @@ jobs:
             /default.xex
             /android/libdxcompiler.so
             /android/debug.keystore
+            /pgo/lostodyssey.profdata
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Verify private build input
@@ -187,6 +194,7 @@ jobs:
           ORG_GRADLE_PROJECT_loAppIcon: ${{ steps.steprant.outputs.icon }}
           LO_STEPRANT_VERSION: ${{ steps.steprant.outputs.version }}
           LO_STEPRANT_DEVELOPER_PAGE: ${{ steps.steprant.outputs.developer }}
+          LO_PGO: ${{ inputs.pgo || 'off' }}
         run: bash tools/android/ci_build.sh
       - name: Verify and name the integrated APK
         if: steps.steprant.outputs.version != ''

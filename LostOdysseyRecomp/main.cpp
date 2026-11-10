@@ -1,3 +1,4 @@
+#include <os/pgo_profile.h>
 #include <os/log_collection.h>
 #include <os/steam_shortcut.h>
 #include <discord/presence.h>
@@ -339,6 +340,8 @@ int main(int argc, char* argv[])
     }
 #endif
     os::user_paths::Initialize(executableDirectory);
+    // SR4 C-4: an instrumented build keeps its profile in the app's storage.
+    os::pgo::Start(executableDirectory / "pgo");
 #if !LO_PLATFORM_ANDROID
     // This host-only command reads original artwork from available game data,
     // then exits without an SDL window or GPU (bundled art remains a fallback).

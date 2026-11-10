@@ -22,6 +22,9 @@ set(LO_LTO_MODE "off" CACHE STRING "Link-time optimization mode (off, thin, full
 # Profile-Guided Optimization (PGO) mode
 set(LO_PGO_MODE "off" CACHE STRING "Profile-guided optimization mode (off, generate, use)")
 set(LO_PGO_FILE "" CACHE FILEPATH "Absolute path to merged profile data for PGO use phase")
+# Counter updates of the instrumented build: atomic (exact) or single (racy
+# between threads, much faster; enough for a profile, chosen for the phone).
+set(LO_PGO_UPDATE "atomic" CACHE STRING "Profile counter updates in the generate phase (atomic or single)")
 
 # BOLT preparation: keep relocations
 option(LO_BOLT_READY "Emit relocations for post-link BOLT optimization" OFF)
@@ -65,8 +68,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 
     # PGO mode
     if(LO_PGO_MODE STREQUAL "generate")
-        add_compile_options(-fprofile-generate -fprofile-update=atomic)
+        if(NOT LO_PGO_UPDATE MATCHES "^(atomic|single)$")
+            message(FATAL_ERROR "LO_PGO_UPDATE must be 'atomic' or 'single'; got '${LO_PGO_UPDATE}'")
+        endif()
+        add_compile_options(-fprofile-generate -fprofile-update=${LO_PGO_UPDATE})
         add_link_options(-fprofile-generate)
+        # os/pgo_profile.h names the profile file and writes it while the app
+        # runs (an Android app is usually killed, not exited).
+        add_compile_definitions(LO_PGO_GENERATE=1)
     elseif(LO_PGO_MODE STREQUAL "use")
         if(NOT LO_PGO_FILE)
             message(FATAL_ERROR "LO_PGO_MODE is 'use' but LO_PGO_FILE is not set")
@@ -76,6 +85,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         endif()
         add_compile_options(-fprofile-use=${LO_PGO_FILE})
         add_link_options(-fprofile-use=${LO_PGO_FILE})
+        # A profile from an older commit still applies to the unchanged
+        # functions; the changed ones are compiled as without a profile.
+        add_compile_options(-Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-profile-instr-missing)
     elseif(NOT LO_PGO_MODE STREQUAL "off")
         message(FATAL_ERROR "LO_PGO_MODE must be 'off', 'generate', or 'use'; got '${LO_PGO_MODE}'")
     endif()
