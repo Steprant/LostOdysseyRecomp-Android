@@ -1960,7 +1960,9 @@ namespace gpu::renderer
 
             // Both diagnostic consumers need CPU segments; ordinary play does not.
             const bool gpuStatsEnabled = getenv("LO_GPU_STATS") != nullptr;
-            const bool cpuTimingEnabled = gpuStatsEnabled || render_timing::Enabled();
+            // SR4 M-8: also on for the frames the Tester profiles (pass profile),
+            // so a session gives the GPU command thread's CPU breakdown.
+            bool cpuTimingEnabled = gpuStatsEnabled || render_timing::Enabled();
             uint32_t descriptorBatchLimit = 500;
             uint32_t descriptorSplits = 0, textureSetSplits = 0, samplerVersionSplits = 0;
             uint32_t uploadSplits = 0, arenaSplits = 0;
@@ -15960,7 +15962,44 @@ void main()
                     r.gpuSlots[0].arenaOffset, r.gpuSlots[1].arenaOffset);
                 r.vertexTiming = {};
             }
-            if (g_renderer->cpuTimingEnabled) {
+            {
+                // SR4 M-8: CPU breakdown of the GPU command thread every 10 s
+                // of profiled play, per frame (ms): what C-1/C-2/C-3 attack.
+                auto& r = *g_renderer;
+                const bool wanted = r.gpuStatsEnabled || render_timing::Enabled() || pass_profile::Enabled();
+                if (wanted != r.cpuTimingEnabled) r.cpuTimingEnabled = wanted;
+                static auto windowStart = std::chrono::steady_clock::now();
+                static uint64_t windowFrames = 0;
+                static double base[18]{};
+                if (pass_profile::Enabled() && !r.gpuStatsEnabled && !render_timing::Enabled()) {
+                    ++windowFrames;
+                    const double now[18] = {r.tDraw, r.tConst, r.tSets, r.tVertex, r.tBind, r.tIndex, r.tRecord, r.tRt,
+                        r.tTaa, r.tNestedFlush, r.tShaderLookup, r.tPipelineLookup, r.tSceneCopy, r.tShader, r.tPipeline,
+                        r.tTexture, r.tResolve, r.tFlush};
+                    const auto wall = std::chrono::steady_clock::now();
+                    if (wall - windowStart >= std::chrono::seconds(10) && windowFrames) {
+                        double d[18];
+                        for (int i = 0; i < 18; ++i) { d[i] = (now[i] - base[i]) / double(windowFrames); base[i] = now[i]; }
+                        LOG_INFO("cmdproc breakdown: frames={} per_frame_ms: draw={:.3f} const={:.3f} sets={:.3f} "
+                                 "vertex={:.3f} bind={:.3f} index={:.3f} record={:.3f} rt={:.3f} taa={:.3f} nested_flush={:.3f} "
+                                 "shader_lookup={:.3f} pipeline_lookup={:.3f} scene_copy={:.3f} shader_create={:.3f} "
+                                 "pipeline_create={:.3f} texture={:.3f} resolve={:.3f} flush={:.3f}",
+                            windowFrames,
+                            d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14],
+                            d[15], d[16], d[17]);
+                        windowStart = wall;
+                        windowFrames = 0;
+                    }
+                } else {
+                    windowFrames = 0;
+                    windowStart = std::chrono::steady_clock::now();
+                    const double now[18] = {r.tDraw, r.tConst, r.tSets, r.tVertex, r.tBind, r.tIndex, r.tRecord, r.tRt,
+                        r.tTaa, r.tNestedFlush, r.tShaderLookup, r.tPipelineLookup, r.tSceneCopy, r.tShader, r.tPipeline,
+                        r.tTexture, r.tResolve, r.tFlush};
+                    for (int i = 0; i < 18; ++i) base[i] = now[i];
+                }
+            }
+            if (g_renderer->cpuTimingEnabled && (g_renderer->gpuStatsEnabled || render_timing::Enabled())) {
                 auto& r = *g_renderer;
                 if (render_timing::Enabled() || r.frame % 60 == 0)
                     LOG_INFO("render batch capacity frame={} limit={} descriptor_splits={} texture_set_splits={} sampler_version_splits={} upload_splits={} arena_splits={} descriptor_hits={} descriptor_misses={} scope=current_frame_capacity_checks reasons_may_overlap=true",

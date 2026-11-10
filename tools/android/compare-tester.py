@@ -64,6 +64,8 @@ def percentile(values, p):
 
 GPU_PASSES = re.compile(r"^\[\s*([0-9.]+)[^\]]*\].*?gpu passes: .*? per_frame: (.*)$")
 WHAT_IF = re.compile(r"^\[\s*([0-9.]+)[^\]]*\].*?frame graph what-if: .*? per_frame: (.*)$")
+BREAKDOWN = re.compile(r"cmdproc breakdown: frames=\d+ per_frame_ms: (.*)$")
+STALL_SAMPLES = re.compile(r"stall samples: kind=(\w+) ms~?=?~?([0-9]+)")
 SGSR2_INPUT = re.compile(r"Sgsr2: frame=\d+ outcome=submitted input=(\d+)x(\d+) output=(\d+)x(\d+)")
 SGSR2_SMAA = re.compile(r"SGSR2: smaa=(on|off) format=(\w+)")
 PROFILING = re.compile(r"vulkan profiling: (.*)$")
@@ -189,6 +191,8 @@ def analyse(path, start=None, end=None):
     log_start = None
     passes = []
     what_if = []
+    breakdown = []
+    stall_kinds = {}
     draw_classes = None
     for line in log.splitlines():
         found_input = SGSR2_INPUT.search(line)
@@ -207,6 +211,12 @@ def analyse(path, start=None, end=None):
             seconds = float(found_what_if.group(1)) - (log_start or 0.0)
             if (start is None or seconds >= start) and (end is None or seconds <= end):
                 what_if.append({k: float(v) for k, v in re.findall(r"(\w+)=([0-9.]+)", found_what_if.group(2))})
+        found_breakdown = BREAKDOWN.search(line)
+        if found_breakdown:
+            breakdown.append({k: float(v) for k, v in re.findall(r"(\w+)=([0-9.]+)", found_breakdown.group(1))})
+        found_stall = STALL_SAMPLES.search(line)
+        if found_stall:
+            stall_kinds[found_stall.group(1)] = stall_kinds.get(found_stall.group(1), 0) + 1
         stamp = LOG_TIME.match(line)
         if stamp and log_start is None:
             log_start = float(stamp.group(1))
@@ -230,6 +240,13 @@ def analyse(path, start=None, end=None):
         for key in sorted({k for w in what_if for k in w}):
             values = [w[key] for w in what_if if key in w]
             out[f"what-if {key}"] = statistics.mean(values)
+    if breakdown:
+        # SR4 M-8: the GPU command thread's CPU per frame, by renderer stage.
+        for key in sorted({k for b in breakdown for k in b}):
+            values = [b[key] for b in breakdown if key in b]
+            out[f"cpu_ms {key}"] = statistics.mean(values)
+    for kind, count in stall_kinds.items():
+        out[f"stall_samples {kind}"] = count
     out["draw_classes"] = draw_classes
     if draw_classes:
         fit = re.search(r"fit: us_per_draw=([0-9.-]+) fixed_ms=([0-9.-]+) r2=([0-9.]+)", draw_classes)

@@ -21,6 +21,10 @@ def archive(path, frame_ms, gpu_busy, paused=()):
         rows.append(f"{t},{int(ms * 1e6)},0,0,{i},500,{1 if i in paused else 0}\n")
     gpu = "monotonic_ns,completed_batch_total_ns,completed_batch_count\n0,0,0\n" + f"{t},{int(t * gpu_busy)},10\n"
     log = ("[    1.000 t1] [info]  start\n"
+           "[   11.000 t2] [info]  cmdproc breakdown: frames=300 per_frame_ms: draw=6.000 const=1.000 sets=0.500 "
+           "vertex=0.200 bind=0.300 index=0.100 record=2.500 rt=0.100 taa=0.000 nested_flush=0.000 shader_lookup=0.100 "
+           "pipeline_lookup=0.100 scene_copy=0.000 shader_create=0.000 pipeline_create=0.000 texture=0.400 resolve=0.300 flush=1.200\n"
+           "[   12.000 t2] [info]  stall samples: kind=frame ms=180 samples=24 top: tid=0x1 0x82000000<-0x82000010<-0x0 x20;\n"
            "[   11.000 t2] [info]  gpu passes: frames=300 lists=600 untimed_lists=0 per_frame: passes=50.0 empty=4.0 "
            "clear_start=20.0 draws=500.0 pass_ms=15.00 outside_ms=2.00 load_mb=400.0 store_mb=500.0 barriers=90.0 "
            "copies=15.0 dispatches=0.0 draws_outside=0.0 present: passes=2.0 ms=1.10 load_mb=24.4 store_mb=24.4 "
@@ -68,6 +72,8 @@ with tempfile.TemporaryDirectory() as tmp:
     paused_result = compare.analyse(c)
     assert paused_result["paused_intervals"] == 1 and paused_result["frames"] == 99, paused_result
     assert paused_result["frames_over_50ms"] == 1 and paused_result["frame_max_ms"] == 80.0, paused_result
+    assert paused_result["cpu_ms record"] == 2.5 and paused_result["cpu_ms flush"] == 1.2, paused_result
+    assert paused_result["stall_samples frame"] == 1, paused_result
     assert abs(paused_result["battery_power_w_mean"] - 8.0) < 1e-9 and paused_result["battery_power_samples"] == 2, paused_result
     assert result["draw_fit_us_per_draw"] == 12.0 and result["draw_fit_fixed_ms"] == 3.0, result
     output = io.StringIO()
