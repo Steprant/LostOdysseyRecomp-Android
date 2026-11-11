@@ -49,6 +49,7 @@ enum class Switch : uint32_t
     LowMemoryTrim,        // D15: on Android's low-memory signal the renderer frees its unused caches (on)
     AudioCallbackGuard,   // D12: a long wait of the game's audio callback ends the queued sound with a fade (on)
     XmaFrameJoin,         // D13: no step in the waveform around an XMA frame the decoder rejected (on)
+    Sgsr2PrepareAhead,    // B5: SGSR2's pipelines and images are made at a frame start before the first 3D frame (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -89,6 +90,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"low_memory_trim", L"Free unused caches on low memory", L"記憶體不足時釋放未使用的快取", 0, 2, "LO_LOW_MEMORY_TRIM"},
     {"audio_callback_guard", L"Fade to silence on long audio waits", L"音訊長時間等待時淡出為靜音", 0, 2, "LO_AUDIO_CALLBACK_GUARD"},
     {"xma_frame_join", L"Smooth joins around XMA decode errors", L"平滑 XMA 解碼錯誤前後的銜接", 0, 2, "LO_XMA_FRAME_JOIN"},
+    {"sgsr2_prepare_ahead", L"Prepare SGSR2 before the first 3D frame", L"於首個 3D 畫面前準備 SGSR2", 0, 2, "LO_SGSR2_PREPARE_AHEAD"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the

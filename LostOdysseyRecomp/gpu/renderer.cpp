@@ -15,6 +15,7 @@
 #include "sgsr2_status.h"
 #include "movie_clear.h"
 #include "sgsr2_continuation.h"
+#include "sgsr2_prepare_ahead.h"
 #include "screen_draw_jitter.h"
 #if !defined(LO_RENDERER_P2_EMBEDDED_TEST)
 #include "movie_yuv_shader.h"
@@ -1409,6 +1410,25 @@ namespace gpu::renderer
                     RenderTextureBarrier(c.motion.get(), RenderTextureLayout::SHADER_READ),
                     RenderTextureBarrier(c.invalidity.get(), RenderTextureLayout::SHADER_READ)});
                 LOG_INFO("SGSR2: zero-motion images {}x{} ready at the start of frame {}", width, height, frame);
+            }
+            // Steprant 2.0.2 B5 (sgsr2_prepare_ahead.h): SGSR2's session for
+            // the active plan, made by the first command list of a frame
+            // before any draw instead of inside the first scene-copy draw
+            // that uses it. Only when no session exists.
+            gpu::sgsr2_ahead::Tracker sgsr2Ahead;
+            void PrepareSgsr2SessionAhead()
+            {
+#if defined(LO_GPU_PLUME) && !defined(LO_RENDERER_P2_EMBEDDED_TEST)
+                if (!nativeVulkan || !temporalUpscaler) return;
+                static const bool enabled = gpu::sgsr2_ahead::Enabled(std::getenv("LO_SGSR2_PREPARE_AHEAD"));
+                const gpu::sgsr2_ahead::Plan plan{activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr &&
+                        activePlan.requestedUpscaler == upscaling::Upscaler::Sgsr2,
+                    activePlan.width, activePlan.height, activePlan.output.width, activePlan.output.height, activePlan.deviceEpoch};
+                // The cheap part first: one comparison on every other frame.
+                if (!plan.sgsr2 || drawsThisFrame != 0 || (sgsr2Ahead.any && sgsr2Ahead.attempted == plan)) return;
+                if (!sgsr2Ahead.Due(enabled, plan, drawsThisFrame, temporalUpscaler->HasFeatureState())) return;
+                temporalUpscaler->PrepareSgsr2Ahead(*device, activePlan);
+#endif
             }
             // The images made at a frame start, never created here.
             bool Sgsr2ZeroMotion(uint32_t width, uint32_t height, temporal::TextureRegion& motion,
@@ -5661,6 +5681,7 @@ void main()
                     }
                     listOpen = true;
                     PrepareSgsr2ZeroMotion();
+                    PrepareSgsr2SessionAhead();
                     if (drawsThisFrame == 0 && g_memoryTrimRequested.load(std::memory_order_relaxed) &&
                         g_memoryTrimRequested.exchange(false, std::memory_order_acq_rel))
                         TrimForLowMemory();
@@ -8401,6 +8422,7 @@ void main()
 #else
                         temporalUpscaler->ReleaseFeatureAfterGpuDrain();
                         const bool featureRetained = temporalUpscaler->HasFeatureState();
+                        sgsr2Ahead.Released(); // 2.0.2 B5: the next frame start prepares the new size
 #endif
                         if (featureRetained) {
                             FailCurrentPlan(frame_plan::FailureReason::InvalidInput);

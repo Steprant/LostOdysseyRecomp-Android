@@ -138,6 +138,16 @@ dlss::SrConfig DlssConfig(const SrRequest& request) {
 }
 }
 
+namespace {
+bool Sgsr2SmaaEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("LO_SGSR2_SMAA");
+        return !(value && std::string_view(value) == "0");
+    }();
+    return enabled;
+}
+}
+
 TemporalUpscaler::TemporalUpscaler(dlss::Controller& controller)
     : TemporalUpscaler(&controller) {}
 TemporalUpscaler::TemporalUpscaler(dlss::Controller* controller)
@@ -205,10 +215,7 @@ SrResult TemporalUpscaler::RecordIsolated(plume::VulkanCommandList& commands,
         // so the Standard filter keeps the reference kernel. Balanced and
         // Performance keep the reference and no SMAA. No sharpening pass.
         // LO_SGSR2_KERNEL_SCALE=0.5..1 overrides the window.
-        static const bool smaaEnabled = [] {
-            const char* value = std::getenv("LO_SGSR2_SMAA");
-            return !(value && std::string_view(value) == "0");
-        }();
+        const bool smaaEnabled = Sgsr2SmaaEnabled();
         static const float kernelOverride = [] {
             const char* value = std::getenv("LO_SGSR2_KERNEL_SCALE");
             return value && *value ? float(std::clamp(std::atof(value), 0.5, 1.0)) : -1.0f;
@@ -458,6 +465,16 @@ void TemporalUpscaler::ReleaseCompleted(uint64_t serial) {
 bool TemporalUpscaler::HasFeatureState() const {
     return (dlss_ && dlss_->HasFeatureState()) || fsr_->HasFeatureState() || xess_->HasFeatureState() ||
         sgsr2_->HasFeatureState();
+}
+// Steprant 2.0.2 B5 (sgsr2::Controller::PrepareAhead). The scene colour of an
+// SGSR2 plan has the plan's render size; SMAA runs in Quality.
+bool TemporalUpscaler::PrepareSgsr2Ahead(plume::RenderDevice& device, const frame_plan::FramePlan& plan) {
+    if (plan.requestedUpscaler != upscaling::Upscaler::Sgsr2 || !plan.width || !plan.height ||
+        !plan.output.width || !plan.output.height)
+        return false;
+    const sgsr2::Config config{plan.width, plan.height, plan.output.width, plan.output.height, plan.deviceEpoch};
+    const bool smaa = Sgsr2SmaaEnabled() && plan.fsrQuality == upscaling::FsrQuality::Quality;
+    return sgsr2_->PrepareAhead(device, config, smaa) == sgsr2::Status::Ready;
 }
 void TemporalUpscaler::ReleaseFeatureAfterGpuDrain() {
     if (dlss_) dlss_->ReleaseFeatureAfterGpuDrain();

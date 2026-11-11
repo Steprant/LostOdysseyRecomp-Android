@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -113,6 +114,9 @@ struct Controller::Impl {
     std::unique_ptr<RenderShader> smaaVs;
     std::unique_ptr<SmaaPipeline> smaa;
     bool smaaFailed = false;
+    // The colour format of the last frame SMAA ran on (2.0.2 B5: the stages
+    // prepared ahead are the ones that frame used).
+    ColorFormat lastSmaaFormat = ColorFormat::Rgba8;
     struct SmaaState {
         bool requested = false, active = false;
         ColorFormat format = ColorFormat::Other;
@@ -327,6 +331,33 @@ Status Controller::EnsureSession(RenderDevice& device, const Config& config)
     return Status::Ready;
 }
 
+Status Controller::PrepareAhead(RenderDevice& device, const Config& config, bool smaa)
+{
+    auto& p = *impl_;
+    if (p.poisoned) return Status::Failed;
+    // Only from nothing: the images of a live session may be read by the GPU
+    // and its size is the one the frames use.
+    if (p.ready || !p.uses.empty()) return Status::Ready;
+    const auto started = std::chrono::steady_clock::now();
+    const bool pipelinesKept = p.device == &device && p.convertPipeline && p.upscalePipeline;
+    const auto status = EnsureSession(device, config);
+    if (status != Status::Ready) return status;
+    const bool smaaKept = bool(p.smaa);
+    bool smaaReady = false;
+    if (smaa && p.EnsureSmaa()) {
+        const auto format = SmaaFormat(p.lastSmaaFormat);
+        p.smaa->PrepareAhead(config.renderWidth, config.renderHeight,
+            format == plume::RenderFormat::UNKNOWN ? plume::RenderFormat::R8G8B8A8_UNORM : format);
+        smaaReady = true;
+    }
+    LOG_INFO("SGSR2: prepared ahead {}x{} -> {}x{} pipelines={} smaa={} smaa_format={} in {:.1f} ms",
+        config.renderWidth, config.renderHeight, config.outputWidth, config.outputHeight,
+        pipelinesKept ? "kept" : "created", !smaa ? "not-wanted" : !smaaReady ? "unavailable" : smaaKept ? "kept" : "created",
+        FormatName(p.lastSmaaFormat),
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+    return Status::Ready;
+}
+
 Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& config,
     const temporal::TemporalFrameInputs& inputs, const FrameValues& frame, RenderTexture& output)
 {
@@ -429,6 +460,7 @@ Attempt Controller::RecordIsolated(RenderCommandList& commands, const Config& co
     commands.begin();
     RenderTexture* colorSource = color.texture;
     if (smaaOn) {
+        p.lastSmaaFormat = frame.colorFormat;
         colorSource = p.smaa->DrawCopied(&commands, color.texture, config.renderWidth, config.renderHeight, colorFormat);
         commands.setFramebuffer(nullptr);
         commands.barriers(RenderBarrierStage::COMPUTE,

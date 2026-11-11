@@ -152,19 +152,7 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
         const bool wide=format!=RenderFormat::R8G8B8A8_UNORM;
         Prepare(c,w,h,wide);
         RenderTexture *cropped=stages[0].get();
-        if(wide) {
-            if(sourceStageWidth!=w || sourceStageHeight!=h) {
-                for(auto &stage:sourceStages) stage.reset();
-                for(auto &f:sourceStageFormats) f=RenderFormat::UNKNOWN;
-                sourceStageWidth=w;sourceStageHeight=h;
-            }
-            const int slot=format==RenderFormat::R10G10B10A2_UNORM?0:1;
-            if(!sourceStages[slot] || sourceStageFormats[slot]!=format) {
-                sourceStages[slot]=device->createTexture(RenderTextureDesc::Texture2D(w,h,1,format,RenderTextureFlag::RENDER_TARGET));
-                sourceStageFormats[slot]=format;
-            }
-            cropped=sourceStages[slot].get();
-        }
+        if(wide) cropped=PrepareSourceStage(w,h,format);
         c->barriers(RenderBarrierStage::COPY,std::vector<RenderTextureBarrier>{
             RenderTextureBarrier(source,RenderTextureLayout::COPY_SOURCE),
             RenderTextureBarrier(cropped,RenderTextureLayout::COPY_DEST)});
@@ -176,7 +164,32 @@ float4 neighborhood(float4 pos : SV_Position) : SV_Target {
         c->setViewports(&vp,1);c->setScissors(&rect,1);
         return Passes(c,cropped,w,h,wide);
     }
+    // Steprant 2.0.2 B5: the stage images of a size, made before the frame
+    // that first needs them. Only for an owner none of whose frames is in
+    // flight (see Prepare); DrawCopied then finds them and creates nothing.
+    void PrepareAhead(uint32_t w,uint32_t h,plume::RenderFormat format=plume::RenderFormat::R8G8B8A8_UNORM)
+    {
+        using namespace plume;
+        const bool wide=format!=RenderFormat::R8G8B8A8_UNORM;
+        PrepareStages(w,h,wide);
+        if(wide) PrepareSourceStage(w,h,format);
+    }
 private:
+    plume::RenderTexture *PrepareSourceStage(uint32_t w,uint32_t h,plume::RenderFormat format)
+    {
+        using namespace plume;
+        if(sourceStageWidth!=w || sourceStageHeight!=h) {
+            for(auto &stage:sourceStages) stage.reset();
+            for(auto &f:sourceStageFormats) f=RenderFormat::UNKNOWN;
+            sourceStageWidth=w;sourceStageHeight=h;
+        }
+        const int slot=format==RenderFormat::R10G10B10A2_UNORM?0:1;
+        if(!sourceStages[slot] || sourceStageFormats[slot]!=format) {
+            sourceStages[slot]=device->createTexture(RenderTextureDesc::Texture2D(w,h,1,format,RenderTextureFlag::RENDER_TARGET));
+            sourceStageFormats[slot]=format;
+        }
+        return sourceStages[slot].get();
+    }
     // Lookup textures (once) and stage images for this size.
     void Prepare(plume::RenderCommandList *c,uint32_t w,uint32_t h,bool hdr)
     {
@@ -193,6 +206,11 @@ private:
             upload(search.get(),searchUpload.get(),RenderFormat::R8_UNORM,SEARCHTEX_WIDTH,SEARCHTEX_HEIGHT,1);
             uploaded=true;
         }
+        PrepareStages(w,h,hdr);
+    }
+    void PrepareStages(uint32_t w,uint32_t h,bool hdr)
+    {
+        using namespace plume;
         if(width!=w || height!=h) {
             for(int i=0;i<4;++i) {
                 fb[i].reset();stages[i]=device->createTexture(RenderTextureDesc::Texture2D(w,h,1,RenderFormat::R8G8B8A8_UNORM,RenderTextureFlag::RENDER_TARGET));

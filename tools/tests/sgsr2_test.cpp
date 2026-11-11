@@ -755,6 +755,55 @@ int Run(RenderDevice* device)
     controller.ShutdownAfterGpuDrain();
     pass &= Check(!controller.HasFeatureState(), "shutdown releases state");
 
+    // Steprant 2.0.2 B5: a session prepared ahead of its first frame draws
+    // exactly what a session the frame itself makes draws.
+    {
+        Scene detail{};
+        const auto savedFormat = gColorFormat;
+        gColorFormat = gpu::sgsr2::ColorFormat::Rgba8;
+        f.colorFn = nullptr; f.depthFn = nullptr;
+        gSoft = gAntiTrail = false; gKernelScale = 1.0f; gEdgeClip = NAN;
+        if (!f.Upload(detail, 0.25, -0.25, 0, false)) return 1;
+        std::vector<float> made[2], ahead[2];
+        for (int smaa = 0; smaa < 2; ++smaa) {
+            gSmaa = smaa == 1;
+            gpu::sgsr2::Controller lazy;
+            pass &= Check(lazy.EnsureSession(*device, kConfig) == gpu::sgsr2::Status::Ready &&
+                RunFrame(f, lazy, 900 + smaa, true, 0.25, -0.25, false, serial) == gpu::sgsr2::Status::Ready,
+                smaa ? "frame with a session made by the frame, SMAA" : "frame with a session made by the frame");
+            made[smaa] = f.Read();
+            // A live session is never touched by a preparation for another size.
+            pass &= Check(lazy.PrepareAhead(*device, {kRenderW / 2, kRenderH / 2, kOutW, kOutH, 1}, true) ==
+                gpu::sgsr2::Status::Ready, "preparing ahead leaves a live session alone");
+            pass &= Check(RunFrame(f, lazy, 910 + smaa, true, 0.25, -0.25, false, serial) == gpu::sgsr2::Status::Ready &&
+                f.Read() == made[smaa], "and its next frame is the same frame");
+            lazy.ShutdownAfterGpuDrain();
+
+            gpu::sgsr2::Controller prepared;
+            pass &= Check(!prepared.HasFeatureState() &&
+                prepared.PrepareAhead(*device, kConfig, smaa == 1) == gpu::sgsr2::Status::Ready && prepared.HasFeatureState(),
+                smaa ? "session prepared ahead with SMAA" : "session prepared ahead");
+            pass &= Check(prepared.PrepareAhead(*device, kConfig, smaa == 1) == gpu::sgsr2::Status::Ready, "a second preparation does nothing");
+            pass &= Check(RunFrame(f, prepared, 920 + smaa, true, 0.25, -0.25, false, serial) == gpu::sgsr2::Status::Ready,
+                "frame on the prepared session recorded");
+            ahead[smaa] = f.Read();
+            pass &= Check(ahead[smaa] == made[smaa], smaa ? "prepared ahead with SMAA: bit-identical output" : "prepared ahead: bit-identical output");
+            // The renderer's change of size: release after its drain, a
+            // preparation for a size the scene then does not have, and the
+            // frame's own session at the real size.
+            prepared.ReleaseFeatureAfterGpuDrain();
+            pass &= Check(prepared.PrepareAhead(*device, {kRenderW / 2, kRenderH / 2, kOutW, kOutH, 1}, smaa == 1) ==
+                gpu::sgsr2::Status::Ready, "prepared again after a release, at another size");
+            pass &= Check(prepared.EnsureSession(*device, kConfig) == gpu::sgsr2::Status::Ready &&
+                RunFrame(f, prepared, 930 + smaa, true, 0.25, -0.25, false, serial) == gpu::sgsr2::Status::Ready &&
+                f.Read() == made[smaa], "a wrong guess of the size costs a resize, not the image");
+            prepared.ShutdownAfterGpuDrain();
+        }
+        pass &= Check(made[0] != made[1], "the two runs really differ by SMAA");
+        gSmaa = false;
+        gColorFormat = savedFormat;
+    }
+
     printf("SGSR2 controller: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

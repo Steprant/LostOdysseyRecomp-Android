@@ -117,6 +117,9 @@ public:
     void OnDiscarded(SrUseToken token);
     void ReleaseCompleted(uint64_t completedSerial);
     bool HasFeatureState() const;
+    // Steprant 2.0.2 B5: SGSR2's session for this plan, made ahead of the
+    // first frame that uses it; only when none exists (sgsr2_upscaler.h).
+    bool PrepareSgsr2Ahead(plume::RenderDevice& device, const frame_plan::FramePlan& plan);
     void ReleaseFeatureAfterGpuDrain();
     void ShutdownAfterGpuDrain();
     bool ShutdownComplete() const;

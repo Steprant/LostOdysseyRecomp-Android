@@ -59,6 +59,14 @@ public:
     Controller& operator=(const Controller&) = delete;
 
     Status EnsureSession(plume::RenderDevice& device, const Config& config);
+    // Steprant 2.0.2 B5: the session a plan will need, made at the start of a
+    // frame instead of inside the first scene-copy draw that uses SGSR2
+    // (two compute pipelines, five images, and with `smaa` SMAA's four
+    // pipelines and stage images). Acts only when no session exists and no
+    // use is in flight, so a session frames are using is never touched; the
+    // first real frame then finds everything and creates nothing. A plan
+    // whose scene turns out to have another size resizes as before.
+    Status PrepareAhead(plume::RenderDevice& device, const Config& config, bool smaa);
     // Opens, records and closes the isolated list. Inputs are SHADER_READ,
     // output (RGBA16F storage, output size) GENERAL before and after.
     // With FrameValues::smaa and an SDR colour (8-bit, 10-bit or float), SMAA's three passes run
