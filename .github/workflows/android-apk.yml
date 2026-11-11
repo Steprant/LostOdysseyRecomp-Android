@@ -54,7 +54,7 @@ jobs:
           fi
   apk:
     name: Android arm64 APK
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
@@ -82,16 +82,25 @@ jobs:
             echo '::error::Missing authorized Disc 1 default.xex. Set LO_BUILD_XEX_URL to a private HTTPS URL, or LO_BUILD_INPUT_KEY for the configured private build-input repository. No game code or APK has been built.'
             exit 1
           fi
-      - name: Install host toolchain for the recompiler tools
-        run: bash tools/release/install_appimage_toolchain.sh
-      - name: Install build dependencies
+      - name: Install host toolchain and build dependencies
         run: |
+          # Ubuntu 24.04 provides Clang 18 and GCC 13 in its own archive.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            clang-18 clang-tools-18 lld-18 g++-13 binutils \
             ninja-build file unzip wget ccache openjdk-17-jdk-headless
-          # Jammy's distribution CMake predates the project's 3.28 minimum.
           python -m pip install 'cmake==3.31.6'
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+          gcc_dir=$(dirname "$(g++-13 -print-libgcc-file-name)")
+          {
+            echo 'CC=clang-18'
+            echo 'CXX=clang++-18'
+            echo "CFLAGS=--gcc-install-dir=$gcc_dir"
+            echo "CXXFLAGS=--gcc-install-dir=$gcc_dir"
+            echo 'LDFLAGS=-fuse-ld=lld'
+            echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
+          } >> "$GITHUB_ENV"
+          echo '/usr/lib/llvm-18/bin' >> "$GITHUB_PATH"
+          clang++-18 --version
       - name: Configure Android cache directories
         run: echo "LO_ANDROID_CI_CACHE=$RUNNER_TEMP/lo-android-ci" >> "$GITHUB_ENV"
       - name: Cache Android SDK and NDK
