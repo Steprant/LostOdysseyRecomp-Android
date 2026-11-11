@@ -332,7 +332,7 @@ a release keystore, so each release installs over the previous one.
 
 Run Steprant APK builds from `steprant/android-build` so Actions can restore the
 previous run's compiler cache. Update `packaging/android/steprant-version.txt`
-for the next version or use the `steprant_version` override for a single manual
-run. The version goes into the APK metadata and the title-menu source file.
+for the next version. A push that changes this file starts the Android APK
+workflow. The version goes into the APK metadata and the title-menu source file.
 
 A green run proves packaging, lint and the JVM tests, not device behaviour.
