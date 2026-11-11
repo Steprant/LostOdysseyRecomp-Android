@@ -219,7 +219,13 @@ int main(int argc, char** argv) {
     auto& d=diagnostics::android_tester::g_recorder;
     Check(!d.enabled && !d.recording,"tester defaults off");
     tick(0x1000);Check(d.enabled,"confirm enables tester");
-    tick(2);tick(8);Check(d.profile==1,"right selects advanced profile");
+    // Steprant 2.0.3: one profile (Intensive, 250 ms, both detections on).
+    Check(d.profile==uint32_t(diagnostics::android_tester::Profile::Intensive) && d.samplePeriodMs==250 && d.automatic && d.thermal,
+          "the Tester always records with the Intensive profile");
+    Check(settings::snapshot.rows.size()==size_t(settings::TesterRowCount) && settings::TesterRowCount==5 &&
+          settings::snapshot.rows[settings::TesterRecording].name==L"Recording","Tester page: mode, recording, export, clear, capture");
+    tick(2);tick(8);Check(d.profile==uint32_t(diagnostics::android_tester::Profile::Intensive),"no profile row");
+    tick(1);
     tick(0x200);Check(settings::testerOpen && settings::tab==3,"RB does not change tabs inside the page");
     {
         settings::Config mobile=settings::GetConfig();
@@ -231,7 +237,7 @@ int main(int argc, char** argv) {
         Check(settings::graphics_menu::PresetOf(mobile)==settings::graphics_menu::Preset::Custom,"a changed row leaves the mobile preset");
     }
     // The 1.6 device sessions decided these: no Tester rows, fixed behaviour.
-    Check(settings::TesterThermal+1==settings::TesterRecording,"only diagnostics rows on the Tester page");
+    Check(settings::TesterEnabled+1==settings::TesterRecording,"only Tester mode before the recording button");
     Check(gpu::draw_attachment::KeepColorForDepthOnly(),"depth-only draws keep colour bound on Android");
     {
         // Anti-aliasing choice 4 is SGSR2 (experimental temporal upscaler).
@@ -246,7 +252,6 @@ int main(int argc, char** argv) {
     }
     settings::testerFocus=settings::TesterRecording;tick(0x1000);
     Check(d.recording && androidMessage==0x8002,"record starts the Android collector");
-    settings::testerFocus=settings::TesterProfile;tick(8);Check(d.profile==1,"profile remains fixed during recording");
     settings::testerFocus=settings::TesterRecording;tick(0x1000);
     Check(!d.recording && androidMessage==0x8003,"stop stops recording");
     d.collectorIdle=true;

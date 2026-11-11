@@ -38,9 +38,13 @@ public:
     static constexpr size_t Capacity = 16384;
     std::atomic<bool> enabled{false}, recording{false}, automatic{true}, thermal{true};
     std::atomic<bool> collectorIdle{true};
-    std::atomic<uint32_t> profile{0};
+    // Steprant 2.0.3: one profile, the most detailed one. The Tester page no
+    // longer offers Standard/Advanced, the sample period, slow-frame
+    // detection or thermal monitoring: every recording is Intensive, sampled
+    // every 250 ms, with both detections on.
+    std::atomic<uint32_t> profile{uint32_t(Profile::Intensive)};
     // Java reads this through nativeTesterStatus; changes take effect next recording.
-    std::atomic<uint32_t> samplePeriodMs{1000};
+    std::atomic<uint32_t> samplePeriodMs{250};
 
     bool Start(uint64_t now, uint32_t targetFps) {
         if (!enabled.load() || recording.load() || !collectorIdle.exchange(false)) return false;

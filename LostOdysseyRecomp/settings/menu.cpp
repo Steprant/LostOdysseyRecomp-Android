@@ -169,13 +169,16 @@ int testerFocus = 0;
 // SR4 M-2/M-3: frame capture and per-draw timestamps are diagnostic actions
 // of every build (no setting); the developer switches only in test builds.
 #if LO_STEPRANT_DEVELOPER_PAGE
-enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterClearDiagnostics, TesterCaptureFrames, TesterDrawTimestamps, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
+// Steprant 2.0.3: the page keeps Tester mode and the recording button; the
+// recorder always uses the Intensive profile at 250 ms with slow-frame
+// detection, thermal monitoring and per-draw timestamps on
+// (android_tester.h, draw_class_profile.h).
+enum TesterRow { TesterEnabled, TesterRecording, TesterExport,
+    TesterClearDiagnostics, TesterCaptureFrames, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
 #else
-enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterClearDiagnostics, TesterCaptureFrames, TesterDrawTimestamps, TesterRowCount };
+enum TesterRow { TesterEnabled, TesterRecording, TesterExport,
+    TesterClearDiagnostics, TesterCaptureFrames, TesterRowCount };
 #endif
-constexpr uint32_t TesterPeriodsMs[]{250, 500, 1000, 2000};
 // Steprant 2.0.2: "Clear diagnostics" asks for a second confirm on its row;
 // moving off the row or leaving the page disarms it.
 bool testerClearArmed = false;
@@ -1384,13 +1387,6 @@ void Publish(uint8_t *base, uint32_t config)
             ? Tr(L"D-pad: select / change     B: confirm     A: back", L"方向鍵：選擇 / 調整     B：確認     A：返回")
             : Tr(L"D-pad: select / change     A: confirm     B: back", L"方向鍵：選擇 / 調整     A：確認     B：返回");
         addChoices(L"Tester mode", L"測試模式", onOff(), d.enabled.load() ? 0 : 1);
-        addChoices(L"Profile", L"設定檔", {Tr(L"Standard", L"標準"), Tr(L"Advanced", L"進階"), Tr(L"Intensive", L"密集")}, d.profile.load(), !recording);
-        const auto period = d.samplePeriodMs.load();
-        size_t periodIndex = 0;
-        while (periodIndex + 1 < std::size(TesterPeriodsMs) && TesterPeriodsMs[periodIndex] != period) ++periodIndex;
-        addChoices(L"Sample period", L"採樣週期", {L"250 ms", L"500 ms", L"1000 ms", L"2000 ms"}, periodIndex, !recording);
-        addChoices(L"Detect slow frames", L"偵測慢影格", onOff(), d.automatic.load() ? 0 : 1, !recording);
-        addChoices(L"Thermal monitoring", L"溫度監測", onOff(), d.thermal.load() ? 0 : 1, !recording);
         const auto seconds = d.Duration(::diagnostics::android_tester::NowNs()) / 1000000000ull;
         const std::wstring duration = std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") + std::to_wstring(seconds % 60);
         next.rows.push_back({Tr(L"Recording", L"記錄"), (recording ? Tr(L"Stop", L"停止") : Tr(L"Start", L"開始")) + std::wstring(L"  ") + duration, d.enabled.load(), {}, 0});
@@ -1401,8 +1397,6 @@ void Publish(uint8_t *base, uint32_t config)
             next.rows.push_back({Tr(L"Capture 4 frames", L"擷取 4 個影格"),
                 sampleStatus.empty() ? Tr(L"Capture", L"擷取") : sampleStatus, true, {}, 0});
         }
-        addChoices(L"Per-draw timestamps (profile)", L"逐次繪製時間戳（分析）", onOff(),
-            gpu::draw_profile::Timestamps() ? 0 : 1);
 #if LO_STEPRANT_DEVELOPER_PAGE
         for (size_t i = 0; i < ::diagnostics::developer::Count; ++i) {
             const auto& definition = ::diagnostics::developer::Definitions[i];
@@ -2636,9 +2630,9 @@ void PointerClick(float x, float y, bool reverse)
     if (listPage) {
 #if LO_PLATFORM_ANDROID
 #if LO_STEPRANT_DEVELOPER_PAGE
-        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit == size_t(TesterDrawTimestamps) || hit >= size_t(TesterDevFirst))) {
+        if (testerOpen.load() && (hit == size_t(TesterEnabled) || hit >= size_t(TesterDevFirst))) {
 #else
-        if (testerOpen.load() && (hit <= size_t(TesterThermal) || hit == size_t(TesterDrawTimestamps))) {
+        if (testerOpen.load() && hit == size_t(TesterEnabled)) {
 #endif
             if (x >= 386) mouseAction = reverse ? 4 : 8;
         }
@@ -3480,18 +3474,7 @@ PPC_FUNC(sub_822F19B0)
                     d.Stop(::diagnostics::android_tester::NowNs());
                     SDL_SendAndroidMessage(0x8003, 0);
                 }
-            } else if (testerFocus == TesterProfile && !recording) {
-                const int delta = (input & 4) ? -1 : 1;
-                d.profile.store(uint32_t((int(d.profile.load()) + 3 + delta) % 3));
-                d.samplePeriodMs.store(d.profile.load() == uint32_t(::diagnostics::android_tester::Profile::Intensive) ? 250 : 1000);
-            } else if (testerFocus == TesterSampling && !recording) {
-                const int delta = (input & 4) ? -1 : 1;
-                auto current = d.samplePeriodMs.load();
-                size_t index = 0;
-                while (index + 1 < std::size(TesterPeriodsMs) && TesterPeriodsMs[index] != current) ++index;
-                d.samplePeriodMs.store(TesterPeriodsMs[(int(index) + 4 + delta) % 4]);
-            } else if (testerFocus == TesterAutomatic && !recording) d.automatic.store(!d.automatic.load());
-            else if (testerFocus == TesterThermal && !recording) d.thermal.store(!d.thermal.load());
+            }
             else if (testerFocus == TesterRecording && (input & 0x1000) && d.enabled.load()) {
                 if (recording) {
                     d.Stop(::diagnostics::android_tester::NowNs());
@@ -3549,12 +3532,6 @@ PPC_FUNC(sub_822F19B0)
                     ? Tr(L"Capturing the next 4 frames (scene before the upscaler, frontbuffer, presented image); "
                          L"they go in the Tester export (frame-samples/).", L"正在擷取接下來的 4 個影格。")
                     : Tr(L"A capture is already running.", L"擷取進行中。");
-            } else if (testerFocus == TesterDrawTimestamps) {
-                const bool on = !gpu::draw_profile::Timestamps();
-                gpu::draw_profile::SetTimestamps(on);
-                LOG_INFO("tester: per-draw timestamps {} for this session", on ? "on" : "off");
-                status = on ? Tr(L"Per-draw timestamps on (indicative per-class times).", L"逐次繪製時間戳：開。")
-                            : Tr(L"Per-draw timestamps off: the profile measures the real cost per draw.", L"逐次繪製時間戳：關。");
             }
 #if LO_STEPRANT_DEVELOPER_PAGE
             else if (testerFocus >= TesterDevFirst && testerFocus < TesterRowCount) {
