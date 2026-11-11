@@ -47,6 +47,7 @@
 #include "loading_pacing.h"
 #include "vrr_policy.h"
 #include "frame_pacer.h"
+#include "overlay_upload.h"
 #include "deadline_wait.h"
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
@@ -756,6 +757,8 @@ namespace gpu::video
             std::unique_ptr<plume::RenderTexture> texture;
             std::unique_ptr<plume::RenderBuffer> upload;
             uint32_t width = 0, height = 0;
+            // Steprant 2.0.2: what the texture holds (overlay_upload.h).
+            gpu::overlay_upload::UploadState state;
         } g_settingsOverlay;
         std::atomic<int64_t> g_settingsOverGameNs{0};
         // The achievement-unlocked toast (DrawAchievementToast).
@@ -2414,6 +2417,7 @@ namespace gpu::video
         g_cpuFrame.reset(); g_cpuWidth = g_cpuHeight = 0;
         g_titleHint = {};
         g_achievementToast = {};
+        g_settingsOverlay = {};
         // Keeps `active`, so turning the overlay off later still stops its GPU timing.
         g_performanceOverlay.texture.reset(); g_performanceOverlay.upload.reset();
         g_performanceOverlay.width = g_performanceOverlay.height = 0;
@@ -4773,9 +4777,20 @@ namespace gpu::video
 #ifdef LO_GPU_PLUME
         if (!g_presentation || !width || !height || pixels.size() != size_t(width) * height) return;
         // The menu's motion (open cascade, tab fades, the swaying cursor)
-        // changes the pixels between revisions, so every frame is uploaded,
-        // as the replacing path does; texture and buffer are kept per size.
+        // changes the pixels between revisions, so the revision cannot tell
+        // whether the image changed.
+        // Steprant 2.0.2 (overlay_upload.h): a hash of the pixels does. An
+        // unchanged image draws last frame's texture again; a changed one is
+        // copied without reading the mapped upload buffer.
         (void)revision;
+        static const bool reuse = [] {
+            const char* value = getenv("LO_MENU_OVERLAY_REUSE");
+            return !(value && std::strcmp(value, "0") == 0);
+        }();
+        const uint64_t hash = reuse ? XXH3_64bits(pixels.data(), pixels.size() * sizeof(uint32_t)) : 0;
+        if (!g_settingsOverlay.texture || g_settingsOverlay.width != width || g_settingsOverlay.height != height)
+            g_settingsOverlay.state.Invalidate();
+        if (g_settingsOverlay.state.NeedsUpload(reuse, width, height, hash))
         {
             const uint32_t rowPitch = (width * 4 + 255) & ~255u;
             if (!g_settingsOverlay.texture || g_settingsOverlay.width != width || g_settingsOverlay.height != height) {
@@ -4789,27 +4804,28 @@ namespace gpu::video
             if (!g_settingsOverlay.texture || !mapped) { g_settingsOverlay = {}; return; }
             const double scale = std::min(width / 1280.0, height / 720.0);
             const double offsetX = (width - 1280 * scale) * 0.5, offsetY = (height - 720 * scale) * 0.5;
-            const uint32_t header = uint32_t(std::clamp(std::lround(offsetY + settings::MenuGameHeaderBottom * scale), 0l, long(height)));
-            const uint32_t left = uint32_t(std::clamp(std::lround(offsetX), 0l, long(width)));
-            const uint32_t right = uint32_t(std::clamp(std::lround(offsetX + 1280 * scale), 0l, long(width)));
-            const uint32_t bottom = uint32_t(std::clamp(std::lround(offsetY + 720 * scale), 0l, long(height)));
-            for (uint32_t y = 0; y < height; ++y) {
-                auto* row = reinterpret_cast<uint32_t*>(mapped + size_t(y) * rowPitch);
-                memcpy(row, &pixels[size_t(y) * width], size_t(width) * 4);
-                if (y < header || y >= bottom)
-                    for (uint32_t x = 0; x < width; ++x) row[x] &= 0x00FFFFFFu;
-                else {
-                    for (uint32_t x = 0; x < left; ++x) row[x] &= 0x00FFFFFFu;
-                    for (uint32_t x = right; x < width; ++x) row[x] &= 0x00FFFFFFu;
-                }
-            }
+            gpu::overlay_upload::Window window;
+            window.headerBottom = uint32_t(std::clamp(std::lround(offsetY + settings::MenuGameHeaderBottom * scale), 0l, long(height)));
+            window.left = uint32_t(std::clamp(std::lround(offsetX), 0l, long(width)));
+            window.right = uint32_t(std::clamp(std::lround(offsetX + 1280 * scale), 0l, long(width)));
+            window.bottom = uint32_t(std::clamp(std::lround(offsetY + 720 * scale), 0l, long(height)));
+            for (uint32_t y = 0; y < height; ++y)
+                gpu::overlay_upload::CopyMaskedRow(reinterpret_cast<uint32_t*>(mapped + size_t(y) * rowPitch),
+                    &pixels[size_t(y) * width], width, y, window);
             g_settingsOverlay.upload->unmap();
             g_commandList->barriers(plume::RenderBarrierStage::COPY,
                 plume::RenderTextureBarrier(g_settingsOverlay.texture.get(), plume::RenderTextureLayout::COPY_DEST));
             g_commandList->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(g_settingsOverlay.texture.get()),
                 plume::RenderTextureCopyLocation::PlacedFootprint(g_settingsOverlay.upload.get(), plume::RenderFormat::R8G8B8A8_UNORM,
                     width, height, 1, rowPitch / 4), 0, 0, 0, nullptr);
+            g_settingsOverlay.state.Uploaded(width, height, hash);
         }
+        else
+            g_settingsOverlay.state.Reused();
+        // Every 600 overlay frames: how many were uploaded.
+        if (const auto& state = g_settingsOverlay.state; (state.uploads + state.reuses) % 600 == 0)
+            LOG_INFO("settings overlay: {} frames uploaded, {} reused the last image (reuse={})",
+                state.uploads, state.reuses, reuse ? 1 : 0);
         g_presentation->DrawOverlay(g_commandList.get(), g_settingsOverlay.texture.get(), backBuffer, 0, 0,
             width, height, g_swapChain->getWidth(), g_swapChain->getHeight(), 1.0f);
 #else
