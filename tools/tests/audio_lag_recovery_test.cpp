@@ -1,6 +1,7 @@
 // Steprant 2.0.6: audio/video re-alignment after a dry device queue
 // (apu/audio_lag_recovery.h).
 #include <apu/audio_lag_recovery.h>
+#include <gpu/present_clock.h>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -137,6 +138,16 @@ int main()
         for (uint32_t c = 0; c < planes; ++c)
             for (uint32_t i = fade; i < samples; ++i) tail &= out[c * samples + i] == in[c * samples + i];
         Check(tail, "after the fade the frame is unchanged, bit for bit");
+    }
+    {
+        // Steprant 2.0.8: a frozen picture rebases the audio lag measure.
+        using namespace gpu::present_clock;
+        Check(!PictureFrozen(5'000'000'000), "nothing presented yet: not frozen");
+        g_lastPresentNs.store(5'000'000'000);
+        Check(!PictureFrozen(5'050'000'000), "50 ms since the last frame: running");
+        Check(PictureFrozen(5'150'000'000), "150 ms since the last frame: frozen");
+        Check(PictureFrozen(5'080'000'000, 50), "the limit is a parameter");
+        g_lastPresentNs.store(0);
     }
     std::printf("audio lag recovery: %d checks passed\n", checks);
     return 0;

@@ -5,6 +5,7 @@
 #include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
 #include "audio_lag_recovery.h"
+#include <gpu/present_clock.h>
 #include <string_view>
 #include "audio_timing.h"
 #include "fast_forward_audio.h"
@@ -429,6 +430,9 @@ namespace apu
                 const uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
                 const uint32_t deviceOpens = g_deviceOpens.load(std::memory_order_relaxed);
                 bool rebase = pauseChanges != pauseChangesSeen || deviceOpens != deviceOpensSeen || reserve != reserveSeen;
+                // Steprant 2.0.8: the picture is frozen (a load, a shader
+                // compile): picture and audio stop together, nothing to repay.
+                if (gpu::present_clock::PictureFrozen(gpu::present_clock::NowNs())) rebase = true;
                 pauseChangesSeen = pauseChanges;
                 deviceOpensSeen = deviceOpens;
                 reserveSeen = reserve;

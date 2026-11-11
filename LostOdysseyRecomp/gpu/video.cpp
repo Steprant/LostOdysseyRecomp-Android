@@ -1,4 +1,5 @@
 #include <discord/presence.h>
+#include "present_clock.h"
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
 #include <version.h>
 #include <stdafx.h>
@@ -5335,7 +5336,7 @@ namespace gpu::video
         FgPresentStart();
         const bool presented = PresentSwapchainImage(imageIndex, &signalSemaphore, 1);
         FgPresented(presented);
-        if (presented) ++g_completedPresentCount;
+        if (presented) { ++g_completedPresentCount; gpu::present_clock::NotePresented(); }
         g_fgPresentSerial = submissionSerial;
         g_presentPending = true;
         g_lastPresentedImage=imageIndex; g_hasPresentedImage=true;
@@ -5793,7 +5794,7 @@ namespace gpu::video
                     g_fgPresent.CancelAll(frame_generation::HandoffCancel::DisplayChange);
                     renderer::CancelFgHandoffs();
                 }
-                if (presented) ++g_completedPresentCount;
+                if (presented) { ++g_completedPresentCount; gpu::present_clock::NotePresented(); }
                 g_fgPresentSerial = submissionSerial;
                 g_presentPending = true;
                 g_lastPresentedImage=imageIndex; g_hasPresentedImage=true;
@@ -5820,7 +5821,7 @@ namespace gpu::video
                         if (!submittedReal) return false;
                         g_fgPresentSerial = realSerial; g_presentPending = true;
                         const bool accepted = PresentSwapchainImage(realIndex, &ready, 1);
-                        if (accepted) ++g_completedPresentCount;
+                        if (accepted) { ++g_completedPresentCount; gpu::present_clock::NotePresented(); }
                         g_lastPresentedImage = realIndex; g_hasPresentedImage = accepted;
                         return accepted;
                     };
