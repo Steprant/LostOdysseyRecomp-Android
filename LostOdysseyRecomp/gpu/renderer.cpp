@@ -8361,7 +8361,7 @@ void main()
                             parked->format == current.format;
                     });
                     if (pair[slot].Used()) Gpu().retiredTextures.push_back(std::move(pair[slot].target));
-                    pair[slot] = {std::move(target), parkGeneration};
+                    pair[slot] = {std::move(target), parkGeneration, ParkClockMs()};
                 }
                 renderTargets.clear();
                 const auto bytesOf = [](const std::unique_ptr<HostTexture>& target) {
@@ -8372,6 +8372,38 @@ void main()
                 LOG_INFO("renderer: resize parked {} render targets ({} MB, {} evicted over the budget); the last size reused {} of {} new targets",
                     parking::Count(parkedTargets), parking::TotalBytes(parkedTargets, bytesOf) >> 20, evicted.size(),
                     reused, reused + missed);
+            }
+
+            // Steprant 2.0.2: parked targets nobody took back for kParkedTargetAge
+            // are freed (the other size after a phone/TV switch). Called at the
+            // end of a frame, about every four seconds while anything is parked.
+            // LO_PARKED_TARGET_AGE=0 keeps them until the budget evicts them (2.0).
+            static uint64_t ParkClockMs()
+            {
+                return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            }
+            static constexpr uint64_t kParkedTargetAgeMs = 60'000;
+            void ReleaseAgedParkedTargets()
+            {
+                static const bool enabled = [] {
+                    const char* value = std::getenv("LO_PARKED_TARGET_AGE");
+                    return !(value && std::string_view(value) == "0");
+                }();
+                if (!enabled || parkedTargets.empty()) return;
+                const auto bytesOf = [](const std::unique_ptr<HostTexture>& target) {
+                    return uint64_t(target->width) * target->height * std::max(1u, RenderFormatSize(target->format));
+                };
+                auto evicted = parking::EvictOlderThan(parkedTargets, ParkClockMs(), kParkedTargetAgeMs);
+                if (evicted.empty()) return;
+                uint64_t bytes = 0;
+                for (auto& target : evicted) {
+                    bytes += bytesOf(target);
+                    Gpu().retiredTextures.push_back(std::move(target));
+                }
+                LOG_INFO("renderer: freed {} parked render targets not used for {} s ({} MB); {} still parked ({} MB)",
+                    evicted.size(), kParkedTargetAgeMs / 1000, bytes >> 20, parking::Count(parkedTargets),
+                    parking::TotalBytes(parkedTargets, bytesOf) >> 20);
             }
 
             void FailCurrentPlan(frame_plan::FailureReason reason = frame_plan::FailureReason::Unknown)
@@ -14744,6 +14776,7 @@ void main()
                 OcclusionFrameEnd();
                 if (record_timing::Enabled()) recordTiming.EndFrame(frame);
                 ++frame; drawsThisFrame = 0; drops = {};
+                if ((frame & 127) == 0) ReleaseAgedParkedTargets();
             }
             frame_generation::ResolveIdentity FgIdentity(const ResolvedSurface& rs) const
             {

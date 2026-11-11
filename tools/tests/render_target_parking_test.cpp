@@ -115,6 +115,33 @@ int main()
             for (const auto& slot : p)
                 Check(!slot.Used() || slot.target->size == 1200, "survivors are the newest generation");
 
+        // Steprant 2.0.2: a size nobody took back for 60 s is freed.
+        {
+            Map aged;
+            const uint64_t minute = 60'000;
+            // Phone targets parked at t=1000 (switch to the TV), TV targets
+            // parked at t=40000 (switch back to the phone).
+            for (int k = 0; k < 4; ++k) aged[k][0] = {Make(1200, 50), 1, 1000};
+            for (int k = 0; k < 4; ++k) aged[k][1] = {Make(1080, 40), 2, 40000};
+            Check(EvictOlderThan(aged, 30000, minute).empty() && Count(aged) == 8, "nothing is freed before its time");
+            // The phone targets are taken back when play resumes on the phone.
+            for (int k = 0; k < 4; ++k) aged[k][0] = {};
+            auto evicted = EvictOlderThan(aged, 99999, minute);
+            Check(evicted.empty() && Count(aged) == 4, "the other size waits its 60 s");
+            evicted = EvictOlderThan(aged, 100000, minute);
+            Check(evicted.size() == 4 && Count(aged) == 0 && aged.empty(), "after 60 s unused the other size is freed and its keys removed");
+            for (const auto& target : evicted) Check(target && target->size == 1080, "the freed handles are returned for retirement");
+            // Mixed ages in one key: only the old slot goes.
+            aged[7][0] = {Make(1200), 3, 0};
+            aged[7][1] = {Make(1080), 4, 50000};
+            evicted = EvictOlderThan(aged, 70000, minute);
+            Check(evicted.size() == 1 && evicted[0]->size == 1200 && aged.count(7) && aged[7][1].Used() && !aged[7][0].Used(),
+                "each slot ages on its own");
+            // A clock earlier than the park time (never in practice) frees nothing.
+            Check(EvictOlderThan(aged, 10, minute).empty(), "no eviction with a clock before the park time");
+            Check(EvictOlderThan(aged, 50000 + minute, 0).size() == 1 && aged.empty(), "age zero frees everything parked");
+        }
+
         std::printf("PASS: %u render target parking checks\n", checks);
         return 0;
     } catch (const std::exception& e) {

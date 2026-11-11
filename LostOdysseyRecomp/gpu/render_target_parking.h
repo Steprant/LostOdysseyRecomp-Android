@@ -20,6 +20,7 @@ struct Slot
 {
     Handle target{};
     uint64_t generation = 0; // resize that parked it; older is evicted first
+    uint64_t parkedAtMs = 0; // Steprant 2.0.2: when it was parked (EvictOlderThan)
     bool Used() const { return static_cast<bool>(target); }
 };
 
@@ -72,6 +73,27 @@ auto EvictToBudget(Map& map, uint64_t budget, Bytes&& bytes)
     }
     for (auto it = map.begin(); it != map.end();)
         it = (!it->second[0].Used() && !it->second[1].Used()) ? map.erase(it) : std::next(it);
+    return evicted;
+}
+
+// Steprant 2.0.2: a size that has not been used for maxAgeMs is not coming
+// back soon (phone to TV and back took the PSS from 2.1 to 4.1 GB in the
+// 10/11 session with both sizes parked). Evicts every slot parked at least
+// that long ago and returns the handles. A slot taken back by a lookup is no
+// longer in the map, so only allocations nobody asked for age here.
+template<class Map>
+auto EvictOlderThan(Map& map, uint64_t nowMs, uint64_t maxAgeMs)
+{
+    using Handle = decltype(map.begin()->second[0].target);
+    std::vector<Handle> evicted;
+    for (auto it = map.begin(); it != map.end();) {
+        for (auto& slot : it->second)
+            if (slot.Used() && nowMs >= slot.parkedAtMs && nowMs - slot.parkedAtMs >= maxAgeMs) {
+                evicted.push_back(std::move(slot.target));
+                slot = {};
+            }
+        it = (!it->second[0].Used() && !it->second[1].Used()) ? map.erase(it) : std::next(it);
+    }
     return evicted;
 }
 
