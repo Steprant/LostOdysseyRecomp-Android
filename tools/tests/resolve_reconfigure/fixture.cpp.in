@@ -66,6 +66,8 @@ struct Renderer {
     static size_t ResolvedBaseBit(uint32_t base) { return size_t((base*0x9E3779B1u)>>20); }
     static constexpr uint32_t kDepthResolveTag=0x1000;
     uint64_t activePlanGeneration=0, appliedPlanEpoch=1, frame=10, shadowConfigFrame=~0ull;
+    // Steprant 2.0.2 B5: SGSR2 preparation ahead, released with the feature.
+    struct { unsigned released=0; void Released() { ++released; } } sgsr2Ahead;
     uint64_t srReconfigureFrame=~0ull, temporalSupportedFrame=0, sceneAAAppliedFrame=0, sceneAAConfigFrame=0, temporalEpoch=0;
     bool activePlanFailed=false, resolveReadback=false;
     uint32_t shadowConfigValue=1, shadowResolution=1;
