@@ -29,7 +29,7 @@ permissions:
 jobs:
   pin-test-build:
     name: Preserve Steprant test build commit
-    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0'
+    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2'
     permissions:
       contents: write
     runs-on: ubuntu-22.04
@@ -42,6 +42,7 @@ jobs:
           set -euo pipefail
           version=1.9
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.0 ]] && version=2.0
+          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0.2 ]] && version=2.0.2
           pin="steprant/build-$version-$GITHUB_RUN_ID"
           if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
             [[ "$actual" == "$GITHUB_SHA" ]] || { echo "::error::Build ref points to another commit"; exit 1; }
@@ -184,6 +185,9 @@ jobs:
             steprant/v1.8) version=1.8 ;;
             steprant/v2.0-dev) version=1.9 ;;
             steprant/v2.0) version=2.0 ;;
+            # 2.0.2 stable base (11/11): from 2.0 Final, versionCode 2000002 so
+            # it installs over the 2.0.1 test builds (2000001); no developer page.
+            steprant/v2.0.2) version=2.0.2 ;;
             *) version= ;;
           esac
           # The developer page (A/B switches) is compiled out: the 1.9 logs

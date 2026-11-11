@@ -1,14 +1,15 @@
 name: Steprant test draft
 
 # Copies a finished Android APK workflow artifact from steprant/v2.0-dev (1.9
-# test builds) or steprant/v2.0 (2.0) into a DRAFT release
+# test builds), steprant/v2.0 (2.0) or steprant/v2.0.2 (2.0.2 stable base)
+# into a DRAFT release
 # v<version>-steprant.<YYYYMMDD>-<short_name>. It never publishes the release
 # and never marks it latest; the public 1.8 release is untouched.
 # Run by hand, or by pushing .github/steprant-test-draft.json
 # ({"run_id": "...", "short_name": "..."}) to steprant/v2.0-dev.
 on:
   push:
-    branches: ['steprant/v2.0-dev']
+    branches: ['steprant/v2.0-dev', 'steprant/v2.0.2']
     paths: ['.github/steprant-test-draft.json']
   workflow_dispatch:
     inputs:
@@ -65,7 +66,8 @@ jobs:
           case "$branch" in
             steprant/v2.0-dev) echo "VERSION=1.9" >> "$GITHUB_ENV" ;;
             steprant/v2.0) echo "VERSION=2.0" >> "$GITHUB_ENV" ;;
-            *) echo "::error::run $RUN_ID built $branch, not steprant/v2.0-dev or steprant/v2.0"; exit 1 ;;
+            steprant/v2.0.2) echo "VERSION=2.0.2" >> "$GITHUB_ENV" ;;
+            *) echo "::error::run $RUN_ID built $branch, not steprant/v2.0-dev, steprant/v2.0 or steprant/v2.0.2"; exit 1 ;;
           esac
           echo "BRANCH=$branch" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
