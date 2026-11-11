@@ -72,28 +72,19 @@ inline constexpr std::array<Definition, Count> Definitions{{
 
 // The value each stored choice writes to its variable (nullptr: unset, the
 // built-in default).
+// Steprant 2.0.2: one rule for every on/off row instead of a case per switch.
+// The default choice leaves the variable unset; the other one writes "0" (Off)
+// or "1" (On). The per-switch table of 2.0.1b had the five 2.0 rows (frame
+// graph, copies at the end of the pass, render area, compact targets, SGSR2
+// continuation) share the display timing case: On wrote "1" and Off wrote
+// nothing, so in that build those five switches turned nothing off.
 inline const char* VariableValue(Switch which, uint32_t value)
 {
-    switch (which)
-    {
-    case Switch::Sgsr2Smaa: return value == 1 ? "0" : nullptr;
-    case Switch::DrawTimestamps: return value == 1 ? "0" : nullptr;
-    case Switch::DeadStoreDiscard: return value == 0 ? "1" : nullptr;
-    case Switch::GameThreadsOnBigCores: return value == 0 ? "1" : nullptr;
-    case Switch::UiPrewarm: return value == 1 ? "0" : nullptr;
-    case Switch::VoicePrefetch: return value == 1 ? "0" : nullptr;
-    case Switch::Sgsr2Reactive: return value == 1 ? "0" : nullptr;
-    case Switch::TurnipMode: return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
-    case Switch::FrameGraph:
-    case Switch::DeferredCopies:
-    case Switch::ScissorRenderArea:
-    case Switch::CompactTargets:
-    case Switch::Sgsr2Continuation:
-    case Switch::DisplayTiming: return value == 0 ? "1" : nullptr;
-    case Switch::ScreenDrawJitter: return value == 1 ? "0" : nullptr;
-    case Switch::Count: break;
-    }
-    return nullptr;
+    if (which == Switch::Count) return nullptr;
+    if (which == Switch::TurnipMode) return value == 1 ? "sysmem" : value == 2 ? "gmem" : nullptr;
+    const auto& definition = Definitions[size_t(which)];
+    if (definition.choices != 2 || value >= 2 || value == definition.defaultValue) return nullptr;
+    return value == 1 ? "0" : "1";
 }
 
 inline std::array<uint32_t, Count>& Values()
