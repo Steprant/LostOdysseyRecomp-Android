@@ -385,7 +385,19 @@ void RaiseAudioThreadPriority()
     if (setpriority(PRIO_PROCESS, gettid(), -16) != 0)
         LOG_WARNING("audio thread priority: setpriority failed, errno {}", errno);
 }
+
+int CurrentThreadId()
+{
+    return int(gettid());
+}
+
+bool SetThreadNice(int threadId, int nice)
+{
+    return threadId > 0 && setpriority(PRIO_PROCESS, id_t(threadId), nice) == 0;
+}
 #else
+int CurrentThreadId() { return 0; }
+bool SetThreadNice(int, int) { return false; }
 void PinCriticalThread(CriticalThread) {}
 void PreferPerformanceCores(bool)
 {

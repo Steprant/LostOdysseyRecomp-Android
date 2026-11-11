@@ -1,6 +1,7 @@
 #include <stdafx.h>
 #include "audio.h"
 #include "audio_callback.h"
+#include "audio_worker_priority.h"
 #include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
 #include "audio_timing.h"
@@ -20,6 +21,8 @@
 #include <cmath>
 #if defined(__ANDROID__)
 #include <diagnostics/android_tester.h>
+#include <pthread.h>
+#include <time.h>
 #endif
 
 namespace apu
@@ -271,6 +274,105 @@ namespace apu
             }
         }
 
+#if LO_PLATFORM_ANDROID
+        // Steprant 2.0.2 (audio_worker_priority.h): the game's audio worker
+        // thread, attached by its entry hook and sampled by the driver thread.
+        struct WorkerPriority
+        {
+            std::mutex mutex;
+            std::atomic<bool> attached{ false };
+            int threadId = 0;
+            clockid_t cpuClock{};
+            worker_priority::Policy policy;
+            worker_priority::Mode mode = worker_priority::Mode::Adaptive;
+            std::chrono::steady_clock::time_point nextSample{};
+            uint32_t logged = 0;
+            uint32_t windows = 0, busyPermilleMax = 0;
+        };
+        WorkerPriority& GetWorkerPriority()
+        {
+            static WorkerPriority state;
+            return state;
+        }
+        void ApplyWorkerLevel(WorkerPriority& w, worker_priority::Level level)
+        {
+            if (!os::scheduling::SetThreadNice(w.threadId, worker_priority::Nice(level)))
+                LOG_WARNING("audio: game audio worker thread priority {} not applied, errno {}", worker_priority::Name(level), errno);
+        }
+        // On the worker thread, before the game's code runs.
+        void AttachWorkerPriority()
+        {
+            static const worker_priority::Mode mode = worker_priority::ParseMode(std::getenv("LO_AUDIO_WORKER_PRIORITY"));
+            if (mode == worker_priority::Mode::Off) return;
+            auto& w = GetWorkerPriority();
+            std::lock_guard lock(w.mutex);
+            w.mode = mode;
+            w.threadId = os::scheduling::CurrentThreadId();
+            w.policy.Restart();
+            w.windows = w.busyPermilleMax = 0;
+            if (mode == worker_priority::Mode::AlwaysAudio) {
+                ApplyWorkerLevel(w, worker_priority::Level::Audio);
+                LOG_INFO("audio: game audio worker thread at audio priority");
+                return;
+            }
+            if (pthread_getcpuclockid(pthread_self(), &w.cpuClock) != 0) {
+                // Without its CPU clock the thread cannot be measured: the
+                // intermediate priority is the safe one.
+                ApplyWorkerLevel(w, worker_priority::Level::Intermediate);
+                LOG_INFO("audio: game audio worker thread at intermediate priority (no CPU clock)");
+                return;
+            }
+            ApplyWorkerLevel(w, worker_priority::Level::Intermediate);
+            w.nextSample = std::chrono::steady_clock::now();
+            w.attached.store(true, std::memory_order_release);
+            LOG_INFO("audio: game audio worker thread at intermediate priority; audio priority after {} idle windows of {} ms",
+                worker_priority::kIdleWindowsToRaise, worker_priority::kWindowNs / 1000000);
+        }
+        void DetachWorkerPriority()
+        {
+            auto& w = GetWorkerPriority();
+            std::lock_guard lock(w.mutex);
+            w.attached.store(false, std::memory_order_release);
+            w.threadId = 0;
+        }
+        // On the audio driver thread, once a period: one load and, every
+        // 250 ms, one clock read.
+        void SampleWorkerPriority()
+        {
+            auto& w = GetWorkerPriority();
+            if (!w.attached.load(std::memory_order_acquire)) return;
+            const auto now = std::chrono::steady_clock::now();
+            if (now < w.nextSample) return;
+            std::unique_lock lock(w.mutex, std::try_to_lock);
+            if (!lock.owns_lock() || !w.attached.load(std::memory_order_relaxed)) return;
+            w.nextSample = now + std::chrono::milliseconds(250);
+            timespec cpu{};
+            if (clock_gettime(w.cpuClock, &cpu) != 0) {
+                // The thread ended without returning through its entry.
+                w.attached.store(false, std::memory_order_release);
+                w.threadId = 0;
+                return;
+            }
+            const auto wallNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
+            const auto decision = w.policy.Sample(wallNs, uint64_t(cpu.tv_sec) * 1000000000ull + uint64_t(cpu.tv_nsec));
+            if (!decision.windowClosed) return;
+            ++w.windows;
+            w.busyPermilleMax = std::max(w.busyPermilleMax, decision.busyPermille);
+            if (decision.changed) {
+                ApplyWorkerLevel(w, decision.level);
+                if (w.logged < 32) {
+                    ++w.logged;
+                    LOG_INFO("audio: game audio worker thread busy={:.1f}% of a core -> {} priority (windows={} busy_max={:.1f}%)",
+                        decision.busyPermille / 10.0, worker_priority::Name(decision.level), w.windows, w.busyPermilleMax / 10.0);
+                }
+            } else if (w.windows == 150) {
+                // Five minutes in: what the thread does, once.
+                LOG_INFO("audio: game audio worker thread at {} priority, busy_max={:.1f}% of a core over {} windows",
+                    worker_priority::Name(decision.level), w.busyPermilleMax / 10.0, w.windows);
+            }
+        }
+#endif
+
         void DriverMain()
         {
             os::SetCurrentThreadName("Audio Driver");
@@ -290,6 +392,9 @@ namespace apu
                 // Precise wakeups: a late one drains the few frames SDL has queued.
                 os::scheduling::PreciseSleepUntil(next);
                 g_wakeLate.Record(std::chrono::steady_clock::now() - next);
+#if LO_PLATFORM_ANDROID
+                SampleWorkerPriority();
+#endif
                 // Avoid a burst of catch-up callbacks after a host stall.
                 if (std::chrono::steady_clock::now() - next > framePeriod * reserve)
                 {
@@ -693,22 +798,29 @@ namespace apu
 // audio priority; the worker was an ordinary game thread, so on a busy frame
 // it ran late and the callback waited with it: 14 "audio callback stall"
 // lines of 50-322 ms in the 10/11 22:23 session, all sampled at that wait.
-// The worker now runs at the audio priority too. LO_AUDIO_WORKER_PRIORITY=0
-// turns it off.
+// 2.0.2: 2.0.1 gave it the audio priority unconditionally. It now starts at
+// an intermediate priority and gets the audio one only while it is measured
+// to wait almost all the time (audio_worker_priority.h).
+// LO_AUDIO_WORKER_PRIORITY=0 leaves the thread alone, =audio is 2.0.1.
+namespace apu
+{
+    void OnGameAudioWorkerStart()
+    {
+#if LO_PLATFORM_ANDROID
+        AttachWorkerPriority();
+#endif
+    }
+    void OnGameAudioWorkerEnd()
+    {
+#if LO_PLATFORM_ANDROID
+        DetachWorkerPriority();
+#endif
+    }
+}
 extern "C" PPC_FUNC(__imp__sub_82CC4D98);
 PPC_FUNC(sub_82CC4D98)
 {
-#if LO_PLATFORM_ANDROID
-    static const bool raise = [] {
-        const char* value = std::getenv("LO_AUDIO_WORKER_PRIORITY");
-        return !value || std::strcmp(value, "0") != 0;
-    }();
-    if (raise) {
-        os::scheduling::RaiseAudioThreadPriority();
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed))
-            LOG_INFO("audio: game audio worker thread at audio priority");
-    }
-#endif
+    apu::OnGameAudioWorkerStart();
     __imp__sub_82CC4D98(ctx, base);
+    apu::OnGameAudioWorkerEnd();
 }

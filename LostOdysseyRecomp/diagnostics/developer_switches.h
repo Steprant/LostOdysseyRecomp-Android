@@ -40,6 +40,7 @@ enum class Switch : uint32_t
     ScreenDrawJitter,     // 2.0.1: screen-space scene draws move with the SGSR2 jitter (on)
     // Steprant 2.0.2 (refinements): one switch per intervention, off restores the 2.0 behaviour.
     TransitionPromotion,  // A1: loading screens and movies drawn at the output size from their first draw (on)
+    AudioWorkerPriority,  // A1: the game's audio worker thread raised by its measured CPU share (on); off leaves it alone
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -71,6 +72,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"display_timing_test", L"Display timing (test)", L"顯示時序（測試）", 1, 2, "LO_DISPLAY_TIMING"},
     {"screen_draw_jitter", L"SGSR2 jitter on screen draws", L"螢幕繪製套用 SGSR2 抖動", 0, 2, "LO_SR_JITTER_SCREEN_DRAWS"},
     {"transition_promotion", L"Loading screens and movies at output size", L"載入畫面與影片以輸出解析度繪製", 0, 2, "LO_SGSR2_TRANSITION_PROMOTION"},
+    {"audio_worker_priority", L"Game audio thread priority", L"遊戲音訊執行緒優先權", 0, 2, "LO_AUDIO_WORKER_PRIORITY"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the
