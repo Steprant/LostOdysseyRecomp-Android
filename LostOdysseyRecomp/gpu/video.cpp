@@ -5137,6 +5137,11 @@ namespace gpu::video
     // when the previous frames were really shown.
     static void ScheduleDisplayTime()
     {
+        // Steprant 2.0.2: isolated. Without LO_DISPLAY_TIMING=1 this is one
+        // cached test: no past-timing reads, no desired time, no log line
+        // (2.0.1b still polled the swapchain at every present), and Plume
+        // neither enables the extension nor adds anything to the present.
+        if (!DisplayTimingEnabled()) return;
         if (!g_vulkan || !g_swapChain || !g_device || !g_device->getCapabilities().displayTiming) return;
         static uint64_t refreshNs = 0;
         static uint32_t refreshPolls = 0;
