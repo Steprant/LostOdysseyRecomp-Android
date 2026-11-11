@@ -82,14 +82,9 @@ jobs:
             echo '::error::Missing authorized Disc 1 default.xex. Set LO_BUILD_XEX_URL to a private HTTPS URL, or LO_BUILD_INPUT_KEY for the configured private build-input repository. No game code or APK has been built.'
             exit 1
           fi
-      - name: Install host toolchain and build dependencies
+      - name: Configure the preinstalled host toolchain
         run: |
-          # Ubuntu 24.04 provides Clang 18 and GCC 13 in its own archive.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 clang-tools-18 lld-18 g++-13 binutils \
-            ninja-build file unzip wget ccache openjdk-17-jdk-headless
-          python -m pip install 'cmake==3.31.6'
+          # The Ubuntu 24.04 runner already has Clang 18, GCC 13, CMake and JDK 17.
           gcc_dir=$(dirname "$(g++-13 -print-libgcc-file-name)")
           {
             echo 'CC=clang-18'
@@ -97,10 +92,29 @@ jobs:
             echo "CFLAGS=--gcc-install-dir=$gcc_dir"
             echo "CXXFLAGS=--gcc-install-dir=$gcc_dir"
             echo 'LDFLAGS=-fuse-ld=lld'
-            echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
+            echo "JAVA_HOME=${JAVA_HOME_17_X64:?The runner image must include JDK 17}"
           } >> "$GITHUB_ENV"
           echo '/usr/lib/llvm-18/bin' >> "$GITHUB_PATH"
           clang++-18 --version
+      - name: Set up ccache
+        run: |
+          set -euo pipefail
+          if command -v ccache >/dev/null; then
+            exit 0
+          fi
+          version=4.12.3
+          asset="ccache-$version-linux-x86_64"
+          cache_tools="$RUNNER_TEMP/lo-cache-tools"
+          mkdir -p "$cache_tools"
+          cd "$cache_tools"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 10 --max-time 45 \
+            "https://github.com/ccache/ccache/releases/download/v$version/$asset.tar.xz" \
+            --output "$asset.tar.xz"
+          printf '%s  %s\n' 'a99aa455873c978f6905f07e3176cfdf48bb610990c23ce0e1b718da0f38faa7' "$asset.tar.xz" |
+            sha256sum --check
+          tar -xJf "$asset.tar.xz"
+          "$cache_tools/$asset/ccache" --version
+          echo "$cache_tools/$asset" >> "$GITHUB_PATH"
       - name: Configure Android cache directories
         run: echo "LO_ANDROID_CI_CACHE=$RUNNER_TEMP/lo-android-ci" >> "$GITHUB_ENV"
       - name: Cache Android SDK and NDK
