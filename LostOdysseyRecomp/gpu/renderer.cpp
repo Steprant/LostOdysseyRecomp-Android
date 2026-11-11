@@ -11887,12 +11887,23 @@ void main()
                                 // Bounded: a scene that alternates every frame stops here.
                                 static uint64_t sdrRejectFirst = ~0ull, sdrRejectLast = ~0ull;
                                 static uint32_t sdrRejectLogs = 0;
+                                // Steprant 2.0.2: 16 detailed lines, then one summary every
+                                // 1800 frames (it was 256 lines of 600 characters each; since
+                                // 2.0 SGSR2 accepts these frames anyway).
+                                static uint64_t sdrSummarySegments = 0, sdrSummaryFrames = 0, sdrSummaryFrame = 0;
                                 const auto sdrRejectLog = [] {
-                                    if (sdrRejectLogs >= 256) return false;
-                                    if (++sdrRejectLogs == 256)
-                                        LOG_INFO("renderer: DLSS SDR consumer segment logging stopped after 256 lines");
+                                    if (sdrRejectLogs >= 16) return false;
+                                    if (++sdrRejectLogs == 16)
+                                        LOG_INFO("renderer: DLSS SDR consumer: detailed lines stop here, summaries follow");
                                     return true;
                                 };
+                                if (sdrRejectLogs >= 16 && frame >= sdrSummaryFrame + 1800) {
+                                    if (sdrSummarySegments || sdrSummaryFrames)
+                                        LOG_INFO("renderer: DLSS SDR consumer summary frame={} rejected_segments={} rejected_frames={} since frame {}",
+                                            frame, sdrSummarySegments, sdrSummaryFrames, sdrSummaryFrame);
+                                    sdrSummarySegments = sdrSummaryFrames = 0;
+                                    sdrSummaryFrame = frame;
+                                }
                                 if (viewMatches && frameMatches && ordinalMatches && extentMatches && isRbSwapIdentity) {
                                     qualifiedEncoding = temporal::ColorEncoding::Sdr;
                                     if (sdrRejectLast != ~0ull) {
@@ -11901,7 +11912,9 @@ void main()
                                         sdrRejectFirst = sdrRejectLast = ~0ull;
                                     }
                                 } else {
+                                    ++sdrSummaryFrames;
                                     if (sdrRejectLast == ~0ull || frame > sdrRejectLast + 1) {
+                                        ++sdrSummarySegments;
                                         if (sdrRejectLast != ~0ull && sdrRejectLog())
                                             LOG_INFO("renderer: DLSS SDR consumer gap frame={} rejected_frames={} first={} last={}",
                                                 frame, sdrRejectLast - sdrRejectFirst + 1, sdrRejectFirst, sdrRejectLast);

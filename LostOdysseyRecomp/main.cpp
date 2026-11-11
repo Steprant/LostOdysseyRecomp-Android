@@ -427,6 +427,19 @@ int main(int argc, char* argv[])
     // Vulkan driver read them.
     LOG_INFO("{}", diagnostics::developer::ApplyAtStartup(os::user_paths::SettingsPath().parent_path() / "developer_switches.ini"));
 #endif
+#if LO_PLATFORM_ANDROID
+    // Steprant 2.0.2: from here on the game's threads hand their lines to a
+    // writer thread (os/logger.h). LO_LOG_ASYNC=0 (developer page
+    // "Asynchronous log" off) keeps every line written by the thread that
+    // logs it, as in 2.0. After the developer switches, so theirs counts.
+    if (const char* async = getenv("LO_LOG_ASYNC"); os::logger::g_file && (!async || std::strcmp(async, "0") != 0))
+    {
+        os::logger::StartAsync();
+        std::atexit([] { os::logger::WritePending(); });
+        LOG_INFO("log: asynchronous writer started (queue of {} lines / {} KiB)",
+            os::logger::AsyncSink::kMaxLines, os::logger::AsyncSink::kMaxBytes / 1024);
+    }
+#endif
     // WP0.1 frame samples go beside the Android Tester sessions.
     diagnostics::frame_samples::SetDirectory(
         os::user_paths::SettingsPath().parent_path().parent_path() / "android-diagnostics" / "frame-samples");

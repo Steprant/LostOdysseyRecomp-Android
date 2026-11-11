@@ -6,6 +6,7 @@
 #include <kernel/memory.h>
 #include <os/host_scheduling.h>
 #include <os/logger.h>
+#include <os/log_repeat.h>
 #include <os/thread_name.h>
 #include <cmath>
 #include <cstdarg>
@@ -811,8 +812,27 @@ namespace apu::xma
                 g_contexts[id].enabled = false;
                 g_contexts[id].Reset();
                 const uint32_t n = ++g_allocatedCount;
-                if (g_trace || n <= 4)
+                if (g_trace)
                     LOG_INFO("xma: allocated context {} ({} live)", id, n);
+                else if (n <= 4)
+                {
+                    // Steprant 2.0.2: thousands of these in a session (voices
+                    // come and go with few contexts live). The first four as
+                    // they are, then one summary every 30 s. Under the command lock.
+                    static os::log_repeat::Gate gate;
+                    switch (gate.Note(std::chrono::steady_clock::now()))
+                    {
+                    case os::log_repeat::Action::Verbatim:
+                        LOG_INFO("xma: allocated context {} ({} live)", id, n);
+                        break;
+                    case os::log_repeat::Action::Summary:
+                        LOG_INFO("xma: allocated context summary: {} allocations with at most 4 live since the last line ({} since start, {} live now)",
+                            gate.Take(), gate.total, n);
+                        break;
+                    case os::log_repeat::Action::Silent:
+                        break;
+                    }
+                }
                 return g_arrayGuest + id * kContextSize;
             }
         }

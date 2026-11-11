@@ -291,6 +291,9 @@ namespace os::logger
         if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_supported)
             return ec;
 
+        // Steprant 2.0.2: with the asynchronous sink, the lines still queued
+        // belong to the snapshot too.
+        if (g_async.load(std::memory_order_acquire)) WritePendingLocked();
         errno = 0;
         if (fflush(g_file) != 0)
             return errno ? std::error_code(errno, std::generic_category())
