@@ -4,6 +4,8 @@
 #include "audio_worker_priority.h"
 #include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
+#include "audio_lag_recovery.h"
+#include <string_view>
 #include "audio_timing.h"
 #include "fast_forward_audio.h"
 #include "matrix_surround.h"
@@ -77,6 +79,24 @@ namespace apu
         std::atomic<uint32_t> g_starved{ 0 };
         std::atomic<uint32_t> g_clockResets{ 0 };
         std::atomic<uint32_t> g_refillFrames{ 0 };
+        // Steprant 2.0.6 (audio_lag_recovery.h): the game's audio timeline
+        // lost behind the wall clock after a stall, repaid one dropped guest
+        // frame at a time. The policy is the driver thread's; SubmitFrame (on
+        // whichever thread the game submits from, in sequence with the
+        // callback) sees only the drop request and the join that follows.
+        detail::AudioLagRecovery g_lagRecovery;
+        std::atomic<bool> g_dropFrame{ false };
+        std::atomic<bool> g_joinNext{ false };
+        // Copies for the report line (EmitFrame).
+        std::atomic<uint32_t> g_lagPending{ 0 }, g_lagRepaid{ 0 }, g_lagMax{ 0 }, g_lagStalls{ 0 }, g_lagAbandoned{ 0 };
+        void PublishLag()
+        {
+            g_lagPending.store(g_lagRecovery.PendingFrames(), std::memory_order_relaxed);
+            g_lagRepaid.store(g_lagRecovery.RepaidFrames(), std::memory_order_relaxed);
+            g_lagMax.store(g_lagRecovery.MaxLagFrames(), std::memory_order_relaxed);
+            g_lagStalls.store(g_lagRecovery.Stalls(), std::memory_order_relaxed);
+            g_lagAbandoned.store(g_lagRecovery.Abandoned(), std::memory_order_relaxed);
+        }
         // Guest frames per output frame in this period: 1, or under
         // fast-forward up to its rate. The driver runs the guest callback this
         // many times per period. SubmitFrame shortens them by the same factor,
@@ -95,6 +115,7 @@ namespace apu
 #endif
 
         uint32_t FrameBytes() { return XAUDIO_NUM_SAMPLES * g_channels * sizeof(float); }
+        double FrameMs(uint32_t frames) { return frames * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ; }
 
         // Caller holds g_deviceMutex. 5.1 needs a device that mixes six or
         // more channels. PulseAudio, PipeWire and Core Audio accept six on
@@ -385,9 +406,16 @@ namespace apu
             GuestThreadContext ctx(3);
             constexpr auto framePeriod = std::chrono::microseconds(1000000ull * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
             auto next = std::chrono::steady_clock::now();
+            uint32_t pauseChangesSeen = g_pauseChanges.load(std::memory_order_relaxed);
             while (g_running)
             {
                 const uint32_t reserve = g_reserveFrames.load(std::memory_order_relaxed);
+                // A pause or a trip to the background since the previous
+                // period: the game stopped with the audio, nothing to repay.
+                const uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
+                const bool pauseSeen = pauseChanges != pauseChangesSeen;
+                pauseChangesSeen = pauseChanges;
+                if (pauseSeen && g_lagRecovery.PendingFrames()) { g_lagRecovery.Clear(); PublishLag(); }
                 next += framePeriod;
                 // Precise wakeups: a late one drains the few frames SDL has queued.
                 os::scheduling::PreciseSleepUntil(next);
@@ -396,8 +424,20 @@ namespace apu
                 SampleWorkerPriority();
 #endif
                 // Avoid a burst of catch-up callbacks after a host stall.
-                if (std::chrono::steady_clock::now() - next > framePeriod * reserve)
+                if (const auto late = std::chrono::steady_clock::now() - next; late > framePeriod * reserve)
                 {
+                    const auto overdue = uint32_t(std::min<int64_t>(late / framePeriod, int64_t(UINT32_MAX)));
+                    const uint32_t added = g_lagRecovery.OnClockReset(overdue, QueuedFrames(), reserve, pauseSeen);
+                    if (added)
+                    {
+                        PublishLag();
+                        static uint32_t reported = 0;
+                        if (reported++ < 32)
+                            LOG_INFO("audio resync: {:.1f} ms behind after a {:.1f} ms gap (pending {:.1f} ms)",
+                                added * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ,
+                                std::chrono::duration<double, std::milli>(late).count(),
+                                g_lagRecovery.PendingFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
+                    }
                     next = std::chrono::steady_clock::now();
                     g_clockResets.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -485,6 +525,7 @@ namespace apu
                     // Up to `rate` guest frames per period, as many as fit in
                     // three quarters of it, so the output never runs dry.
                     const uint32_t frames = std::min(rate, g_boostFrames);
+                    if (g_lagRecovery.PendingFrames()) { g_lagRecovery.SkipThisPeriod(true, true); PublishLag(); }
                     const auto start = std::chrono::steady_clock::now();
                     dispatch(frames);
                     const auto spent = std::chrono::steady_clock::now() - start;
@@ -495,7 +536,9 @@ namespace apu
                 }
                 else
                 {
+                    const auto callbackStart = std::chrono::steady_clock::now();
                     dispatch(1);
+                    const bool quick = std::chrono::steady_clock::now() - callbackStart < framePeriod / 2;
 #if LO_PLATFORM_ANDROID
                     // Keep the intended eight-frame reserve even when a host
                     // stall reset `next`. One timed callback per period cannot
@@ -510,6 +553,24 @@ namespace apu
                         next = std::chrono::steady_clock::now();
                     }
 #endif
+                    // Steprant 2.0.6: repay the lag left by a stall, one
+                    // dropped guest frame every few periods.
+                    if (g_lagRecovery.SkipThisPeriod(quick, false))
+                    {
+                        g_dropFrame.store(true, std::memory_order_relaxed);
+                        dispatch(1);
+                        // A callback that submitted nothing leaves no request behind.
+                        if (!g_dropFrame.exchange(false, std::memory_order_relaxed)) g_lagRecovery.Repaid();
+                        PublishLag();
+                        if (!g_lagRecovery.PendingFrames())
+                        {
+                            static uint32_t reported = 0;
+                            if (reported++ < 32)
+                                LOG_INFO("audio resync: caught up, {:.1f} ms repaid so far (largest lag {:.1f} ms)",
+                                    g_lagRecovery.RepaidFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ,
+                                    g_lagRecovery.MaxLagFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
+                        }
+                    }
                 }
             }
         }
@@ -525,6 +586,9 @@ namespace apu
         const char* deviceFrames = getenv("LO_AUDIO_DEVICE_FRAMES");
         const uint32_t sampleFrames = detail::DeviceSampleFrames(deviceFrames ? uint32_t(atoi(deviceFrames)) : 0, 512);
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, std::to_string(sampleFrames).c_str());
+        // Steprant 2.0.6: LO_AUDIO_RESYNC=0 leaves the lag after a stall, as before.
+        if (const char* resync = getenv("LO_AUDIO_RESYNC"); resync && std::string_view(resync) == "0")
+            g_lagRecovery.SetEnabled(false);
         if (const char* reserve = getenv("LO_AUDIO_RESERVE_FRAMES"))
         {
             g_reserveFrames = detail::ReserveFrames(uint32_t(atoi(reserve)), kQueuedFrames);
@@ -631,7 +695,23 @@ namespace apu
     {
         if (!samples) return;
         const auto* words = static_cast<const uint32_t*>(samples);
+        // Steprant 2.0.6: a frame run only to move the game's audio timeline
+        // ahead after a stall (audio_lag_recovery.h). Drop it; the next one
+        // starts from the last sample played.
+        if (g_dropFrame.exchange(false, std::memory_order_relaxed))
+        {
+            g_joinNext.store(true, std::memory_order_relaxed);
+            return;
+        }
         const uint32_t rate = g_guestFramesPerOutput.load(std::memory_order_relaxed);
+        if (g_joinNext.exchange(false, std::memory_order_relaxed) && rate <= 1 && !g_fastForwardAudio.Active())
+        {
+            static std::array<uint32_t, XAUDIO_NUM_SAMPLES * XAUDIO_NUM_CHANNELS> joined;
+            detail::JoinAfterSkip(g_lastAudioSamples.data(), words, joined.data(),
+                XAUDIO_NUM_CHANNELS, XAUDIO_NUM_SAMPLES, detail::FastForwardAudio::FadeSamples);
+            EmitFrame(joined.data());
+            return;
+        }
         if (rate > 1 || g_fastForwardAudio.Active())
         {
             if (rate > 1 && !g_fastForwardAudio.Active())
@@ -765,11 +845,15 @@ namespace apu
             // the counters before them stay cumulative as in earlier logs.
             const auto lock = xma::TakeLockStats();
             LOG_INFO("audio frames submitted: {} peak={} queued={} mute={} queue_drops={} queue_errors={} starved={} clock_resets={} refill_frames={}"
-                " reserve={} wake_late_max_us={} callback_max_us={} xma_wait_max_us={} xma_wait_audio_max_us={} xma_hold_max_us={} xma_contended_audio={}",
+                " reserve={} wake_late_max_us={} callback_max_us={} xma_wait_max_us={} xma_wait_audio_max_us={} xma_hold_max_us={} xma_contended_audio={}"
+                " resync_stalls={} resync_pending_ms={:.1f} resync_repaid_ms={:.1f} resync_max_ms={:.1f} resync_abandoned={}",
                 n, peak, queued, mute, queueDrops, queueErrors, g_starved.load(std::memory_order_relaxed),
                 g_clockResets.load(std::memory_order_relaxed), g_refillFrames.load(std::memory_order_relaxed),
                 g_reserveFrames.load(std::memory_order_relaxed), g_wakeLate.Take(), g_callbackPeak.Take(),
-                lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs, lock.contendedLatencySensitive);
+                lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs, lock.contendedLatencySensitive,
+                g_lagStalls.load(std::memory_order_relaxed), FrameMs(g_lagPending.load(std::memory_order_relaxed)),
+                FrameMs(g_lagRepaid.load(std::memory_order_relaxed)), FrameMs(g_lagMax.load(std::memory_order_relaxed)),
+                g_lagAbandoned.load(std::memory_order_relaxed));
         }
 #if defined(__ANDROID__)
         if (::diagnostics::android_tester::g_recorder.recording.load(std::memory_order_relaxed))
