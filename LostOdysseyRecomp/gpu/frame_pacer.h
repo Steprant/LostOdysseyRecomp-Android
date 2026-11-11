@@ -25,6 +25,10 @@ public:
         m_fps = fps;
         return m_next;
     }
+    void Reanchor(Clock::time_point lateRelease)
+    {
+        if (m_fps && lateRelease > m_next) m_next = lateRelease;
+    }
 private:
     uint32_t m_fps = 0;
     Clock::time_point m_next{};

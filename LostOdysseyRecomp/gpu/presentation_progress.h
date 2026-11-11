@@ -5,7 +5,7 @@
 namespace gpu::presentation_progress {
 enum class Stage : uint32_t {
     Idle, Present, Prepare, Reconcile, ResizeDrain, Resize, Source, Fence, RendererFence,
-    Acquire, Record, Submit, SubmitQueueLock, SubmitNative, QueuePresent, Capture
+    Acquire, Record, Submit, SubmitQueueLock, SubmitNative, QueuePresent, Capture, Pacing
 };
 
 inline const char* Name(Stage stage)
@@ -27,6 +27,7 @@ inline const char* Name(Stage stage)
     case Stage::SubmitNative: return "submit-native";
     case Stage::QueuePresent: return "queue-present";
     case Stage::Capture: return "capture";
+    case Stage::Pacing: return "pacing-deadline";
     }
     return "unknown";
 }

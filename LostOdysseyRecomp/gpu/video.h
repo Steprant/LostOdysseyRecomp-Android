@@ -20,7 +20,7 @@ namespace plume
     struct RenderCommandFence;
 }
 namespace gpu::dlss { class Controller; }
-namespace gpu { class TemporalUpscaler; }
+namespace gpu { class PresentDeadline; class TemporalUpscaler; }
 
 // Host presentation layer: SDL window + plume render device. Owned by the
 // command processor thread; on Windows the SDL/Debug Menu windows have a
@@ -138,7 +138,7 @@ namespace gpu::video
     // GPU resolve) into an upload buffer and presents it.
     void PresentFrontbuffer(uint32_t physicalAddress, uint32_t width, uint32_t height, uint32_t copyDestInfo,
         const present_capture::Ticket *capture = nullptr, present_capture::Result *captureResult = nullptr,
-        bool cinematicBars = false);
+        bool cinematicBars = false, PresentDeadline* pacing = nullptr);
     // Guest menu activation, before it queues the backdrop blur. Any thread;
     // the GPU owner consumes the opening request before the next guest draw.
     void SetCalibrationGameMenuOpen(bool open);

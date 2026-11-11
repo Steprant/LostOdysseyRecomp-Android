@@ -44,6 +44,8 @@ lo_review_test(LoDebugMenuInteractionTest debug_menu_interaction_test.cpp "${LO_
 lo_review_test(LoSoftResetTest soft_reset_test.cpp)
 lo_review_test(LoAudioCallbackTest audio_callback_test.cpp)
 lo_review_test(LoFramePacerTest frame_pacer_test.cpp)
+lo_review_test(LoPresentDeadlineTest present_deadline_test.cpp)
+add_test(NAME LoAndroidPresentIntervalsTest COMMAND "${Python3_EXECUTABLE}" -B "${LO_TESTS}/android_present_intervals_test.py")
 lo_review_test(LoPresentationProgressTest presentation_progress_test.cpp)
 lo_review_test(LoLoadingStateTest loading_state_test.cpp)
 lo_review_test(LoSettingsPathTest settings_path_test.cpp "${LO_RUNTIME}/updater/update.cpp")

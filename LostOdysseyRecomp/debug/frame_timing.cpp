@@ -60,12 +60,12 @@ void Present(uint32_t swap, uint32_t fps, double flushMs, double waitMs, double 
             std::isfinite(presentMs) && presentMs >= 0;
         LOG_INFO("present timing completed={} target={} present_accepted={} has_previous={} sample_valid={} frame_ms={} "
             "between_ms={} flush_ms={:.6f} pace_ms={:.6f} present_and_events_ms={:.6f} "
-            "sleep_requested_ms={:.6f} sleep_actual_ms={:.6f} wake_overshoot_ms={:.6f} previous_swap_log_ms={:.6f} previous_swap_post_ms={:.6f} cp_idle_ms={:.6f} scope=accepted_present_api_wall_intervals_not_display_latency",
+            "sleep_requested_ms={:.6f} sleep_actual_ms={:.6f} wake_overshoot_ms={:.6f} previous_swap_log_ms={:.6f} previous_swap_post_ms={:.6f} cp_idle_ms={:.6f} submit_before_pace={} late_release_ms={:.3f} scope=accepted_present_api_wall_intervals_not_display_latency",
             swap, fps, pacing.presentAccepted, pacing.hasPrevious, valid,
             valid ? fmt::format("{:.6f}", pacing.betweenMs + flushMs + waitMs + presentMs) : std::string("unknown"),
             pacing.hasPrevious ? fmt::format("{:.6f}", pacing.betweenMs) : std::string("unknown"),
             flushMs, waitMs, presentMs, pacing.requestedMs, pacing.actualMs, pacing.overshootMs,
-            pacing.previousSwapLogMs, pacing.previousSwapPostMs, presentIdleMs);
+            pacing.previousSwapLogMs, pacing.previousSwapPostMs, presentIdleMs, pacing.submittedBeforePacing, pacing.lateReleaseMs);
     }
     // Keep the existing one-second report opt-in separately. LO_RENDER_TIMING
     // records every completed sample instead of estimating FPS from heartbeats.
