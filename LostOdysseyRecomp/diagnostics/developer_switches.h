@@ -38,6 +38,8 @@ enum class Switch : uint32_t
     Sgsr2Continuation,    // 2.0.1: SGSR2 keeps scene frames whose motion is not ready (on)
     DisplayTiming,        // 2.0.1: frames held for the same number of refreshes (off: it made the cadence worse on the phone)
     ScreenDrawJitter,     // 2.0.1: screen-space scene draws move with the SGSR2 jitter (on)
+    // Steprant 2.0.2 (refinements): one switch per intervention, off restores the 2.0 behaviour.
+    TransitionPromotion,  // A1: loading screens and movies drawn at the output size from their first draw (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -68,6 +70,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"sgsr2_continuation", L"SGSR2 without motion ready", L"動態向量未就緒時保持 SGSR2", 0, 2, "LO_SGSR2_CONTINUATION"},
     {"display_timing_test", L"Display timing (test)", L"顯示時序（測試）", 1, 2, "LO_DISPLAY_TIMING"},
     {"screen_draw_jitter", L"SGSR2 jitter on screen draws", L"螢幕繪製套用 SGSR2 抖動", 0, 2, "LO_SR_JITTER_SCREEN_DRAWS"},
+    {"transition_promotion", L"Loading screens and movies at output size", L"載入畫面與影片以輸出解析度繪製", 0, 2, "LO_SGSR2_TRANSITION_PROMOTION"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the
