@@ -61,6 +61,7 @@ lo_review_test(LoAudioWorkerPriorityTest audio_worker_priority_test.cpp)
 lo_review_test(LoScreenDrawJitterTest screen_draw_jitter_test.cpp)
 lo_review_test(LoTitleUpdateCheckTest title_update_check_test.cpp)
 lo_review_test(LoOverlayUploadTest overlay_upload_test.cpp)
+lo_review_test(LoAudioCallbackWaitTest audio_callback_wait_test.cpp)
 # Steprant 2.0.2: the asynchronous log sink (POSIX pipe and temporary file).
 if(UNIX AND EXISTS "${LO_ROOT}/tools/XenonRecomp/thirdparty/fmt/include/fmt/core.h")
     lo_review_test(LoLogAsyncTest log_async_test.cpp)

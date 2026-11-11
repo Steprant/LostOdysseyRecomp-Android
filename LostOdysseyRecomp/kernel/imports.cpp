@@ -503,7 +503,20 @@ static uint32_t KeWaitForMultipleObjects(uint32_t Count, xpointer<XDISPATCHER_HE
     std::vector<std::shared_ptr<KernelObject>> objects;
     objects.reserve(Count);
     for (size_t i = 0; i < Count; ++i) objects.push_back(ResolveWaitObject(Objects[i]));
-    return WaitObjects(objects, WaitType, GuestTimeoutToMilliseconds(Timeout));
+    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
+    // Steprant 2.0.2 D12: the game's audio callback waits here for its own
+    // audio thread without a timeout. The same wait is made in pieces so the
+    // host audio driver can end the queued sound cleanly when the device is
+    // about to run dry; the guest gets the result of the infinite wait.
+    if (timeout == INFINITE && apu::GuardCallbackWait())
+    {
+        struct Pieces { const std::vector<std::shared_ptr<KernelObject>>& objects; uint32_t waitType; } pieces{ objects, WaitType };
+        return apu::GuardedCallbackWait([](void* context, uint32_t milliseconds) {
+            const auto& p = *static_cast<Pieces*>(context);
+            return WaitObjects(p.objects, p.waitType, milliseconds);
+        }, &pieces);
+    }
+    return WaitObjects(objects, WaitType, timeout);
 }
 static uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
 {

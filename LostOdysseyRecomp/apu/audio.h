@@ -53,6 +53,14 @@ namespace apu
     void UnregisterClient();
     void SubmitFrame(const void* samples);
     void SetPaused(bool paused);
+    // Steprant 2.0.2 D12 (audio_callback_wait.h). True on the driver thread
+    // while the game's audio callback runs, unless LO_AUDIO_CALLBACK_GUARD=0.
+    // GuardedCallbackWait then makes the callback's infinite wait in pieces
+    // (wait(context, milliseconds) returns the NTSTATUS of one piece) and
+    // returns what the infinite wait returns; meanwhile a device about to run
+    // dry gets a fade to silence instead of an abrupt cut.
+    bool GuardCallbackWait();
+    uint32_t GuardedCallbackWait(uint32_t (*wait)(void*, uint32_t), void* context);
     // Frames kept queued ahead of the device: 0 is the platform default
     // (8 on Android, 4 elsewhere), or 12/16 for a larger reserve with more
     // latency. Applied from the next driver period. LO_AUDIO_RESERVE_FRAMES

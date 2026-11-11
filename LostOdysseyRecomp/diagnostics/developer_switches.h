@@ -47,6 +47,7 @@ enum class Switch : uint32_t
     MenuOverlayReuse,     // B4: the Settings menu over a game uploads its image only when it changed (on)
     ParkedTargetAge,      // D14: parked render targets not taken back for 60 s are freed (on)
     LowMemoryTrim,        // D15: on Android's low-memory signal the renderer frees its unused caches (on)
+    AudioCallbackGuard,   // D12: a long wait of the game's audio callback ends the queued sound with a fade (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -85,6 +86,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"menu_overlay_reuse", L"Reuse the Settings menu image", L"重複使用設定選單影像", 0, 2, "LO_MENU_OVERLAY_REUSE"},
     {"parked_target_age", L"Free unused parked targets after 60 s", L"60 秒後釋放未使用的暫存渲染目標", 0, 2, "LO_PARKED_TARGET_AGE"},
     {"low_memory_trim", L"Free unused caches on low memory", L"記憶體不足時釋放未使用的快取", 0, 2, "LO_LOW_MEMORY_TRIM"},
+    {"audio_callback_guard", L"Fade to silence on long audio waits", L"音訊長時間等待時淡出為靜音", 0, 2, "LO_AUDIO_CALLBACK_GUARD"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the

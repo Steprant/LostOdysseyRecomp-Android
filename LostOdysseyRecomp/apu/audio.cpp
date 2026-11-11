@@ -1,6 +1,7 @@
 #include <stdafx.h>
 #include "audio.h"
 #include "audio_callback.h"
+#include "audio_callback_wait.h"
 #include "audio_worker_priority.h"
 #include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
@@ -43,6 +44,15 @@ namespace apu
         SDL_AudioStream* g_stream = nullptr;
         uint32_t g_channels = 2; // interleaved channels queued to g_device
         bool g_paused = false;
+        // Steprant 2.0.2 D12 (audio_callback_wait.h). The last sample queued
+        // to the device per output channel (g_deviceMutex), whether the next
+        // frame fades in, and what the guarded waits did.
+        std::array<float, XAUDIO_NUM_CHANNELS> g_lastQueued{};
+        std::atomic<bool> g_fadeInNext{ false };
+        thread_local bool t_inGuestCallback = false;
+        std::atomic<uint32_t> g_guardOverGrace{ 0 };
+        std::atomic<uint32_t> g_guardReleased{ 0 };
+        std::atomic<uint32_t> g_guardLongestMs{ 0 };
         // Counts pause and resume calls: a guest callback that spans one ran
         // while the game was suspended (Android background, host menu).
         std::atomic<uint32_t> g_pauseChanges{ 0 };
@@ -112,6 +122,7 @@ namespace apu
             if (g_device) SDL_CloseAudioDevice(g_device);
             g_device = 0;
             g_channels = 2;
+            g_lastQueued.fill(0);
             SDL_AudioSpec desired{SDL_AUDIO_F32, 2, XAUDIO_SAMPLES_HZ};
             SDL_AudioSpec preferred{};
             const int listedChannels = SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &preferred, nullptr)
@@ -475,7 +486,9 @@ namespace apu
                             }
                             ctx.ppcContext.r3.u64 = param;
                             diagnostics::stall_sampler::NoteAudioCallback(&ctx.ppcContext); // SR4 M-6
+                            t_inGuestCallback = true; // 2.0.2 D12: its waits are guarded
                             g_memory.FindFunction(callback)(ctx.ppcContext, g_memory.base);
+                            t_inGuestCallback = false;
                             diagnostics::stall_sampler::NoteAudioCallback(nullptr);
                         });
                     }
@@ -623,6 +636,50 @@ namespace apu
         g_resetFastForwardAudio.store(true, std::memory_order_relaxed);
         std::lock_guard lock(g_deviceMutex);
         if (g_stream) SDL_ClearAudioStream(g_stream);
+        g_lastQueued.fill(0);
+    }
+
+    // Steprant 2.0.2 D12 (audio_callback_wait.h).
+    bool GuardCallbackWait()
+    {
+        if (!t_inGuestCallback) return false;
+        static const bool enabled = callback_wait::Enabled(std::getenv("LO_AUDIO_CALLBACK_GUARD"));
+        return enabled;
+    }
+
+    uint32_t GuardedCallbackWait(uint32_t (*wait)(void*, uint32_t), void* context)
+    {
+        const auto started = std::chrono::steady_clock::now();
+        const auto outcome = callback_wait::Run(
+            [&](uint32_t milliseconds) { return wait(context, milliseconds); },
+            [] {
+                std::lock_guard lock(g_deviceMutex);
+                if (!g_stream || g_paused) return -1;
+                return int(std::max(0, SDL_GetAudioStreamQueued(g_stream)) / FrameBytes());
+            },
+            [] {
+                std::lock_guard lock(g_deviceMutex);
+                // The frame after the silence starts from zero either way.
+                g_fadeInNext.store(true, std::memory_order_relaxed);
+                if (!g_stream || g_paused) return;
+                bool silent = true;
+                for (uint32_t c = 0; c < g_channels; ++c) silent = silent && g_lastQueued[c] == 0.0f;
+                if (silent) return; // the queue already ends at zero
+                std::array<float, XAUDIO_NUM_SAMPLES * XAUDIO_NUM_CHANNELS> tail;
+                callback_wait::FillTail(tail.data(), g_channels, XAUDIO_NUM_SAMPLES, g_lastQueued.data());
+                SDL_PutAudioStreamData(g_stream, tail.data(), int(FrameBytes()));
+                g_lastQueued.fill(0);
+            });
+        if (outcome.overGrace)
+        {
+            const auto ms = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count());
+            g_guardOverGrace.fetch_add(1, std::memory_order_relaxed);
+            if (outcome.released) g_guardReleased.fetch_add(1, std::memory_order_relaxed);
+            uint32_t longest = g_guardLongestMs.load(std::memory_order_relaxed);
+            while (ms > longest && !g_guardLongestMs.compare_exchange_weak(longest, ms, std::memory_order_relaxed)) {}
+        }
+        return outcome.status;
     }
 
     static void EmitFrame(const uint32_t* words);
@@ -717,6 +774,13 @@ namespace apu
             peak = std::max({peak, std::abs(stereo[i * 2]), std::abs(stereo[i * 2 + 1])});
         }
         g_testPosition = testOn ? pan.Position() : -1.0f;
+        // Steprant 2.0.2 D12: the first frame after a guarded wait left the
+        // device silent rises from zero.
+        if (g_fadeInNext.load(std::memory_order_relaxed) && g_fadeInNext.exchange(false, std::memory_order_relaxed))
+        {
+            callback_wait::FadeIn(stereo.data(), 2, XAUDIO_NUM_SAMPLES);
+            callback_wait::FadeIn(surround.data(), XAUDIO_NUM_CHANNELS, XAUDIO_NUM_SAMPLES);
+        }
         uint32_t n = ++g_framesSubmitted;
         CaptureRequested(stereo.data(), n);
         // Bounded diagnostic capture, before mute; raw f32le, 48 kHz stereo.
@@ -754,6 +818,7 @@ namespace apu
                 if (before < int(FrameBytes() * (g_reserveFrames.load(std::memory_order_relaxed) + 8)))
                 {
                     if (!SDL_PutAudioStreamData(g_stream, data, int(FrameBytes()))) ++queueErrors;
+                    else std::copy_n(data + size_t(XAUDIO_NUM_SAMPLES - 1) * g_channels, g_channels, g_lastQueued.begin());
                 }
                 else ++queueDrops;
                 if (report) queued = std::max(0, SDL_GetAudioStreamQueued(g_stream));
@@ -770,6 +835,15 @@ namespace apu
                 g_clockResets.load(std::memory_order_relaxed), g_refillFrames.load(std::memory_order_relaxed),
                 g_reserveFrames.load(std::memory_order_relaxed), g_wakeLate.Take(), g_callbackPeak.Take(),
                 lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs, lock.contendedLatencySensitive);
+            // 2.0.2 D12: only when a callback wait went over the grace period.
+            static uint32_t guardLogged = 0;
+            if (const uint32_t over = g_guardOverGrace.load(std::memory_order_relaxed); over != guardLogged)
+            {
+                guardLogged = over;
+                LOG_INFO("audio: callback wait guard waits_over_{}ms={} faded_to_silence={} longest_ms={}",
+                    callback_wait::kGraceMs, over, g_guardReleased.load(std::memory_order_relaxed),
+                    g_guardLongestMs.load(std::memory_order_relaxed));
+            }
         }
 #if defined(__ANDROID__)
         if (::diagnostics::android_tester::g_recorder.recording.load(std::memory_order_relaxed))
