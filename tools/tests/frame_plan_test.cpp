@@ -237,6 +237,19 @@ int main()
     Require(sourceDecision.requestedAA == 0 && !sourceDecision.bypassAA && ResolvePresentationDecision(&full, true, 0, 0).bypassAA,
         "presentation uses effective source AA and only actual renderer coverage bypasses it");
     Require(ResolvePresentationDecision(nullptr, false, 2, 1).requestedAA == 2, "unknown presentation source uses explicit legacy fallback");
+    {
+        // Steprant 2.0.7: a frame the upscaler skipped gets SMAA before the spatial upscale.
+        auto sgsr2 = full; sgsr2.cpuSerial = sgsr2.cpuSerial ? sgsr2.cpuSerial : 1;
+        sgsr2.consumer = gpu::upscaling::TemporalConsumer::Sgsr2Sr; sgsr2.effectiveAA = 0; sgsr2.legacyAA = 3; sgsr2.scalingQuality = 1;
+        Require(ResolvePresentationDecision(&sgsr2, false, 0, 0, false).requestedAA == 0, "an upscaled frame keeps the upscaler's own AA");
+        const auto skipped = ResolvePresentationDecision(&sgsr2, false, 0, 0, true);
+        Require(skipped.requestedAA == 2 && !skipped.bypassAA && skipped.scalingQuality == 1, "a skipped frame gets SMAA and the plan's scaling");
+        Require(ResolvePresentationDecision(&sgsr2, true, 0, 0, true).requestedAA == 0, "scene AA already applied wins");
+        auto off = sgsr2; off.legacyAA = 0;
+        Require(ResolvePresentationDecision(&off, false, 0, 0, true).requestedAA == 0, "AA turned off stays off");
+        auto plain = sgsr2; plain.consumer = gpu::upscaling::TemporalConsumer::None; plain.effectiveAA = 1;
+        Require(ResolvePresentationDecision(&plain, false, 0, 0, true).requestedAA == 1, "no upscaler: the plan's AA as before");
+    }
     gpu::upscaling::OutputSizing ready{}; ready.key={9,1280,720}; ready.revision=7;
     for(auto& mode:ready.modes){mode.state=gpu::upscaling::SizingState::Ready;mode.optimal={640,360};}
     PlannerState producer;

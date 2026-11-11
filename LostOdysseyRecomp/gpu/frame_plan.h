@@ -100,9 +100,25 @@ namespace gpu::frame_plan
         uint32_t scalingQuality = 1;
         bool bypassAA = false;
     };
+    // Steprant 2.0.7: an upscaler that antialiases by itself (SGSR2, FSR, DLSS,
+    // MetalFX, XeSS) leaves the plan's AA at 0. When it skips a frame (no
+    // scene camera in a cutscene: 264 frames on 11/11 22:17, 506-708 at each
+    // start), the scene reaches the presentation at the render size with no
+    // AA at all. `upscalerSkipped` (the presented source is smaller than the
+    // output) then gets SMAA at the source size before the spatial upscale
+    // (SGSR1 when on), unless the player turned AA off (legacyAA 0) or the
+    // renderer already antialiased the scene.
+    inline bool AntialiasingUpscaler(upscaling::TemporalConsumer consumer) {
+        using C = upscaling::TemporalConsumer;
+        return consumer == C::DlssSr || consumer == C::FsrSr || consumer == C::MetalFxSr ||
+            consumer == C::XessSr || consumer == C::Sgsr2Sr;
+    }
     inline PresentationDecision ResolvePresentationDecision(const FramePlan* sourcePlan, bool sceneAAApplied,
-        uint32_t fallbackAA, uint32_t fallbackScalingQuality) {
+        uint32_t fallbackAA, uint32_t fallbackScalingQuality, bool upscalerSkipped = false) {
         if (!sourcePlan || !sourcePlan->cpuSerial) return {fallbackAA, fallbackScalingQuality, false};
+        if (upscalerSkipped && !sceneAAApplied && sourcePlan->effectiveAA == 0 && sourcePlan->legacyAA != 0 &&
+            AntialiasingUpscaler(sourcePlan->consumer))
+            return {2u, sourcePlan->scalingQuality, false};
         return {sourcePlan->effectiveAA, sourcePlan->scalingQuality, sceneAAApplied};
     }
     // SGSR2's render size (its "base"). The render resolution row decides it

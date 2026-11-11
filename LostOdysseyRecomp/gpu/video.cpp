@@ -5716,9 +5716,13 @@ namespace gpu::video
                         LOG_INFO("HDR: presented frames direct={} gain={} sdr={}", directFrames, gainFrames, sdrFrames);
                 }
                 if(g_presentation) {
+                    // Steprant 2.0.7: the upscaler skipped this frame when its
+                    // scene arrives smaller than the output (frame_plan.h).
+                    const bool upscalerSkipped = uint64_t(sourceWidth) * 20 < uint64_t(g_swapChain->getWidth()) * 19 &&
+                        uint64_t(sourceHeight) * 20 < uint64_t(g_swapChain->getHeight()) * 19;
                     const auto decision = frame_plan::ResolvePresentationDecision(&sourcePlan,
                         renderer::SceneAAApplied(physicalAddress & 0x1FFFFFFF), uint32_t(presentationOptions.antialiasing),
-                        uint32_t(presentationOptions.scalingFilter));
+                        uint32_t(presentationOptions.scalingFilter), upscalerSkipped);
                     // Scene AA already applied: the HDR path takes Draw (not
                     // DrawComposited) and must not run the pass a second time.
                     PresentationOptions sourceOptions{decision.bypassAA ? Antialiasing::Off :
