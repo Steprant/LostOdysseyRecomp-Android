@@ -80,8 +80,8 @@ namespace apu
         std::atomic<uint32_t> g_clockResets{ 0 };
         std::atomic<uint32_t> g_refillFrames{ 0 };
         // Steprant 2.0.6 (audio_lag_recovery.h): the game's audio timeline
-        // lost behind the wall clock after a stall, repaid one dropped guest
-        // frame at a time. The policy is the driver thread's; SubmitFrame (on
+        // measured against the wall clock, its lag after a dry device queue
+        // repaid one dropped guest frame at a time. The policy is the driver thread's; SubmitFrame (on
         // whichever thread the game submits from, in sequence with the
         // callback) sees only the drop request and the join that follows.
         detail::AudioLagRecovery g_lagRecovery;
@@ -126,8 +126,12 @@ namespace apu
         // misses a speaker layout changed while the game runs. The open
         // device reports the live mix format, so WASAPI opens six and
         // checks that.
+        // Steprant 2.0.6: a reopened device restarts the lag measurement.
+        std::atomic<uint32_t> g_deviceOpens{ 0 };
+
         void OpenDevice(bool surround)
         {
+            g_deviceOpens.fetch_add(1, std::memory_order_relaxed);
             if (g_stream) SDL_DestroyAudioStream(g_stream);
             g_stream = nullptr;
             if (g_device) SDL_CloseAudioDevice(g_device);
@@ -406,16 +410,28 @@ namespace apu
             GuestThreadContext ctx(3);
             constexpr auto framePeriod = std::chrono::microseconds(1000000ull * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
             auto next = std::chrono::steady_clock::now();
+            // Steprant 2.0.6: the wall clock and the game's audio position as
+            // heard, for the lag measure (audio_lag_recovery.h).
+            const auto origin = next;
+            int64_t guestFramesRun = 0;
             uint32_t pauseChangesSeen = g_pauseChanges.load(std::memory_order_relaxed);
+            uint32_t deviceOpensSeen = g_deviceOpens.load(std::memory_order_relaxed);
+            uint32_t reserveSeen = g_reserveFrames.load(std::memory_order_relaxed);
+            const auto wallFrames = [&] {
+                return std::chrono::duration<double>(std::chrono::steady_clock::now() - origin) / framePeriod;
+            };
+            const auto heardFrames = [&] { return guestFramesRun - int64_t(QueuedFrames()); };
             while (g_running)
             {
                 const uint32_t reserve = g_reserveFrames.load(std::memory_order_relaxed);
-                // A pause or a trip to the background since the previous
-                // period: the game stopped with the audio, nothing to repay.
+                // A pause or a trip to the background, a reopened device or a
+                // new reserve since the previous period: start measuring again.
                 const uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
-                const bool pauseSeen = pauseChanges != pauseChangesSeen;
+                const uint32_t deviceOpens = g_deviceOpens.load(std::memory_order_relaxed);
+                bool rebase = pauseChanges != pauseChangesSeen || deviceOpens != deviceOpensSeen || reserve != reserveSeen;
                 pauseChangesSeen = pauseChanges;
-                if (pauseSeen && g_lagRecovery.PendingFrames()) { g_lagRecovery.Clear(); PublishLag(); }
+                deviceOpensSeen = deviceOpens;
+                reserveSeen = reserve;
                 next += framePeriod;
                 // Precise wakeups: a late one drains the few frames SDL has queued.
                 os::scheduling::PreciseSleepUntil(next);
@@ -424,20 +440,8 @@ namespace apu
                 SampleWorkerPriority();
 #endif
                 // Avoid a burst of catch-up callbacks after a host stall.
-                if (const auto late = std::chrono::steady_clock::now() - next; late > framePeriod * reserve)
+                if (std::chrono::steady_clock::now() - next > framePeriod * reserve)
                 {
-                    const auto overdue = uint32_t(std::min<int64_t>(late / framePeriod, int64_t(UINT32_MAX)));
-                    const uint32_t added = g_lagRecovery.OnClockReset(overdue, QueuedFrames(), reserve, pauseSeen);
-                    if (added)
-                    {
-                        PublishLag();
-                        static uint32_t reported = 0;
-                        if (reported++ < 32)
-                            LOG_INFO("audio resync: {:.1f} ms behind after a {:.1f} ms gap (pending {:.1f} ms)",
-                                added * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ,
-                                std::chrono::duration<double, std::milli>(late).count(),
-                                g_lagRecovery.PendingFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
-                    }
                     next = std::chrono::steady_clock::now();
                     g_clockResets.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -472,6 +476,7 @@ namespace apu
                     g_guestFramesPerOutput.store(frames, std::memory_order_relaxed);
                     for (uint32_t i = 0; i < frames; ++i)
                     {
+                        ++guestFramesRun;
                         const auto callbackStart = std::chrono::steady_clock::now();
                         struct RecordCallback
                         {
@@ -525,7 +530,7 @@ namespace apu
                     // Up to `rate` guest frames per period, as many as fit in
                     // three quarters of it, so the output never runs dry.
                     const uint32_t frames = std::min(rate, g_boostFrames);
-                    if (g_lagRecovery.PendingFrames()) { g_lagRecovery.SkipThisPeriod(true, true); PublishLag(); }
+                    rebase = true; // fast-forward moves the game ahead by itself
                     const auto start = std::chrono::steady_clock::now();
                     dispatch(frames);
                     const auto spent = std::chrono::steady_clock::now() - start;
@@ -553,24 +558,40 @@ namespace apu
                         next = std::chrono::steady_clock::now();
                     }
 #endif
-                    // Steprant 2.0.6: repay the lag left by a stall, one
-                    // dropped guest frame every few periods.
-                    if (g_lagRecovery.SkipThisPeriod(quick, false))
+                    // Steprant 2.0.6: measure how far the game's audio is
+                    // behind the wall clock and repay it, one dropped guest
+                    // frame every few periods.
+                    if (!rebase)
                     {
-                        g_dropFrame.store(true, std::memory_order_relaxed);
-                        dispatch(1);
-                        // A callback that submitted nothing leaves no request behind.
-                        if (!g_dropFrame.exchange(false, std::memory_order_relaxed)) g_lagRecovery.Repaid();
-                        PublishLag();
-                        if (!g_lagRecovery.PendingFrames())
+                        const auto stallsBefore = g_lagRecovery.Stalls();
+                        const bool caughtUp = g_lagRecovery.Observe(wallFrames(), heardFrames());
+                        static uint32_t reported = 0;
+                        if (g_lagRecovery.Stalls() != stallsBefore && reported < 32)
                         {
-                            static uint32_t reported = 0;
-                            if (reported++ < 32)
-                                LOG_INFO("audio resync: caught up, {:.1f} ms repaid so far (largest lag {:.1f} ms)",
-                                    g_lagRecovery.RepaidFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ,
-                                    g_lagRecovery.MaxLagFrames() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
+                            ++reported;
+                            LOG_INFO("audio resync: game audio {:.1f} ms behind the picture, repaying (starved={})",
+                                FrameMs(g_lagRecovery.PendingFrames()), g_starved.load(std::memory_order_relaxed));
                         }
+                        if (caughtUp && reported < 32)
+                        {
+                            ++reported;
+                            LOG_INFO("audio resync: caught up, {:.1f} ms repaid so far (largest lag {:.1f} ms)",
+                                FrameMs(g_lagRecovery.RepaidFrames()), FrameMs(g_lagRecovery.MaxLagFrames()));
+                        }
+                        if (g_lagRecovery.SkipThisPeriod(quick))
+                        {
+                            g_dropFrame.store(true, std::memory_order_relaxed);
+                            dispatch(1);
+                            // A callback that submitted nothing leaves no request behind.
+                            if (!g_dropFrame.exchange(false, std::memory_order_relaxed)) g_lagRecovery.Repaid();
+                        }
+                        PublishLag();
                     }
+                }
+                if (rebase && g_lagRecovery.Enabled())
+                {
+                    g_lagRecovery.Rebase(wallFrames(), heardFrames());
+                    PublishLag();
                 }
             }
         }

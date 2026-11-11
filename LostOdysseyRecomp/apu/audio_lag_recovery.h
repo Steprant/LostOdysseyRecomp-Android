@@ -2,26 +2,32 @@
 // Steprant 2.0.6: audio/video re-alignment after an audio stall (Super
 // Roadmap 2, WP3.6).
 //
-// The audio driver runs the game's audio callback once per 5.33 ms period
-// and keeps a reserve of frames queued ahead of the device. When a callback
-// (or the driver) stalls longer than the reserve, the device runs dry and
-// plays silence. The driver then resets its clock instead of replaying the
-// overdue periods, so the game's audio timeline stays behind the wall clock
-// by the length of that silence, for good: in the 18:39 session of 11/11
-// (guard with the flowers, then Jansen) nine stalls of 50-78 ms left the
-// voices about a quarter of a second behind the picture.
+// The audio driver is paced by the device: it runs the game's audio callback
+// whenever the device queue falls under its reserve. The game's audio
+// timeline therefore follows what the device actually played. Every time the
+// device runs dry (a stalled callback, a late driver, a background trip
+// that is not a pause) it plays silence, and from then on the game's audio
+// is behind the picture by that silence, for good.
 //
-// Recovery: after a stall the lag is counted in guest frames. While it is
-// not zero, and the previous callback was quick, one period in four runs a
-// second guest frame whose output is dropped; the next frame starts from the
-// last sample played (a 2.7 ms join), so there is no click. The game's audio
-// thus runs 25% ahead for a moment and catches up: 250 ms of lag in about
-// one second, 5.3 ms skipped at a time.
+// 2.0.6 first counted that lag only at a driver clock reset. The 20:19
+// session of 11/11 (2.0.5, phone) had one clock reset but 27 dry queues
+// ("starved"): most silences never reset the clock, so the voices drifted
+// behind again a little after the flowers/Jansen scene.
 //
-// Not recovered, on purpose: a gap with the app paused or in the background
-// (the game stops with the audio), a gap over two seconds, a gap while the
-// device queue still had audio (no silence was played), and anything under
-// fast-forward, which moves the game ahead by itself.
+// Now the lag is measured, not guessed: once per period the driver compares
+// the wall clock with the game's audio position as heard (guest frames run,
+// dropped ones included, minus the frames still queued). Both start equal
+// at an anchor; a timeline that gets ahead (start-up fill, a device clock a
+// little fast) moves the anchor, so only falling behind counts.
+//
+// Recovery: from kStartFrames of lag (32 ms) until kStopFrames, and only
+// after a quick callback, one period in four runs a second guest frame whose
+// output is dropped; the next frame ramps from the last sample played (a
+// 2.7 ms join). 250 ms of lag is repaid in about a second, 5.3 ms at a time.
+//
+// Not recovered, on purpose: the app paused or in the background (the game
+// stops with the audio), fast-forward (it moves the game ahead by itself), a
+// device reopened, a reserve change, and a lag over two seconds (abandoned).
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -35,58 +41,80 @@ class AudioLagRecovery
 public:
     // One guest frame skipped at most every kSkipEvery driver periods.
     static constexpr uint32_t kSkipEvery = 4;
-    // Two seconds of periods: a longer gap is a pause, not a stall.
+    // Repay from 6 frames (32 ms) of lag down to 2 (10.7 ms). The device
+    // takes 512-sample chunks, so the measure moves by about two frames
+    // between periods even when nothing is lost.
+    static constexpr uint32_t kStartFrames = 6;
+    static constexpr uint32_t kStopFrames = 2;
+    // Two seconds of periods: a longer lag is a pause, not a stall.
     static constexpr uint32_t kMaxLagFrames = 375;
 
     void SetEnabled(bool enabled)
     {
         enabled_ = enabled;
-        if (!enabled) Clear();
+        if (!enabled) { lag_ = 0; repaying_ = false; phase_ = 0; anchored_ = false; }
     }
     bool Enabled() const { return enabled_; }
 
-    // The driver reset its clock after `overdue` periods without running the
-    // game's callback. `queued` is the device queue at that moment, `reserve`
-    // the frames normally kept in it, `pauseSeen` whether the app paused or
-    // went to the background since the previous period. Returns the frames
-    // of lag added.
-    uint32_t OnClockReset(uint32_t overdue, uint32_t queued, uint32_t reserve, bool pauseSeen)
+    // The wall clock and the game's audio agree here (start, pause, resume,
+    // fast-forward, device reopen, reserve change). `wallFrames`: wall time
+    // in periods since any fixed origin; `heardFrames`: guest frames run
+    // (dropped ones included) minus frames still queued for the device.
+    void Rebase(double wallFrames, int64_t heardFrames)
     {
-        if (!enabled_ || pauseSeen || queued > 0 || overdue <= reserve || overdue > kMaxLagFrames) return 0;
-        const uint32_t added = overdue - reserve;
-        lag_ = std::min(kMaxLagFrames, lag_ + added);
-        maxLag_ = std::max(maxLag_, lag_);
-        ++stalls_;
-        return added;
+        if (repaying_) ++abandoned_;
+        baseWall_ = wallFrames;
+        baseHeard_ = heardFrames;
+        anchored_ = true;
+        lag_ = 0;
+        repaying_ = false;
+        phase_ = 0;
     }
 
-    // Once per driver period, after its regular callback. True: run one more
-    // guest frame now and drop its output. `healthy`: the regular callback
-    // took under half a period, so an extra one will not starve the device.
-    bool SkipThisPeriod(bool healthy, bool fastForward)
+    // Once per driver period at normal speed. Returns true when a repayment
+    // has just finished (for the log).
+    bool Observe(double wallFrames, int64_t heardFrames)
     {
-        if (fastForward) { Clear(); return false; }
-        if (!lag_ || !healthy) { phase_ = 0; return false; }
+        if (!enabled_) return false;
+        if (!anchored_) { Rebase(wallFrames, heardFrames); return false; }
+        const double lag = (wallFrames - baseWall_) - double(heardFrames - baseHeard_);
+        if (lag < 0)
+        {
+            // Ahead of the wall clock: move the anchor, nothing to repay.
+            baseWall_ = wallFrames;
+            baseHeard_ = heardFrames;
+            lag_ = 0;
+        }
+        else if (lag > kMaxLagFrames)
+        {
+            repaying_ = false;
+            Rebase(wallFrames, heardFrames);
+            ++abandoned_;
+            return false;
+        }
+        else lag_ = uint32_t(lag);
+        maxLag_ = std::max(maxLag_, lag_);
+        if (!repaying_ && lag_ >= kStartFrames) { repaying_ = true; phase_ = 0; ++stalls_; return false; }
+        if (repaying_ && lag_ <= kStopFrames) { repaying_ = false; phase_ = 0; return true; }
+        return false;
+    }
+
+    // Once per driver period, after Observe. True: run one more guest frame
+    // now and drop its output. `healthy`: the regular callback took under
+    // half a period, so an extra one will not starve the device.
+    bool SkipThisPeriod(bool healthy)
+    {
+        if (!enabled_ || !repaying_ || !healthy) { phase_ = 0; return false; }
         if (++phase_ < kSkipEvery) return false;
         phase_ = 0;
         return true;
     }
 
-    // The extra frame ran and its output was dropped.
-    void Repaid()
-    {
-        if (!lag_) return;
-        --lag_;
-        ++repaid_;
-    }
+    // The extra frame ran and its output was dropped. The lag itself is
+    // measured again at the next Observe.
+    void Repaid() { ++repaid_; }
 
-    void Clear()
-    {
-        if (lag_) ++abandoned_;
-        lag_ = 0;
-        phase_ = 0;
-    }
-
+    bool Repaying() const { return repaying_; }
     uint32_t PendingFrames() const { return lag_; }
     uint32_t RepaidFrames() const { return repaid_; }
     uint32_t MaxLagFrames() const { return maxLag_; }
@@ -94,7 +122,9 @@ public:
     uint32_t Abandoned() const { return abandoned_; }
 
 private:
-    bool enabled_ = true;
+    bool enabled_ = true, anchored_ = false, repaying_ = false;
+    double baseWall_ = 0;
+    int64_t baseHeard_ = 0;
     uint32_t lag_ = 0, phase_ = 0, repaid_ = 0, maxLag_ = 0, stalls_ = 0, abandoned_ = 0;
 };
 

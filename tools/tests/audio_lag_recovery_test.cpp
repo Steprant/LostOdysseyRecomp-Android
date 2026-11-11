@@ -1,4 +1,4 @@
-// Steprant 2.0.6: audio/video re-alignment after an audio stall
+// Steprant 2.0.6: audio/video re-alignment after a dry device queue
 // (apu/audio_lag_recovery.h).
 #include <apu/audio_lag_recovery.h>
 #include <bit>
@@ -19,56 +19,107 @@ static uint32_t Swap(uint32_t w) { return (w >> 24) | ((w >> 8) & 0xFF00u) | ((w
 static uint32_t Word(float v) { return Swap(std::bit_cast<uint32_t>(v)); }
 static float Value(uint32_t w) { return std::bit_cast<float>(Swap(w)); }
 
+// A device-paced driver: each period the wall clock moves one frame and the
+// device plays one, unless it is dry (silence). `run` counts guest frames,
+// dropped ones included; the queue holds what was produced but not played.
+struct Driver
+{
+    apu::detail::AudioLagRecovery lag;
+    double wall = 1000;
+    int64_t run = 0, queued = 8;
+    uint32_t skips = 0, finished = 0;
+    int64_t Heard() const { return run - queued; }
+    // One normal period; the device played `played` frames (0: dry).
+    void Period(double played = 1, bool quick = true)
+    {
+        wall += 1;
+        run += int64_t(played); // the driver refills what the device took
+        if (lag.Observe(wall, Heard())) ++finished;
+        if (lag.SkipThisPeriod(quick)) { ++run; ++skips; lag.Repaid(); }
+    }
+    // A stall of `frames` periods during which the device ran dry after the
+    // queue: the guest timeline stops, the wall clock does not.
+    void Silence(double frames) { wall += frames; }
+};
+
 int main()
 {
     using apu::detail::AudioLagRecovery;
-    constexpr uint32_t reserve = 8;
     {
-        AudioLagRecovery lag;
-        // The 18:39 stalls: 50-78 ms callbacks against a 43 ms reserve.
-        Check(lag.OnClockReset(9, 0, reserve, false) == 1, "a 48 ms gap past an 8-frame reserve leaves one frame of lag");
-        Check(lag.OnClockReset(14, 0, reserve, false) == 6, "a 75 ms gap leaves six frames");
-        Check(lag.PendingFrames() == 7 && lag.MaxLagFrames() == 7 && lag.Stalls() == 2, "lag adds up");
-        Check(lag.OnClockReset(14, 3, reserve, false) == 0, "no lag while the device queue still had audio");
-        Check(lag.OnClockReset(8, 0, reserve, false) == 0, "a gap the reserve covered leaves no lag");
-        Check(lag.OnClockReset(40, 0, reserve, true) == 0, "no lag across a pause or the background");
-        Check(lag.OnClockReset(AudioLagRecovery::kMaxLagFrames + 1, 0, reserve, false) == 0, "a gap over two seconds is a pause");
-        Check(lag.PendingFrames() == 7, "rejected gaps change nothing");
+        Driver d;
+        for (int i = 0; i < 2000; ++i) d.Period();
+        Check(d.lag.PendingFrames() == 0 && d.skips == 0 && d.lag.Stalls() == 0, "in step: nothing to repay");
     }
     {
-        AudioLagRecovery lag;
-        lag.OnClockReset(8 + 5, 0, reserve, false);
-        uint32_t periods = 0, skips = 0;
-        while (lag.PendingFrames() && periods < 1000)
-        {
-            ++periods;
-            if (lag.SkipThisPeriod(true, false)) { ++skips; lag.Repaid(); }
-        }
-        Check(skips == 5 && periods == 5 * AudioLagRecovery::kSkipEvery, "one skip every four periods until repaid");
-        Check(lag.RepaidFrames() == 5 && lag.PendingFrames() == 0, "repaid count");
-        Check(!lag.SkipThisPeriod(true, false), "nothing to skip once caught up");
+        Driver d;
+        for (int i = 0; i < 10; ++i) d.Period();
+        d.Silence(9.4); // a 50 ms dry queue
+        d.Period();
+        Check(d.lag.Repaying() && d.lag.PendingFrames() == 9 && d.lag.Stalls() == 1, "a 50 ms silence is measured");
+        int periods = 0;
+        while (d.lag.Repaying() && periods < 1000) { d.Period(); ++periods; }
+        Check(d.finished == 1 && d.lag.PendingFrames() <= AudioLagRecovery::kStopFrames, "repaid down to the stop level");
+        Check(d.skips == d.lag.RepaidFrames() && d.skips >= 7 && d.skips <= 9, "one dropped frame per frame of lag");
+        Check(periods >= int(d.skips) * int(AudioLagRecovery::kSkipEvery) - 4 && periods <= int(d.skips) * int(AudioLagRecovery::kSkipEvery) + 4,
+            "one dropped frame every four periods");
+        for (int i = 0; i < 2000; ++i) d.Period();
+        Check(!d.lag.Repaying() && d.lag.Stalls() == 1, "stays in step afterwards");
     }
     {
-        AudioLagRecovery lag;
-        lag.OnClockReset(8 + 2, 0, reserve, false);
-        for (uint32_t i = 0; i < 20; ++i) Check(!lag.SkipThisPeriod(false, false), "never while callbacks are slow");
-        Check(lag.PendingFrames() == 2, "slow periods keep the lag");
+        // The 20:19 case: short silences that never reset the driver clock add up.
+        Driver d;
+        d.Period();
+        d.Silence(3.5); d.Period();
+        Check(!d.lag.Repaying() && d.lag.PendingFrames() == 3, "a 19 ms silence alone is not repaid");
+        for (int i = 0; i < 50; ++i) d.Period();
+        d.Silence(3.5); d.Period();
+        Check(d.lag.Repaying() && d.lag.PendingFrames() == 7, "two of them are");
+    }
+    {
+        // The device takes 512-sample chunks: two frames, then none.
+        Driver d;
+        for (int i = 0; i < 4000; ++i) d.Period(i % 2 ? 2 : 0);
+        Check(d.skips == 0 && d.lag.Stalls() == 0, "chunked playback is not a lag");
+    }
+    {
+        // Ahead of the wall clock (start-up fill, a fast device clock): the
+        // anchor moves, so a later silence counts in full.
+        Driver d;
+        d.Period();
+        d.run += 40; d.Period();
+        Check(d.lag.PendingFrames() == 0, "ahead is not a lag");
+        d.Silence(8); d.Period();
+        Check(d.lag.PendingFrames() == 8 && d.lag.Repaying(), "the silence after it counts in full");
+    }
+    {
+        Driver d;
+        d.Period();
+        d.Silence(20); d.Period();
+        for (int i = 0; i < 20; ++i) d.Period(1, false);
+        Check(d.skips == 0 && d.lag.PendingFrames() == 20, "never while callbacks are slow");
         uint32_t i = 0;
-        while (!lag.SkipThisPeriod(true, false)) ++i;
+        while (!d.lag.SkipThisPeriod(true) && i < 100) ++i;
         Check(i + 1 == AudioLagRecovery::kSkipEvery, "a slow period restarts the spacing");
-        lag.Repaid();
-        Check(!lag.SkipThisPeriod(true, true) && lag.PendingFrames() == 0 && lag.Abandoned() == 1,
-              "fast-forward drops the remaining lag");
+        d.lag.Rebase(d.wall, d.Heard());
+        Check(!d.lag.Repaying() && d.lag.PendingFrames() == 0 && d.lag.Abandoned() == 1,
+            "a pause, fast-forward or reopened device drops the remaining lag");
+        d.Silence(5); d.Period();
+        Check(d.lag.PendingFrames() == 5, "measuring restarts from the rebase");
     }
     {
-        AudioLagRecovery lag;
-        lag.SetEnabled(false);
-        Check(lag.OnClockReset(20, 0, reserve, false) == 0 && !lag.SkipThisPeriod(true, false), "LO_AUDIO_RESYNC=0");
-        lag.SetEnabled(true);
-        for (int n = 0; n < 100; ++n) lag.OnClockReset(AudioLagRecovery::kMaxLagFrames, 0, reserve, false);
-        Check(lag.PendingFrames() == AudioLagRecovery::kMaxLagFrames, "the lag never exceeds two seconds");
-        lag.Clear();
-        Check(lag.PendingFrames() == 0 && lag.Abandoned() == 1, "clear");
+        Driver d;
+        d.Period();
+        d.Silence(AudioLagRecovery::kMaxLagFrames + 10); d.Period();
+        Check(!d.lag.Repaying() && d.lag.PendingFrames() == 0 && d.lag.Abandoned() == 1, "over two seconds is abandoned");
+        d.Silence(7); d.Period();
+        Check(d.lag.PendingFrames() == 7, "and measuring goes on");
+    }
+    {
+        Driver d;
+        d.lag.SetEnabled(false);
+        d.Period(); d.Silence(30);
+        for (int i = 0; i < 100; ++i) d.Period();
+        Check(d.skips == 0 && d.lag.PendingFrames() == 0, "LO_AUDIO_RESYNC=0");
     }
     {
         // Join after a dropped frame: two planes of 8 samples, fade 4.
