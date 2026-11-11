@@ -24,6 +24,7 @@ struct DrawFacts
     // background, so it is promoted from the first draw (drawn once at the
     // output size from its own texture instead of at the render size and
     // enlarged twice), and an earlier undo does not hold it back.
+    // 2.0.2: false once this transition's own promotion was undone.
     bool transition = false;
 };
 
@@ -39,22 +40,47 @@ inline bool Wanted(const DrawFacts& f)
 // caused by the plan changing under it (the boot title screen switches plans
 // in its first frames) must not keep a screen without a 3D scene, like the
 // title, at the render size for good.
-// Steprant 2.0.1: the back-off lasts kPauseFrames (2 s at 30 FPS). Until
-// 2.0 it lasted until the next SGSR2 frame: a movie or a loading screen that
-// followed an undo stayed at the render size to its end.
-inline constexpr uint64_t kPauseFrames = 60;
-
+// Steprant 2.0.2: 2.0.1 ended the pause after 60 frames, so a screen without
+// a 3D scene that draws depth on the final target (menus do) was promoted and
+// undone again every two seconds. The pause lasts until the next SGSR2 frame
+// or plan change again, as in 2.0. What 2.0.1 wanted (a loading screen or a
+// movie that follows an undo is still drawn at the output size) is kept by
+// the transition rule in Wanted, with a pause of its own: a transition that
+// undoes its promotion is not promoted again until SGSR2 runs or the plan
+// changes, so no screen can promote and undo in a loop.
 struct Pause
 {
     bool active = false;
     uint64_t epoch = 0;
-    uint64_t frame = 0; // render frame of the undo
 };
 
-inline bool Paused(const Pause& pause, uint64_t currentEpoch, uint64_t currentFrame)
+inline bool Paused(const Pause& pause, uint64_t currentEpoch)
 {
-    return pause.active && pause.epoch == currentEpoch && currentFrame < pause.frame + kPauseFrames;
+    return pause.active && pause.epoch == currentEpoch;
 }
+
+// Steprant 2.0.2: how many promotions were made and undone, for one summary
+// line in the log at most every kSummaryFrames presented frames, and only
+// when a counter moved. A run of undos shows up as undone growing with promoted.
+inline constexpr uint64_t kSummaryFrames = 1800;
+
+struct Stats
+{
+    uint64_t promoted = 0, transitionPromoted = 0;
+    uint64_t undone = 0, transitionUndone = 0;
+    uint64_t loggedSum = 0, loggedFrame = 0;
+
+    void Promoted(bool transition) { ++(transition ? transitionPromoted : promoted); }
+    void Undone(bool transition) { ++(transition ? transitionUndone : undone); }
+    bool SummaryDue(uint64_t frame)
+    {
+        const uint64_t sum = promoted + transitionPromoted + undone + transitionUndone;
+        if (sum == loggedSum || frame < loggedFrame + kSummaryFrames) return false;
+        loggedSum = sum;
+        loggedFrame = frame;
+        return true;
+    }
+};
 
 inline uint32_t NextIdleFrames(uint32_t previous, bool sceneFrame)
 {

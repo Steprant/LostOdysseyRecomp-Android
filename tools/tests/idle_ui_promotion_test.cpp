@@ -34,11 +34,9 @@ int main()
         Check(!Wanted(f), "the back-off after an undone promotion holds");
         f = menu; f.enabled = false;
         Check(!Wanted(f), "the fallback switch disables it");
-        Check(!Paused(Pause{}, 3, 10), "no pause by default");
-        Check(Paused(Pause{true, 1, 100}, 1, 100), "an undo pauses promotions within its plan epoch");
-        Check(Paused(Pause{true, 1, 100}, 1, 100 + kPauseFrames - 1), "the back-off holds for its frames");
-        Check(!Paused(Pause{true, 1, 100}, 1, 100 + kPauseFrames), "and ends after them, SGSR2 frame or not (2.0.1)");
-        Check(!Paused(Pause{true, 1, 100}, 2, 101), "a later plan epoch (the boot title's plan switches) resumes them");
+        Check(!Paused(Pause{}, 3), "no pause by default");
+        Check(Paused(Pause{true, 1}, 1), "an undo pauses promotions within its plan epoch");
+        Check(!Paused(Pause{true, 1}, 2), "a later plan epoch (the boot title's plan switches) resumes them");
         // 2.0.1: loading screens and movies are promoted from their first draw.
         f = menu; f.transition = true; f.backgroundOnly = true;
         Check(Wanted(f), "a loading screen's or movie's picture is promoted although it is the background");
@@ -48,6 +46,49 @@ int main()
         Check(!Wanted(f), "a depth draw is never promoted, transition or not");
         f = menu; f.transition = true; f.sceneThisFrame = true;
         Check(!Wanted(f), "a transition frame that drew a 3D scene is not promoted");
+        // 2.0.2: no promote/undo loop. A screen that undid its promotion stays
+        // paused for as many frames as it lasts (2.0.1 retried every 60).
+        {
+            Pause pause;
+            unsigned promotions = 0;
+            for (uint64_t frame = 0; frame < 10000; ++frame) {
+                auto draw = menu; draw.blocked = Paused(pause, 7);
+                if (Wanted(draw)) { ++promotions; pause = {true, 7}; } // undone in its frame by a depth draw
+            }
+            Check(promotions == 1, "a menu that draws depth on the final target is promoted and undone once, not every two seconds");
+            pause.active = false; // an SGSR2 frame
+            auto draw = menu; draw.blocked = Paused(pause, 7);
+            Check(Wanted(draw), "after the next SGSR2 frame promotions resume");
+        }
+        {
+            // A loading screen that draws 3D on the final target: its
+            // transition promotion is undone once and not retried.
+            Pause pause, transitionPause;
+            unsigned promotions = 0;
+            for (uint64_t frame = 0; frame < 10000; ++frame) {
+                auto draw = menu; draw.backgroundOnly = true;
+                draw.blocked = Paused(pause, 7);
+                draw.transition = !Paused(transitionPause, 7);
+                if (Wanted(draw)) { ++promotions; pause = transitionPause = {true, 7}; }
+            }
+            Check(promotions == 1, "a transition that undoes its promotion is not promoted again while it lasts");
+            pause.active = transitionPause.active = false; // gameplay came back
+            auto draw = menu; draw.backgroundOnly = true; draw.transition = !Paused(transitionPause, 7);
+            Check(Wanted(draw), "the next loading screen after gameplay is promoted from its first draw again");
+        }
+        {
+            Stats stats;
+            Check(!stats.SummaryDue(5000), "no summary without a promotion");
+            stats.Promoted(false); stats.Promoted(true); stats.Undone(true);
+            Check(stats.promoted == 1 && stats.transitionPromoted == 1 && stats.undone == 0 && stats.transitionUndone == 1,
+                "promotions and undos are counted by kind");
+            Check(!stats.SummaryDue(kSummaryFrames - 1), "not before the first interval");
+            Check(stats.SummaryDue(kSummaryFrames), "one summary when a counter moved");
+            Check(!stats.SummaryDue(kSummaryFrames * 5), "none while nothing changes");
+            stats.Promoted(false);
+            Check(!stats.SummaryDue(kSummaryFrames + 10), "at most one per interval");
+            Check(stats.SummaryDue(kSummaryFrames * 2), "the next one an interval later");
+        }
         Check(NextIdleFrames(0, false) == 1 && NextIdleFrames(5, false) == 6 && NextIdleFrames(5, true) == 0 &&
             NextIdleFrames(1u << 30, false) == 1u << 30, "idle counter");
         std::printf("PASS: %u idle UI promotion checks\n", checks);
