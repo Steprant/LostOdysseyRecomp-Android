@@ -865,7 +865,17 @@ namespace gpu::video
             double metalMinimumPresentDuration = 0.0;
         } g_presentationDisplay;
         constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::R8G8B8A8_UNORM;
+#ifdef __ANDROID__
+        // Steprant 2.0.7: Turnip from Mesa 26.2 on (PurpleVK 26.3, whitebelyash
+        // 26.2.3; 11/11 20:53 and 20:57) blocks in vkQueuePresentKHR for a
+        // median 6-7 ms and up to 17 ms (Mesa 26.0: 0.8 ms), and the blocked
+        // frame misses its 33 ms slot. A fourth image keeps a free buffer for
+        // the next dequeue at 30 FPS on a 60/120 Hz panel; one presentation
+        // stays in flight (WaitForPresentGpu), so latency does not grow.
+        constexpr uint32_t kSwapChainBuffers = 4;
+#else
         constexpr uint32_t kSwapChainBuffers = 3;
+#endif
 
         bool SubmitVulkan(const plume::RenderCommandList* const* lists, uint32_t count,
             plume::RenderCommandSemaphore* const* waits, uint32_t waitCount,
@@ -1421,8 +1431,8 @@ namespace gpu::video
                 GetDpiForWindow(g_nativeWindow), raw.right - raw.left, raw.bottom - raw.top,
                 physicalWidth, physicalHeight, g_swapChain->getWidth(), g_swapChain->getHeight(), g_displayMode.load());
 #else
-            LOG_INFO("video output: {} swapchain={}x{} storage={} mode={}", reason, g_swapChain->getWidth(), g_swapChain->getHeight(),
-                g_swapChain->hasStorageTextures(), g_displayMode.load());
+            LOG_INFO("video output: {} swapchain={}x{} storage={} mode={} images={} requested={}", reason, g_swapChain->getWidth(), g_swapChain->getHeight(),
+                g_swapChain->hasStorageTextures(), g_displayMode.load(), g_swapChain->getTextureCount(), kSwapChainBuffers);
 #endif
         }
 
