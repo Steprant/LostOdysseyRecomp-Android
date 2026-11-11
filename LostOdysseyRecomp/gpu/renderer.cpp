@@ -15442,6 +15442,17 @@ void main()
                 consecutiveResolveCopies.EndResolve();
             }
 
+            // 2.0.2: a capture leaves every texture it read in the layout it
+            // found it in.
+            void RestoreDissectionLayout(HostTexture& tex, RenderTextureLayout before)
+            {
+                if (before == RenderTextureLayout::UNKNOWN || tex.layout == before) return;
+                const bool copy = before == RenderTextureLayout::COPY_SOURCE || before == RenderTextureLayout::COPY_DEST;
+                commandList->barriers(copy ? RenderBarrierStage::COPY : RenderBarrierStage::GRAPHICS,
+                    RenderTextureBarrier(tex.texture.get(), before));
+                tex.layout = before;
+            }
+
             // Bounded diagnostic copies only: 24 resolves plus two source /
             // destination pairs. No extra GPU waits in the frame being captured.
             void SnapshotDissectionTexture(HostTexture& source, std::string name)
@@ -16951,7 +16962,12 @@ void main()
         for (const auto& [address, rs] : surfaces) {
             if (written >= 64) break;
             uint32_t width = 0, height = 0;
-            if (!ReadbackTexture(*rs->tex, pixels, width, height) || !width || !height) {
+            // 2.0.2: read after the present, and the surface gets its layout
+            // back at the start of the next frame's commands.
+            const RenderTextureLayout before = rs->tex->layout;
+            const bool read = ReadbackTexture(*rs->tex, pixels, width, height) && width && height;
+            if (rs->tex->layout != before && r.Begin()) r.RestoreDissectionLayout(*rs->tex, before);
+            if (!read) {
                 text += fmt::format("image {:#x} fmt{} unavailable (format {})\n", address, rs->destFormat, uint32_t(rs->tex->format));
                 continue;
             }

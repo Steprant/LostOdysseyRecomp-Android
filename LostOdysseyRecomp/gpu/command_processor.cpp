@@ -1109,10 +1109,20 @@ namespace gpu
             // menu covers the game when it is made (the 22:23 capture held four
             // pictures of the menu). Start once the menu has been closed for
             // 1.5 s and the game frame is back on screen.
-            static auto menuSeen = std::chrono::steady_clock::now();
-            if (settings::IsOpen()) menuSeen = std::chrono::steady_clock::now();
-            const bool sampleGate = std::chrono::steady_clock::now() - menuSeen >= std::chrono::milliseconds(1500);
-            if (!captureTicket.active && sampleGate && diagnostics::frame_samples::pending.load(std::memory_order_acquire))
+            // 2.0.2: without a request this costs one load; the menu state and
+            // the clock are read only while a capture waits for its gate.
+            bool sampleGate = false;
+            if (!captureTicket.active && diagnostics::frame_samples::pending.load(std::memory_order_acquire))
+            {
+                static auto menuSeen = std::chrono::steady_clock::now();
+                static uint32_t gateSwap = 0;
+                const auto now = std::chrono::steady_clock::now();
+                // A new request (no gate check at the previous swap) starts its wait now.
+                if (gateSwap + 1 != swaps || settings::IsOpen()) menuSeen = now;
+                gateSwap = swaps;
+                sampleGate = now - menuSeen >= std::chrono::milliseconds(1500);
+            }
+            if (sampleGate)
             {
                 std::vector<uint32_t> front;
                 uint32_t frontWidth = 0, frontHeight = 0;
@@ -1150,7 +1160,6 @@ namespace gpu
                 }
                 if (diagnostics::frame_samples::pending.load(std::memory_order_acquire))
                     renderer::RequestUpscalerInputCapture();
-                renderer::CompleteFrameDissection();
                 if (profiled)
                 {
                     // WP-A.5: this swap's thread CPU time, and the flush as recording.
@@ -1207,6 +1216,10 @@ namespace gpu
                     captureResult.width, captureResult.height, captureResult.reason);
             else
                 renderer::CompleteDebugCaptureFrame(captureResult);
+            // Steprant 2.0.2: the dissected frame is read back and written
+            // only now, after its present (2.0.1 did it between the flush and
+            // the present). One comparison when nothing was dissected.
+            renderer::CompleteFrameDissection();
             renderer::PollDebugCapture();
             pacing.presentAccepted = video::CompletedPresentCount() > presentsBefore;
             {
