@@ -39,6 +39,7 @@
 #include <SDL3/SDL_system.h>
 #include <diagnostics/android_tester.h>
 #include <diagnostics/frame_samples.h>
+#include <diagnostics/clear_diagnostics.h>
 #include <gpu/draw_class_profile.h>
 #if LO_STEPRANT_DEVELOPER_PAGE
 #include <diagnostics/developer_switches.h>
@@ -169,12 +170,15 @@ int testerFocus = 0;
 // of every build (no setting); the developer switches only in test builds.
 #if LO_STEPRANT_DEVELOPER_PAGE
 enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterCaptureFrames, TesterDrawTimestamps, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
+    TesterClearDiagnostics, TesterCaptureFrames, TesterDrawTimestamps, TesterDevFirst, TesterRowCount = TesterDevFirst + int(::diagnostics::developer::Count) };
 #else
 enum TesterRow { TesterEnabled, TesterProfile, TesterSampling, TesterAutomatic, TesterThermal, TesterRecording, TesterExport,
-    TesterCaptureFrames, TesterDrawTimestamps, TesterRowCount };
+    TesterClearDiagnostics, TesterCaptureFrames, TesterDrawTimestamps, TesterRowCount };
 #endif
 constexpr uint32_t TesterPeriodsMs[]{250, 500, 1000, 2000};
+// Steprant 2.0.2: "Clear diagnostics" asks for a second confirm on its row;
+// moving off the row or leaving the page disarms it.
+bool testerClearArmed = false;
 #endif
 std::vector<achievements_page::Item> achievementItems;
 std::vector<std::shared_ptr<const menu_assets::Image>> achievementIcons;
@@ -1391,6 +1395,7 @@ void Publish(uint8_t *base, uint32_t config)
         const std::wstring duration = std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") + std::to_wstring(seconds % 60);
         next.rows.push_back({Tr(L"Recording", L"記錄"), (recording ? Tr(L"Stop", L"停止") : Tr(L"Start", L"開始")) + std::wstring(L"  ") + duration, d.enabled.load(), {}, 0});
         addAction(L"Export diagnostics", L"匯出診斷", Tr(L"Export", L"匯出"));
+        addAction(L"Clear diagnostics", L"清除診斷", testerClearArmed ? Tr(L"Confirm", L"確認") : Tr(L"Clear", L"清除"));
         {
             const auto sampleStatus = ::diagnostics::frame_samples::Status();
             next.rows.push_back({Tr(L"Capture 4 frames", L"擷取 4 個影格"),
@@ -3463,6 +3468,7 @@ PPC_FUNC(sub_822F19B0)
         if (input & 0x331f) status.clear();
         if (input & 1) testerFocus = (testerFocus + TesterRowCount - 1) % TesterRowCount;
         if (input & 2) testerFocus = (testerFocus + 1) % TesterRowCount;
+        if (back || testerFocus != TesterClearDiagnostics) testerClearArmed = false;
         if (back) { testerOpen = false; status.clear(); }
         else if (input & 0x100c)
         {
@@ -3504,6 +3510,39 @@ PPC_FUNC(sub_822F19B0)
                 // SR4 C-4: an instrumented build puts its profile so far in the ZIP.
                 os::pgo::Write("export");
                 if (!SDL_SendAndroidMessage(0x8004, 0)) status = Tr(L"Could not open export.", L"無法開啟匯出。");
+            }
+            else if (testerFocus == TesterClearDiagnostics && (input & 0x1000)) {
+                // Steprant 2.0.2 (diagnostics/clear_diagnostics.h): sessions,
+                // frame captures and profiles; never saves, settings or caches.
+                namespace clear = ::diagnostics::clear_diagnostics;
+                const auto files = clear::FilesDirectory();
+                const bool armed = testerClearArmed;
+                testerClearArmed = false;
+                if (recording) status = Tr(L"Stop the recording first.", L"請先停止記錄。");
+                else if (!d.collectorIdle.load())
+                    status = Tr(L"Finishing the previous recording. Try again.", L"正在完成上一段記錄，請稍後再試。");
+                else if (files.empty()) status = Tr(L"Diagnostics folder unavailable.", L"無法使用診斷資料夾。");
+                else if (!armed) {
+                    const auto found = clear::Measure(files);
+                    if (!found.files) status = Tr(L"No diagnostics to clear.", L"沒有可清除的診斷資料。");
+                    else {
+                        testerClearArmed = true;
+                        status = clear::Megabytes(found.bytes) + L" MB: " +
+                            Tr(L"Tester sessions, frame captures and profiles. Confirm again to delete them; saves, settings and "
+                               L"shader caches stay. Export first to keep this session.",
+                               L"測試記錄、影格擷取與分析檔。再次確認即刪除；存檔、設定與著色器快取不受影響。如需保留本次記錄，請先匯出。");
+                    }
+                } else {
+                    clear::Totals deleted;
+                    if (!clear::Clear(files, deleted)) status = Tr(L"A capture is already running.", L"擷取進行中。");
+                    else {
+                        LOG_INFO("tester: diagnostics cleared, {} files, {} bytes, {} not deleted", deleted.files, deleted.bytes, deleted.failed);
+                        status = Tr(L"Diagnostics cleared. MB freed:", L"已清除診斷資料。釋放 MB：") + std::wstring(L" ") +
+                            clear::Megabytes(deleted.bytes);
+                        if (deleted.failed)
+                            status += std::wstring(L". ") + Tr(L"Some files could not be deleted.", L"部分檔案無法刪除。");
+                    }
+                }
             }
             else if (testerFocus == TesterCaptureFrames && (input & 0x1000)) {
                 status = ::diagnostics::frame_samples::Request(4)

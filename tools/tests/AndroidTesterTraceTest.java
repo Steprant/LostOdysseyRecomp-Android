@@ -90,6 +90,34 @@ public final class AndroidTesterTraceTest {
                 files.put(entry.getName(), new String(zip.readAllBytes(), StandardCharsets.UTF_8));
         }
         check(files.get("exit-reasons.json").contains("\"available\":false"), "a failing extra does not break the export");
+        // Steprant 2.0.2: a frame capture or a profile from an older run of the
+        // app stays out of the export; one from this run goes in.
+        File root = Files.createTempDirectory("lo-diagnostics").toFile();
+        File session = new File(root, "session-7");
+        new TesterTraceFiles(session).close();
+        File samples = new File(root, "frame-samples");
+        check(samples.mkdirs(), "frame-samples directory");
+        File oldSample = new File(samples, "frame-01-swap8463-presented.png");
+        File newSample = new File(samples, "frame-01-swap9000-presented.png");
+        Files.write(oldSample.toPath(), new byte[]{7});
+        Files.write(newSample.toPath(), new byte[]{8});
+        File oldProfile = new File(pgo, "lostodyssey-21645.profraw");
+        Files.write(oldProfile.toPath(), new byte[]{9});
+        long start = System.currentTimeMillis() - 1000;
+        check(oldSample.setLastModified(start - 86_400_000L) && oldProfile.setLastModified(start - 86_400_000L), "old file times");
+        check(newSample.setLastModified(start + 500) && new File(pgo, "lostodyssey-42.profraw").setLastModified(start + 500), "new file times");
+        bytes = new ByteArrayOutputStream();
+        TesterTraceFiles.export(session, Collections.emptyList(),
+            zip -> TesterTraceFiles.zipFiles(zip, pgo, ".profraw", "pgo/", start), start, bytes);
+        files.clear();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;)
+                files.put(entry.getName(), new String(zip.readAllBytes(), StandardCharsets.ISO_8859_1));
+        }
+        check(files.containsKey("frame-samples/frame-01-swap9000-presented.png"), "capture of this run exported");
+        check(!files.containsKey("frame-samples/frame-01-swap8463-presented.png"), "capture of an older run left out");
+        check(files.containsKey("pgo/lostodyssey-42.profraw") && !files.containsKey("pgo/lostodyssey-21645.profraw"), "only this run's profile");
+        check(files.get("summary.json").contains("\"frame_samples_included\":1,\"frame_samples_skipped_older_run\":1"), "capture counts in the summary");
         System.out.println("PASS: Android tester trace export and event window (JVM)");
     }
 }

@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Process;
+import android.os.SystemClock;
 import android.system.Os;
 import android.system.OsConstants;
 import android.widget.Toast;
@@ -292,6 +293,11 @@ final class AndroidTester {
             files[i].delete();
         }
     }
+    // Wall-clock start of this process, less 2 s for coarse file times.
+    private static long processStartWallMs() {
+        long sinceStart = SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime();
+        return System.currentTimeMillis() - Math.max(0, sinceStart) - 2000;
+    }
     void export(OutputStream out) throws IOException {
         try {
             worker.submit(() -> {
@@ -299,11 +305,14 @@ final class AndroidTester {
                 File[] sessions = sessions();
                 if (sessions.length == 0) throw new IOException("No diagnostic session available");
                 List<File> logs = PlayerLogs.exportable(PlayerLogs.directory(context));
+                // Steprant 2.0.2: frame captures and profiles only from this
+                // run of the app; older ones are not attached to every export.
+                final long since = processStartWallMs();
                 TesterTraceFiles.export(sessions[sessions.length - 1], logs, zip -> {
                     TesterExitReasons.write(context, zip);
                     // Only an instrumented build (SR4 C-4) writes these.
-                    TesterTraceFiles.zipFiles(zip, new File(context.getFilesDir(), "pgo"), ".profraw", "pgo/");
-                }, out);
+                    TesterTraceFiles.zipFiles(zip, new File(context.getFilesDir(), "pgo"), ".profraw", "pgo/", since);
+                }, since, out);
                 return null;
             }).get();
         } catch (InterruptedException error) {

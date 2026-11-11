@@ -164,11 +164,17 @@ final class TesterTraceFiles {
     // SR4 C-4: the files of a directory ending in suffix, newest first, as
     // prefix + name (the profiles of an instrumented build).
     static void zipFiles(ZipOutputStream zip, File dir, String suffix, String prefix) throws IOException {
+        zipFiles(zip, dir, suffix, prefix, Long.MIN_VALUE);
+    }
+    // Steprant 2.0.2: only files written since sinceMs (wall clock, as
+    // File.lastModified), so a profile left over from an older run or build
+    // is no longer attached to every export.
+    static void zipFiles(ZipOutputStream zip, File dir, String suffix, String prefix, long sinceMs) throws IOException {
         File[] found = dir == null ? null : dir.listFiles((d, name) -> name.endsWith(suffix));
         if (found == null) return;
         java.util.Arrays.sort(found, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
         for (File f : found) {
-            if (!f.isFile()) continue;
+            if (!f.isFile() || f.lastModified() < sinceMs) continue;
             zip.putNextEntry(new ZipEntry(prefix + f.getName()));
             copy(zip, f);
             zip.closeEntry();
@@ -237,6 +243,13 @@ final class TesterTraceFiles {
     }
 
     static void export(File dir, List<File> logs, Extras extras, OutputStream output) throws IOException {
+        export(dir, logs, extras, Long.MIN_VALUE, output);
+    }
+
+    // samplesSinceMs (Steprant 2.0.2): frame-samples/ files written before it
+    // (wall clock, as File.lastModified) belong to an older run of the app and
+    // stay out of the ZIP. The Tester passes the start of the app's process.
+    static void export(File dir, List<File> logs, Extras extras, long samplesSinceMs, OutputStream output) throws IOException {
         ZipOutputStream zip = new ZipOutputStream(output);
         for (String name : new String[]{"device.json", "session.json"}) {
             File file = new File(dir, name);
@@ -251,13 +264,18 @@ final class TesterTraceFiles {
         zipSegments(zip, dir, "memory", "memory.csv", MEMORY_HEADER);
         for (File f : files(dir, "event")) { zip.putNextEntry(new ZipEntry("events/" + f.getName())); copy(zip, f); zip.closeEntry(); }
         // Steprant 2.0 WP0.1: bit-exact frame samples from the developer page
-        // (android-diagnostics/frame-samples, beside the sessions).
+        // (android-diagnostics/frame-samples, beside the sessions). 2.0.2: only
+        // a capture of this run of the app; one from before stays on the phone
+        // until "Clear diagnostics" or the next capture removes it.
         File samples = dir.getParentFile() == null ? null : new File(dir.getParentFile(), "frame-samples");
         File[] sampleFiles = samples == null ? null : samples.listFiles();
+        int samplesIncluded = 0, samplesSkipped = 0;
         if (sampleFiles != null) {
             java.util.Arrays.sort(sampleFiles);
             for (File f : sampleFiles) {
                 if (!f.isFile()) continue;
+                if (f.lastModified() < samplesSinceMs) { ++samplesSkipped; continue; }
+                ++samplesIncluded;
                 zip.putNextEntry(new ZipEntry("frame-samples/" + f.getName()));
                 copy(zip, f);
                 zip.closeEntry();
@@ -300,6 +318,7 @@ final class TesterTraceFiles {
         zipText(zip, "summary.json", "{\"retained_intervals\":" + intervals.size() + ",\"p95_interval_ns\":" + (p95 == 0 ? "null" : p95) +
             ",\"p99_interval_ns\":" + (p99 == 0 ? "null" : p99) + ",\"accepted_presents_per_second\":" + fps +
             ",\"estimated_1pct_low_accepted_present_fps\":" + onePercentLow + ",\"slow_intervals\":" + spikes + ",\"paused_intervals\":" + pausedIntervals +
+            ",\"frame_samples_included\":" + samplesIncluded + ",\"frame_samples_skipped_older_run\":" + samplesSkipped +
             ",\"scope\":\"retained accepted-present intervals; not display latency or whole-frame GPU time\"}\n");
         zipText(zip, "events.json", "{\"slow_intervals_in_retained_trace\":" + spikes +
             ",\"saved_windows\":" + files(dir, "event").length +

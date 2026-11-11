@@ -55,6 +55,17 @@ static inline const wchar_t *Translate(uint32_t language, const wchar_t *en, con
         {L"Could not start collector.", L"記録を開始できません。", L"수집을 시작할 수 없습니다.", L"无法开始收集。"},
         {L"Could not open export.", L"出力を開けません。", L"내보내기를 열 수 없습니다.", L"无法打开导出。"},
         {L"Finishing the previous recording. Try again.", L"前の記録を終了中です。もう一度お試しください。", L"이전 기록을 종료 중입니다. 다시 시도하세요.", L"正在结束上一次记录，请重试。"},
+        // Steprant 2.0.2: "Clear diagnostics" on the Tester page.
+        {L"Clear diagnostics", L"診断を消去", L"진단 지우기", L"清除诊断"},
+        {L"Clear", L"消去", L"지우기", L"清除"},
+        {L"Confirm", L"確認", L"확인", L"确认"},
+        {L"Stop the recording first.", L"先に記録を停止してください。", L"먼저 기록을 중지하세요.", L"请先停止记录。"},
+        {L"Diagnostics folder unavailable.", L"診断フォルダーを使用できません。", L"진단 폴더를 사용할 수 없습니다.", L"无法使用诊断文件夹。"},
+        {L"No diagnostics to clear.", L"消去する診断データはありません。", L"지울 진단 데이터가 없습니다.", L"没有可清除的诊断数据。"},
+        {L"Tester sessions, frame captures and profiles. Confirm again to delete them; saves, settings and shader caches stay. Export first to keep this session.", L"テスターの記録、フレームキャプチャ、プロファイル。もう一度確認すると削除します。セーブ、設定、シェーダーキャッシュは残ります。この記録を残すには先に出力してください。", L"테스터 기록, 프레임 캡처, 프로필. 다시 확인하면 삭제됩니다. 저장 데이터, 설정, 셰이더 캐시는 유지됩니다. 이 기록을 남기려면 먼저 내보내세요.", L"测试记录、帧捕获和分析文件。再次确认即删除；存档、设置和着色器缓存不受影响。如需保留本次记录，请先导出。"},
+        {L"A capture is already running.", L"キャプチャ中です。", L"캡처가 진행 중입니다.", L"捕获进行中。"},
+        {L"Diagnostics cleared. MB freed:", L"診断データを消去しました。解放した MB：", L"진단 데이터를 지웠습니다. 확보한 MB:", L"已清除诊断数据。释放 MB："},
+        {L"Some files could not be deleted.", L"一部のファイルを削除できませんでした。", L"일부 파일을 삭제하지 못했습니다.", L"部分文件无法删除。"},
         // Startup offer for installations that still contain duplicate disc archives.
         {L"Free disk space", L"ディスク容量を節約", L"디스크 공간 확보", L"释放磁盘空间"},
         {L"Free about %s GB?", L"約 %s GB を節約しますか？", L"약 %s GB를 확보할까요?", L"释放约 %s GB？"},

@@ -126,6 +126,14 @@ inline void SetDirectory(const std::filesystem::path& directory)
     Get().directory = directory;
 }
 
+// Where the captures go (empty until startup sets it). Steprant 2.0.2: the
+// Tester's "Clear diagnostics" finds the app's files directory from it.
+inline std::filesystem::path Directory()
+{
+    std::lock_guard lock(Get().mutex);
+    return Get().directory;
+}
+
 // Asks for `count` consecutive frames from the next present. Clears the
 // previous capture. False when one is already running or no directory.
 inline bool Request(uint32_t count)
@@ -142,6 +150,21 @@ inline bool Request(uint32_t count)
     s.firstSwap = 0;
     s.json.clear();
     pending.store(true, std::memory_order_release);
+    return true;
+}
+
+// Steprant 2.0.2 "Clear diagnostics" (clear_diagnostics.h): forgets the
+// last capture, so the Tester row shows "Capture" again, before its files are
+// deleted. False while a capture runs: the caller then deletes nothing.
+// Captures start only from the Tester page, on the same thread as the clear.
+inline bool Forget()
+{
+    auto& s = Get();
+    std::lock_guard lock(s.mutex);
+    if (s.remaining) return false;
+    s.requested = s.captured = 0;
+    s.firstSwap = 0;
+    s.json.clear();
     return true;
 }
 

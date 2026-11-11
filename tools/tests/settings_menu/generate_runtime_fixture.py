@@ -49,6 +49,7 @@ PREAMBLE = r'''
 #if LO_PLATFORM_ANDROID
 #include <diagnostics/android_tester.h>
 #include <diagnostics/frame_samples.h>
+#include <diagnostics/clear_diagnostics.h>
 #include <gpu/draw_class_profile.h>
 #include <os/pgo_profile.h>
 int androidMessage = 0;
@@ -251,6 +252,44 @@ int main(int argc, char** argv) {
     d.collectorIdle=true;
     settings::testerFocus=settings::TesterExport;tick(0x1000);
     Check(androidMessage==0x8004,"export requests the Android document picker");
+    {
+        // Steprant 2.0.2: "Clear diagnostics" asks twice and deletes only the
+        // Tester sessions, the frame captures and the PGO profiles.
+        namespace fs=std::filesystem;
+        const fs::path files=fs::temp_directory_path()/"lo-menu-clear-diagnostics";
+        std::error_code ec;fs::remove_all(files,ec);
+        const auto write=[](const fs::path& path,size_t bytes){fs::create_directories(path.parent_path());std::ofstream(path,std::ios::binary)<<std::string(bytes,'x');};
+        const fs::path session=files/"android-diagnostics"/"session-1"/"frames-000001.csv";
+        const fs::path png=files/"android-diagnostics"/"frame-samples"/"frame-01-swap9-presented.png";
+        const fs::path profile=files/"pgo"/"lostodyssey-21645.profraw";
+        const fs::path keep[]{files/"pgo"/"notes.txt",files/"config"/"settings.ini",files/"config"/"developer_switches.ini",
+            files/"save"/"slot0.sav",files/"shader-cache"/"pipelines.bin"};
+        settings::testerFocus=settings::TesterClearDiagnostics;
+        tick(0x1000);Check(settings::status==L"Diagnostics folder unavailable." && !settings::testerClearArmed,"clear needs the capture folder");
+        diagnostics::frame_samples::SetDirectory(files/"android-diagnostics"/"frame-samples");
+        tick(0x1000);Check(settings::status==L"No diagnostics to clear." && !settings::testerClearArmed,"nothing to clear");
+        write(session,1048576);write(png,524288);write(profile,1000);
+        for(const auto& path:keep)write(path,10);
+        tick(0x1000);
+        Check(settings::testerClearArmed && settings::status.rfind(L"1.5 MB: Tester sessions",0)==0 && fs::exists(session),"first confirm measures and asks again");
+        Check(settings::snapshot.rows[settings::TesterClearDiagnostics].name==L"Clear diagnostics","clear row below export");
+        tick(2);Check(!settings::testerClearArmed && fs::exists(session),"moving off the row disarms");
+        tick(1);tick(0x1000);Check(settings::testerClearArmed,"armed again");
+        d.recording=true;tick(0x1000);d.recording=false;
+        Check(!settings::testerClearArmed && fs::exists(session) && settings::status==L"Stop the recording first.","never while recording");
+        tick(0x1000);Check(diagnostics::frame_samples::Request(4),"a capture starts");
+        tick(0x1000);Check(fs::exists(session) && settings::status==L"A capture is already running.","never during a capture");
+        diagnostics::frame_samples::Get().remaining=0;write(png,524288);
+        tick(0x1000);tick(0x1000);
+        Check(!fs::exists(session) && !fs::exists(png) && !fs::exists(profile) && fs::is_directory(files/"android-diagnostics"),
+              "sessions, captures and profiles deleted");
+        Check(settings::status==L"Diagnostics cleared. MB freed: 1.5","freed size reported");
+        bool kept=true;for(const auto& path:keep)kept&=fs::exists(path);
+        Check(kept,"settings, saves, caches and other files untouched");
+        Check(diagnostics::frame_samples::Status().empty(),"the capture row shows Capture again");
+        diagnostics::frame_samples::SetDirectory({});
+        fs::remove_all(files,ec);
+    }
     tick(0x2000);Check(!settings::testerOpen && settings::tab==3,"back returns to System");
     tick(0x200);Check(settings::tab==0,"RB changes category after leaving the page");
     printf("PASS: %u Android settings hook/input checks (synthetic services, no game)\n",checks);
