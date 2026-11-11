@@ -16,6 +16,7 @@
 #include "title_entry.h"
 #include "title_input_gate.h"
 #include "translations.h"
+#include <updater/title_check.h>
 
 extern "C" PPC_FUNC(__imp__sub_8288AC10);
 extern "C" PPC_FUNC(__imp__sub_824C0658);
@@ -232,6 +233,9 @@ PPC_FUNC(sub_8234B9B8)
     if (settings::ConsumeTitleShortcut(idle && !quitOwnsInput))
         OpenSettings(ctx, base, title);
     ReportHint(MenuIdle(base, title) && !quitOwnsInput);
+    // Steprant 2.0.2: the update check belongs to the title menu, never to a
+    // game in progress. After its first frames this is one atomic load.
+    if (idle && !quitOwnsInput && !settings::IsOpen()) updater::title_check::OnTitleIdle();
     settings::title_entry::TickWithMenuInputMuted(quitOwnsInput, ctx.r4.u32,
         [base](uint32_t address) { return PPC_LOAD_U32(address); },
         [base](uint32_t address, uint32_t mask) { PPC_STORE_U32(address, mask); },

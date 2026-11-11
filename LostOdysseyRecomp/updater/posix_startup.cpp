@@ -23,16 +23,14 @@ namespace updater
 // Android: an APK cannot replace itself, so a newer release that carries an
 // Android asset is offered, and accepting hands its download to the browser.
 // The APK keeps one signing key, so it installs over the current one.
-StartupResult PrepareAtStartup(const StartupOptions &options)
+// Steprant 2.0.2: the request and its parsing, without any interface, so the
+// title-screen check (title_check.cpp) can run it on its own thread.
+// ExternalUpdateAvailable: a newer release with an Android package, its tag
+// and download address returned.
+StartupResult CheckLatestAndroidRelease(const StartupOptions &options, std::string &tag, std::string &assetUrl,
+                                        std::string *changelog)
 {
     StartupResult result;
-    const char *disabled = std::getenv("LO_NO_UPDATE");
-    if (!options.automaticUpdates || (disabled && std::string_view(disabled) != "0"))
-    {
-        result.status = StartupStatus::Disabled;
-        result.detail = !options.automaticUpdates ? "automatic_updates=0" : "LO_NO_UPDATE";
-        return result;
-    }
     std::string error;
     const auto current = ParseVersion(options.currentVersion).value_or(*ParseVersion("0.0.0"));
     std::string releaseText;
@@ -55,19 +53,39 @@ StartupResult PrepareAtStartup(const StartupOptions &options)
     {
         result.status = StartupStatus::NoCompatibleAsset; result.detail = error; return result;
     }
-    const auto changelog = ReleaseChangelog(*release, options.uiLanguage);
-    if (!options.confirmUpdate || !options.confirmUpdate(release->tag, changelog, options.uiLanguage))
+    tag = release->tag;
+    assetUrl = asset->url;
+    if (changelog) *changelog = ReleaseChangelog(*release, options.uiLanguage);
+    result.status = StartupStatus::ExternalUpdateAvailable;
+    result.detail = release->tag;
+    return result;
+}
+
+StartupResult PrepareAtStartup(const StartupOptions &options)
+{
+    StartupResult result;
+    const char *disabled = std::getenv("LO_NO_UPDATE");
+    if (!options.automaticUpdates || (disabled && std::string_view(disabled) != "0"))
+    {
+        result.status = StartupStatus::Disabled;
+        result.detail = !options.automaticUpdates ? "automatic_updates=0" : "LO_NO_UPDATE";
+        return result;
+    }
+    std::string tag, assetUrl, changelog;
+    result = CheckLatestAndroidRelease(options, tag, assetUrl, &changelog);
+    if (result.status != StartupStatus::ExternalUpdateAvailable) return result;
+    if (!options.confirmUpdate || !options.confirmUpdate(tag, changelog, options.uiLanguage))
     {
         result.status = StartupStatus::Cancelled; result.detail = "user declined update"; return result;
     }
-    if (!SDL_OpenURL(asset->url.c_str()))
+    if (!SDL_OpenURL(assetUrl.c_str()))
     {
         result.status = StartupStatus::DownloadFailed;
-        result.detail = std::string("could not open ") + asset->url + ": " + SDL_GetError();
+        result.detail = std::string("could not open ") + assetUrl + ": " + SDL_GetError();
         return result;
     }
     result.status = StartupStatus::ExternalUpdateAvailable;
-    result.detail = "opened " + asset->url;
+    result.detail = "opened " + assetUrl;
     return result;
 }
 #elif defined(__linux__) && !defined(_WIN32)
