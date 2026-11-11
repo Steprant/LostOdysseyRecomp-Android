@@ -11,9 +11,23 @@ fi
 : "${GITHUB_PATH:?This installer configures a GitHub Actions job}"
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends ca-certificates wget gnupg software-properties-common
-sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
 key=$(mktemp)
 trap 'rm -f "$key"' EXIT
+# add-apt-repository asks the Launchpad API for the PPA's key; when that API
+# times out (11/11/2026), the same PPA is configured directly with its key
+# from the Ubuntu keyserver, checked against its fingerprint.
+if ! timeout 120 sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test; then
+  echo 'add-apt-repository failed; configuring ppa:ubuntu-toolchain-r/test directly.' >&2
+  wget -qO "$key" 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x60C317803A41BA51845E371A1E9377A2BA9EF27F'
+  ppa_fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
+  if [[ "$ppa_fingerprint" != 60C317803A41BA51845E371A1E9377A2BA9EF27F ]]; then
+    echo 'Unexpected ubuntu-toolchain-r signing key.' >&2
+    exit 1
+  fi
+  gpg --dearmor < "$key" | sudo tee /usr/share/keyrings/lo-toolchain-r.gpg >/dev/null
+  printf '%s\n' 'deb [signed-by=/usr/share/keyrings/lo-toolchain-r.gpg] https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu jammy main' |
+    sudo tee /etc/apt/sources.list.d/lo-toolchain-r.list >/dev/null
+fi
 wget -qO "$key" https://apt.llvm.org/llvm-snapshot.gpg.key
 fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
 if [[ "$fingerprint" != 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421 ]]; then
