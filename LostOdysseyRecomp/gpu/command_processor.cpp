@@ -9,7 +9,7 @@
 #include "renderer.h"
 #include "frame_pacer.h"
 #include "loading_pacing.h"
-#include "deadline_wait.h"
+#include "present_deadline.h"
 #include "register_snapshot.h"
 #include "render_timing.h"
 #include "shader_identity.h"
@@ -31,6 +31,9 @@
 #include <utility>
 #include <mutex>
 #include <host_ui/host_ui.h>
+#if defined(__ANDROID__)
+#include <movie/movie_player.h>
+#endif
 #include <fstream>
 #include <future>
 
@@ -1145,6 +1148,7 @@ namespace gpu
             }
             const auto timingFlush = std::chrono::steady_clock::now();
             {
+                [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace("LO/Scene flush");
                 const bool profiled = pass_profile::Enabled();
                 const uint64_t start = profiled ? pass_profile::ThreadCpuNs() : 0;
                 renderer::PreparePresent(frontbuffer);
@@ -1171,34 +1175,32 @@ namespace gpu
                 }
             }
             const auto timingPace = std::chrono::steady_clock::now();
-            const auto fpsCap = loading::Active() ? loading::Target(GetFrameRateTarget())
-                : video::GetFramePacingTarget(GetFrameRateTarget());
+            const auto nativeFps = GetFrameRateTarget();
+            const bool loadingFrame = loading::Active();
+            const auto fpsCap = loadingFrame ? loading::Target(nativeFps)
+                : video::GetFramePacingTarget(nativeFps);
             const bool timingEnabled = frame_timing::Active();
-            frame_timing::PacingSample pacing;
             static FramePacer pacer;
-            {
-                static OutputFramePacer outputPacer;
-                static DeadlineWait pacingWait;
-                // Preserve the original schedule anchor; sleep without millisecond rounding.
-                const auto nativeDeadline = pacer.Schedule(timingPace, fpsCap);
-                const auto output = loading::Active() ? video::DynamicFgOutputPacing{}
-                    : video::GetDynamicFgOutputPacing(GetFrameRateTarget());
-                const auto outputDeadline = outputPacer.Schedule(timingPace, output.outputFps, output.actualPresents);
-                const auto deadline = std::max(nativeDeadline, outputDeadline);
-                const auto sleepStart = timingEnabled ? std::chrono::steady_clock::now() : timingPace;
-                pacingWait.Until(deadline);
-                if (timingEnabled)
-                {
-                    const auto wake = std::chrono::steady_clock::now();
-                    pacing.requestedMs = std::max(0.0, std::chrono::duration<double, std::milli>(deadline - sleepStart).count());
-                    pacing.actualMs = std::chrono::duration<double, std::milli>(wake - sleepStart).count();
-                    // A past deadline requests no sleep; its call overhead must
-                    // not be reported as an OS timer wakeup overshoot.
-                    if (pacing.requestedMs > 0)
-                        pacing.overshootMs = std::max(0.0, std::chrono::duration<double, std::milli>(wake - deadline).count());
-                }
-            }
-            const auto timingPresent = std::chrono::steady_clock::now();
+            static OutputFramePacer outputPacer;
+            static DeadlineWait pacingWait;
+            const auto nativeDeadline = pacer.Schedule(timingPace, fpsCap);
+            const auto output = loadingFrame ? video::DynamicFgOutputPacing{}
+                : video::GetDynamicFgOutputPacing(nativeFps);
+            const auto outputDeadline = outputPacer.Schedule(timingPace, output.outputFps, output.actualPresents);
+            const auto deadline = std::max(nativeDeadline, outputDeadline);
+            PresentDeadline presentDeadline(pacingWait, deadline, timingEnabled);
+            bool deferPacing = false;
+#if defined(__ANDROID__)
+            static const bool submitBeforePace = [] {
+                const char* value = std::getenv("LO_VK_SUBMIT_BEFORE_PACE");
+                const char* displayTiming = std::getenv("LO_DISPLAY_TIMING");
+                return value && std::strcmp(value, "1") == 0 &&
+                    (!displayTiming || std::strcmp(displayTiming, "1") != 0);
+            }();
+            deferPacing = submitBeforePace && nativeFps == 30 && fpsCap == 30 && !loadingFrame &&
+                !captureTicket.active && !movie::GuestMovieActive() && !host_ui::IsGamePaused() && video::IsVulkan();
+#endif
+            if (!deferPacing) presentDeadline.Release();
             {
                 // LO_DUMP_THREADS_AT=<swap>: print every guest thread's wait state once.
                 static const uint32_t dumpAt = getenv("LO_DUMP_THREADS_AT") ? strtoul(getenv("LO_DUMP_THREADS_AT"), nullptr, 10) : 0;
@@ -1210,7 +1212,10 @@ namespace gpu
             const auto presentsBefore = video::CompletedPresentCount();
             video::PresentFrontbuffer(frontbuffer, width, height, ReadRegister(0x231B),
                 captureTicket.active ? &captureTicket : nullptr, captureTicket.active ? &captureResult : nullptr,
-                m_cinematicBars);
+                m_cinematicBars, deferPacing ? &presentDeadline : nullptr);
+            // Suppressed frames and failed acquires still consume the guest's
+            // deadline. Successful presents have already released it.
+            presentDeadline.Release();
             if (frameSample)
                 diagnostics::frame_samples::Complete(captureResult.available, captureResult.pixels,
                     captureResult.width, captureResult.height, captureResult.reason);
@@ -1221,7 +1226,9 @@ namespace gpu
             // the present). One comparison when nothing was dissected.
             renderer::CompleteFrameDissection();
             renderer::PollDebugCapture();
+            frame_timing::PacingSample pacing;
             pacing.presentAccepted = video::CompletedPresentCount() > presentsBefore;
+            pacing.submittedBeforePacing = presentDeadline.SubmittedBeforePacing();
             {
                 // P6: the city stutter of 8 November was the present blocking
                 // 40-55 ms on top of the pacing sleep: the host cadence and
@@ -1234,8 +1241,15 @@ namespace gpu
                 }();
                 pacing.presentSlowestStage = video::TakeSlowestPresentStage(pacing.presentSlowestStageMs);
                 const double acquireMs = video::TakeAcquireWaitMs();
-                if (displayPaced && acquireMs > 4.0)
+                if (pacing.submittedBeforePacing) {
+                    const auto lateRelease = presentDeadline.LateRelease();
+                    if (pacing.presentAccepted && lateRelease != PresentDeadline::Clock::time_point{}) {
+                        pacer.Reanchor(lateRelease);
+                        pacing.lateReleaseMs = std::chrono::duration<double, std::milli>(lateRelease - deadline).count();
+                    }
+                } else if (displayPaced && acquireMs > 4.0) {
                     pacer.Reanchor(std::chrono::steady_clock::now());
+                }
             }
             g_workerStage.store("window event pump", std::memory_order_relaxed);
             video::PumpEvents();
@@ -1251,10 +1265,16 @@ namespace gpu
                 if (pacing.presentAccepted) previousEnd = timingEnd;
                 pacing.previousSwapLogMs = previousSwapLogMs;
                 pacing.previousSwapPostMs = previousSwapPostMs;
+                const auto& sleep = presentDeadline.Timing();
+                using Milliseconds = std::chrono::duration<double, std::milli>;
+                pacing.requestedMs = Milliseconds(sleep.requested).count();
+                pacing.actualMs = Milliseconds(sleep.actual).count();
+                pacing.overshootMs = Milliseconds(sleep.overshoot).count();
+                // In the staged path the sleep is inside PresentFrontbuffer.
+                // Count it once, regardless of where the deadline was applied.
+                const double presentMs = Milliseconds(timingEnd - timingPace).count() - pacing.actualMs;
                 frame_timing::Present(swaps, fpsCap,
-                    std::chrono::duration<double, std::milli>(timingPace - timingFlush).count(),
-                    std::chrono::duration<double, std::milli>(timingPresent - timingPace).count(),
-                    std::chrono::duration<double, std::milli>(timingEnd - timingPresent).count(), pacing);
+                    Milliseconds(timingPace - timingFlush).count(), pacing.actualMs, presentMs, pacing);
                 previousSwapLogMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - timingEnd).count();
             }
@@ -1387,6 +1407,7 @@ namespace gpu
                 LOG_INFO("WAIT_REG_MEM {} {:#x} op={} ref={:#x} mask={:#x} value now {:#x} swap #{}", isMemory ? "mem" : "reg", pollRegAddr, waitInfo & 7, ref, mask,
                     isMemory ? GpuSwap(*reinterpret_cast<uint32_t*>(TranslatePhysical(pollRegAddr & ~3u)), pollRegAddr & 3) : 0, g_swapCount.load());
             g_workerStage.store("WAIT_REG_MEM", std::memory_order_relaxed);
+            [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace("LO/Guest WAIT_REG_MEM");
             const auto waitStart = std::chrono::steady_clock::now();
             auto deadline = waitStart + std::chrono::seconds(5);
             while (m_running)

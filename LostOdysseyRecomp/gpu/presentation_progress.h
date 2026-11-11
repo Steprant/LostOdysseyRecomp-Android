@@ -8,7 +8,7 @@ enum class Stage : uint32_t {
     Idle, Present, Prepare, Reconcile, ResizeDrain, Resize, Source, Fence, RendererFence,
     Acquire, Record, Submit, SubmitQueueLock, SubmitNative, QueuePresent, Capture,
     // Steprant 2.0 WP3.1: parts of the generic "present" stage.
-    MenuDraw, SettingsOverlay, AchievementToast, CpuFrameCache, Upload
+    MenuDraw, SettingsOverlay, AchievementToast, CpuFrameCache, Upload, Pacing
 };
 
 inline const char* Name(Stage stage)
@@ -35,6 +35,7 @@ inline const char* Name(Stage stage)
     case Stage::AchievementToast: return "achievement-toast";
     case Stage::CpuFrameCache: return "cpu-frame-cache";
     case Stage::Upload: return "upload";
+    case Stage::Pacing: return "pacing-deadline";
     }
     return "unknown";
 }
@@ -71,7 +72,7 @@ public:
 
     // Wall time spent in each stage since the last TakeStageTimes (written
     // by the command thread that sets the stages; slow-frame breakdown).
-    static constexpr uint32_t StageCount = uint32_t(Stage::Upload) + 1;
+    static constexpr uint32_t StageCount = uint32_t(Stage::Pacing) + 1;
     void Enter(Stage stage) {
         const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -81,13 +82,13 @@ public:
         enteredNs_ = now;
         stage_.store(stage, std::memory_order_relaxed);
     }
-    // The stage other than Idle that took longest, and its milliseconds.
+    // The longest work/wait stage. The separate pacing sample owns timer sleep.
     Stage TakeSlowestStage(double& milliseconds) {
         Stage slowest = Stage::Idle;
         uint64_t most = 0;
         for (uint32_t i = 0; i < StageCount; ++i) {
             const uint64_t ns = stageNs_[i].exchange(0, std::memory_order_relaxed);
-            if (Stage(i) != Stage::Idle && ns > most) { most = ns; slowest = Stage(i); }
+            if (Stage(i) != Stage::Idle && Stage(i) != Stage::Pacing && ns > most) { most = ns; slowest = Stage(i); }
         }
         milliseconds = double(most) / 1e6;
         return slowest;

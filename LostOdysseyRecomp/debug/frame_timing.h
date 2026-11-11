@@ -28,6 +28,8 @@ struct PacingSample
     bool hasPrevious = false;
     // The swapchain accepted this present API call; this does not imply scanout.
     bool presentAccepted = false;
+    bool submittedBeforePacing = false;
+    double lateReleaseMs = 0;
     // The presentation stage that took longest during this present (P6).
     const char* presentSlowestStage = "";
     double presentSlowestStageMs = 0;

@@ -10,6 +10,7 @@
 #include "frame_plan.h"
 #include "android_tv.h"
 #include "sgsr2_status.h"
+#include <diagnostics/android_trace.h>
 #if defined(LO_GPU_PLUME) || defined(LO_VIDEO_SUBMISSION_UNIT)
 #include "backend_device.h"
 #include "vulkan_submission_state.h"
@@ -49,7 +50,7 @@
 #include "frame_pacer.h"
 #include "display_pacing.h"
 #include "overlay_upload.h"
-#include "deadline_wait.h"
+#include "present_deadline.h"
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
 #include <modding/rebuild_progress.h>
@@ -1095,6 +1096,7 @@ namespace gpu::video
             plume::RenderCommandSemaphore* const* signals, uint32_t signalCount,
             plume::RenderCommandFence* fence, uint64_t* serial, int32_t* rawResult)
         {
+            [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace("LO/Present submit");
             PresentScope progress(g_presentProgress, PresentStage::Submit);
             uint64_t acceptedSerial = 0;
             const auto submit = [&] {
@@ -1894,6 +1896,8 @@ namespace gpu::video
         return result == VK_SUCCESS;
     }
     bool WaitForGpuFence(plume::RenderCommandFence* fence) {
+        [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace(fence == g_fence.get()
+            ? "LO/Present fence" : "LO/Renderer fence");
         PresentScope progress(g_presentProgress, fence == g_fence.get() ? PresentStage::Fence : PresentStage::RendererFence);
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
         // Slow-frame breakdown (frame_timing): time blocked on the GPU.
@@ -5105,6 +5109,7 @@ namespace gpu::video
 
     static bool AcquirePresentTexture(uint32_t* index)
     {
+        [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace("LO/WSI acquire");
         PresentScope progress(g_presentProgress, PresentStage::Acquire);
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
         struct AcquireTimer {
@@ -5196,6 +5201,10 @@ namespace gpu::video
     static bool PresentSwapchainImage(uint32_t imageIndex, plume::RenderCommandSemaphore** waits, uint32_t waitCount)
     {
         PresentScope progress(g_presentProgress, PresentStage::QueuePresent);
+        const auto present = [&] {
+            [[maybe_unused]] const ::diagnostics::AndroidTraceScope trace("LO/WSI present");
+            return g_swapChain->present(imageIndex, waits, waitCount);
+        };
 #if defined(__ANDROID__)
         ScheduleDisplayTime();
         auto& tester = ::diagnostics::android_tester::g_recorder;
@@ -5206,7 +5215,7 @@ namespace gpu::video
                     ? uint64_t(t.tv_sec) * 1000000000ull + uint64_t(t.tv_nsec) : 0;
             };
             const uint64_t wallBefore = ::diagnostics::android_tester::NowNs(), cpuBefore = threadTime();
-            const bool ok = g_swapChain->present(imageIndex, waits, waitCount);
+            const bool ok = present();
             const uint64_t wallAfter = ::diagnostics::android_tester::NowNs(), cpuAfter = threadTime();
             tester.Add(wallAfter, wallAfter - wallBefore,
                 cpuBefore && cpuAfter >= cpuBefore ? cpuAfter - cpuBefore : 0,
@@ -5214,7 +5223,7 @@ namespace gpu::video
             return ok;
         }
 #endif
-        return g_swapChain->present(imageIndex, waits, waitCount);
+        return present();
     }
 
     static bool UploadAndPresentPixels(const std::vector<uint32_t>& pixels, uint32_t width, uint32_t height,
@@ -5468,7 +5477,8 @@ namespace gpu::video
 #endif
 
     void PresentFrontbuffer(uint32_t physicalAddress, uint32_t width, uint32_t height, uint32_t copyDestInfo,
-        const gpu::present_capture::Ticket *capture, gpu::present_capture::Result *captureResult, bool cinematicBars)
+        const gpu::present_capture::Ticket *capture, gpu::present_capture::Result *captureResult, bool cinematicBars,
+        PresentDeadline* pacing)
     {
         PresentScope progress(g_presentProgress, PresentStage::Present);
         struct CaptureExit {
@@ -5492,6 +5502,12 @@ namespace gpu::video
             return;
 
 #ifdef LO_GPU_PLUME
+        const auto releaseDeadline = [pacing](PresentDeadline::Point point = PresentDeadline::Point::BeforeSubmit) {
+            if (!pacing || pacing->Released()) return;
+            PresentScope wait(g_presentProgress, PresentStage::Pacing);
+            pacing->Release(point);
+        };
+        const uint64_t previousSwapchain = pacing ? g_presentProgress.Read().swapchainGeneration : 0;
         static loading::PresentGate loadingPresents;
         const auto nowNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -5644,13 +5660,22 @@ namespace gpu::video
                 TrackNeuralRenderingPreview();
                 uint64_t sceneOrdinal = 0;
                 const auto now = std::chrono::steady_clock::now();
-                if (renderer::ResolvedScene(physicalAddress & 0x1FFFFFFF, sceneOrdinal)) {
+                const bool scene = renderer::ResolvedScene(physicalAddress & 0x1FFFFFFF, sceneOrdinal);
+                if (scene) {
                     g_gameplayPresented.store(true, std::memory_order_relaxed);
                     if (!g_calibrationGameMenuOpen.load(std::memory_order_acquire)) {
                         g_lastSceneAddress = physicalAddress & 0x1FFFFFFF;
                         g_lastSceneWidth = sourceWidth;
                         g_lastSceneHeight = sourceHeight;
                     }
+                }
+                if (pacing) {
+                    const bool stableFifo = g_vulkan && scene && !displayTicket && !hasSettings && !hasDebug &&
+                        g_presentationDisplay.nativeVsyncRequested &&
+                        !loading::Active() && !host_ui::IsGamePaused() && gpu::GetFrameRateTarget() == 30 &&
+                        g_presentProgress.Read().swapchainGeneration == previousSwapchain &&
+                        static_cast<const plume::VulkanSwapChain*>(g_swapChain.get())->createdPresentMode == VK_PRESENT_MODE_FIFO_KHR;
+                    if (!stableFifo) releaseDeadline();
                 }
 #if (defined(_WIN32) && (defined(LO_ENABLE_STREAMLINE_FG) || defined(LO_ENABLE_D3D12_FG) || defined(LO_ENABLE_VULKAN_FSR_FG))) || (defined(__APPLE__) && defined(LO_ENABLE_METALFX_FG))
                 frame_generation::CompositeHandoff composite;
@@ -5843,6 +5868,12 @@ namespace gpu::video
                 if (!submitted) { LOG_ERROR("video: GPU presentation submit failed raw_result={}", submitResult); ReadPresentCapture(captureResult, false, false, 0); return; }
                 if (presentTiming) g_presentTiming.pending = g_presentTiming.recording;
                 g_fgPresent.Submitted(g_deviceEpoch.load(), submissionSerial);
+                g_fgPresentSerial = submissionSerial;
+                g_presentPending = true;
+                // The submission consumes acquire and can run while the CPU
+                // waits out the remaining deadline. QueuePresent stays on this
+                // owner thread and no queue lock is held across the timer.
+                releaseDeadline(PresentDeadline::Point::AfterSubmit);
                 FgPresentStart();
                 const bool presented = PresentSwapchainImage(imageIndex, &signalSemaphore, 1);
                 FgPresented(presented);
@@ -5851,8 +5882,6 @@ namespace gpu::video
                     renderer::CancelFgHandoffs();
                 }
                 if (presented) ++g_completedPresentCount;
-                g_fgPresentSerial = submissionSerial;
-                g_presentPending = true;
                 g_lastPresentedImage=imageIndex; g_hasPresentedImage=true;
 #if defined(__APPLE__) && defined(LO_ENABLE_METALFX_FG)
                 bool realPresented = presented;
@@ -5905,6 +5934,9 @@ namespace gpu::video
                 return;
             }
         }
+        releaseDeadline();
+#else
+        (void)pacing;
 #endif
         g_frameOnGpu = false;
 
