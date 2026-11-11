@@ -45,6 +45,7 @@ enum class Switch : uint32_t
     AsyncLog,             // B6: log lines written by a writer thread through a bounded queue (on)
     UpdateAtTitle,        // B7: the update check runs at the title screen on its own thread (on); off: at the start as in 2.0
     MenuOverlayReuse,     // B4: the Settings menu over a game uploads its image only when it changed (on)
+    ParkedTargetAge,      // D14: parked render targets not taken back for 60 s are freed (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -81,6 +82,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"async_log", L"Asynchronous log", L"非同步記錄", 0, 2, "LO_LOG_ASYNC"},
     {"update_at_title", L"Update check at the title screen", L"於標題畫面檢查更新", 0, 2, "LO_UPDATE_AT_TITLE"},
     {"menu_overlay_reuse", L"Reuse the Settings menu image", L"重複使用設定選單影像", 0, 2, "LO_MENU_OVERLAY_REUSE"},
+    {"parked_target_age", L"Free unused parked targets after 60 s", L"60 秒後釋放未使用的暫存渲染目標", 0, 2, "LO_PARKED_TARGET_AGE"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the
