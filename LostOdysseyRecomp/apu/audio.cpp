@@ -835,6 +835,15 @@ namespace apu
                 g_clockResets.load(std::memory_order_relaxed), g_refillFrames.load(std::memory_order_relaxed),
                 g_reserveFrames.load(std::memory_order_relaxed), g_wakeLate.Take(), g_callbackPeak.Take(),
                 lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs, lock.contendedLatencySensitive);
+            // 2.0.2 D13: the decode errors as one line, only when one was added.
+            static uint64_t xmaFailedLogged = 0;
+            if (const auto xmaSummary = xma::GetDecodeSummary(); xmaSummary.failed != xmaFailedLogged)
+            {
+                LOG_INFO("xma decode summary: frames={} failed={} (+{}) joins_smoothed={} silent_frames={} resyncs={}",
+                    xmaSummary.frames, xmaSummary.failed, xmaSummary.failed - xmaFailedLogged, xmaSummary.joined,
+                    xmaSummary.silenced, xmaSummary.resyncs);
+                xmaFailedLogged = xmaSummary.failed;
+            }
             // 2.0.2 D12: only when a callback wait went over the grace period.
             static uint32_t guardLogged = 0;
             if (const uint32_t over = g_guardOverGrace.load(std::memory_order_relaxed); over != guardLogged)

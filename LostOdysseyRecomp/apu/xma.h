@@ -12,6 +12,7 @@
 // subframes from its output ring.
 
 #include <cstdint>
+#include "xma_frame_join.h"
 
 namespace apu::xma
 {
@@ -48,4 +49,7 @@ namespace apu::xma
     LockStats TakeLockStats();
     // The same peaks without resetting them (diagnostics between reports).
     LockStats PeekLockStats();
+    // Steprant 2.0.2 D13: frames sent to the decoder since the start, the
+    // ones it rejected and what was done about them (xma_frame_join.h).
+    DecodeSummary GetDecodeSummary();
 }

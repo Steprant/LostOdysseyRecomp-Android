@@ -2,6 +2,7 @@
 #include "xma.h"
 #include "xma_loop.h"
 #include "xma_decode_reporting.h"
+#include "xma_frame_join.h"
 #include "audio_timing.h"
 #include <kernel/memory.h>
 #include <os/host_scheduling.h>
@@ -144,6 +145,7 @@ namespace apu::xma
             FailureBurst failureBurst;
             FailureRun failureRun;
             uint64_t failureResyncs = 0, failureSilenced = 0;
+            FrameJoin join; // 2.0.2 D13: no step in the waveform around a lost frame
             std::chrono::steady_clock::time_point diagnosticStart{}, diagnosticReport{};
             void ReportSamples(const char* reason, uint32_t id)
             {
@@ -180,6 +182,7 @@ namespace apu::xma
                 failureBurst = {};
                 failureRun = {};
                 failureResyncs = failureSilenced = 0;
+                join.Clear();
                 diagnosticStart = diagnosticReport = {};
                 remainingSubframes = pcmOffset = frameBits = copiedBits = packetsSkip = framesSent = 0;
                 frameCrossedPacket = false;
@@ -210,6 +213,14 @@ namespace apu::xma
         std::thread g_worker;
         std::atomic<bool> g_running{ false };
         std::atomic<uint32_t> g_allocatedCount{ 0 };
+        // Steprant 2.0.2 D13: totals for the decode summary line.
+        std::atomic<uint64_t> g_decodeFrames{ 0 }, g_decodeFailed{ 0 }, g_decodeJoined{ 0 },
+            g_decodeSilenced{ 0 }, g_decodeResyncs{ 0 };
+        bool FrameJoinOn()
+        {
+            static const bool on = FrameJoinEnabled(std::getenv("LO_XMA_FRAME_JOIN"));
+            return on;
+        }
         bool g_trace = false;
         bool g_traceContextWrites = false;
 
@@ -340,6 +351,7 @@ namespace apu::xma
             const int channels = data.isStereo() ? 2 : 1;
             if (ctx.decoder && ctx.decoder->channels == channels && ctx.decoder->sample_rate == int(data.sampleRate())) return true;
             avcodec_free_context(&ctx.decoder);
+            ctx.join.Clear(); // another stream format: nothing to join to
             const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_XMAFRAMES);
             if (!codec) return false;
             ctx.decoder = avcodec_alloc_context3(codec);
@@ -454,6 +466,7 @@ namespace apu::xma
 #endif
                 const int sent = avcodec_send_packet(ctx.decoder, ctx.packet);
                 const int decoded = sent >= 0 ? avcodec_receive_frame(ctx.decoder, ctx.frame) : sent;
+                g_decodeFrames.fetch_add(1, std::memory_order_relaxed);
 #if defined(__ANDROID__)
                 if (measureXma) tester.AddXma(decoded < 0 || ctx.frame->nb_samples != 512 || ctx.frame->format != AV_SAMPLE_FMT_FLTP,
                     ::diagnostics::android_tester::NowNs() - xmaStart);
@@ -463,6 +476,9 @@ namespace apu::xma
                     // Not starvation: every frame we send is complete, so a
                     // receive EAGAIN means the decoder dropped this frame.
                     if (g_audioDiagnostics) ++ctx.decodeErrors;
+                    g_decodeFailed.fetch_add(1, std::memory_order_relaxed);
+                    const bool joinFrames = FrameJoinOn();
+                    if (joinFrames) ctx.join.Lost();
                     // Serialized by g_mutex; context reuse must not reset the
                     // process-wide capture budget or hide later scene failures.
                     static DecodeFailureReports reports;
@@ -549,6 +565,7 @@ namespace apu::xma
                         ctx.copiedBits = ctx.frameBits = 0;
                         nextPacket();
                         ++ctx.failureResyncs;
+                        g_decodeResyncs.fetch_add(1, std::memory_order_relaxed);
                     }
                     else if (action == FailureAction::Silence)
                     {
@@ -557,23 +574,46 @@ namespace apu::xma
                         avcodec_flush_buffers(ctx.decoder);
                         const uint32_t channels = data.isStereo() ? 2 : 1;
                         std::fill_n(ctx.pcm.begin(), 512 * channels * 2, uint8_t(0));
+                        if (joinFrames)
+                        {
+                            // 2.0.2 D13: the silence starts from the last sample
+                            // written instead of with a step.
+                            for (uint32_t i = 0; i < FrameJoin::Samples; ++i)
+                                for (uint32_t c = 0; c < channels; ++c)
+                                {
+                                    const uint16_t big = ByteSwap(uint16_t(int16_t(std::lrint(ctx.join.Silent(c, i) * 32767.0f))));
+                                    memcpy(ctx.pcm.data() + (i*channels+c)*2, &big, 2);
+                                }
+                            ctx.join.WroteSilence();
+                        }
                         ctx.pcmOffset = 0;
                         ctx.remainingSubframes = 4;
                         ++ctx.failureSilenced;
+                        g_decodeSilenced.fetch_add(1, std::memory_order_relaxed);
                     }
                     return;
                 }
                 ctx.failureRun.OnSuccess();
                 const uint32_t channels = data.isStereo() ? 2 : 1;
+                const uint32_t skip = std::min(4u, data.skipCount());
+                // 2.0.2 D13: after a lost frame the first samples the guest
+                // will hear start from the last sample written.
+                const bool join = ctx.join.pending && FrameJoinOn();
+                const uint32_t joinFrom = skip * 128;
+                float lastValue[2]{};
                 for (uint32_t i = 0; i < 512; ++i)
                     for (uint32_t c = 0; c < channels; ++c)
                     {
-                        const float value = reinterpret_cast<float*>(ctx.frame->data[c])[i];
-                        const int16_t sample = int16_t(std::lrint(std::clamp(std::isfinite(value) ? value : 0.0f, -1.0f, 1.0f) * 32767.0f));
+                        float value = reinterpret_cast<float*>(ctx.frame->data[c])[i];
+                        value = std::clamp(std::isfinite(value) ? value : 0.0f, -1.0f, 1.0f);
+                        if (join && i >= joinFrom) value = ctx.join.Decoded(c, i - joinFrom, value);
+                        lastValue[c] = value;
+                        const int16_t sample = int16_t(std::lrint(value * 32767.0f));
                         const uint16_t big = ByteSwap(uint16_t(sample));
                         memcpy(ctx.pcm.data() + (i*channels+c)*2, &big, 2);
                     }
-                const uint32_t skip = std::min(4u, data.skipCount());
+                if (join && skip < 4) g_decodeJoined.fetch_add(1, std::memory_order_relaxed);
+                if (skip < 4) ctx.join.Wrote(lastValue[0], lastValue[1]);
                 if (g_audioDiagnostics)
                 {
                     ctx.decodedSamples += 512;
@@ -878,6 +918,17 @@ namespace apu::xma
         stats.holdMaxUs = g_holdPeak.Take();
         stats.contendedLatencySensitive = g_contendedLatencySensitive.exchange(0, std::memory_order_relaxed);
         return stats;
+    }
+
+    DecodeSummary GetDecodeSummary()
+    {
+        DecodeSummary summary;
+        summary.frames = g_decodeFrames.load(std::memory_order_relaxed);
+        summary.failed = g_decodeFailed.load(std::memory_order_relaxed);
+        summary.joined = g_decodeJoined.load(std::memory_order_relaxed);
+        summary.silenced = g_decodeSilenced.load(std::memory_order_relaxed);
+        summary.resyncs = g_decodeResyncs.load(std::memory_order_relaxed);
+        return summary;
     }
 
     LockStats PeekLockStats()

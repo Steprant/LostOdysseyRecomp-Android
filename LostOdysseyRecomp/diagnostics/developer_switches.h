@@ -48,6 +48,7 @@ enum class Switch : uint32_t
     ParkedTargetAge,      // D14: parked render targets not taken back for 60 s are freed (on)
     LowMemoryTrim,        // D15: on Android's low-memory signal the renderer frees its unused caches (on)
     AudioCallbackGuard,   // D12: a long wait of the game's audio callback ends the queued sound with a fade (on)
+    XmaFrameJoin,         // D13: no step in the waveform around an XMA frame the decoder rejected (on)
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -87,6 +88,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"parked_target_age", L"Free unused parked targets after 60 s", L"60 秒後釋放未使用的暫存渲染目標", 0, 2, "LO_PARKED_TARGET_AGE"},
     {"low_memory_trim", L"Free unused caches on low memory", L"記憶體不足時釋放未使用的快取", 0, 2, "LO_LOW_MEMORY_TRIM"},
     {"audio_callback_guard", L"Fade to silence on long audio waits", L"音訊長時間等待時淡出為靜音", 0, 2, "LO_AUDIO_CALLBACK_GUARD"},
+    {"xma_frame_join", L"Smooth joins around XMA decode errors", L"平滑 XMA 解碼錯誤前後的銜接", 0, 2, "LO_XMA_FRAME_JOIN"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the
