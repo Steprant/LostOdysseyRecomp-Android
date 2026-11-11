@@ -86,6 +86,7 @@ lo_review_test(LoMovieDataTest movie_data_test.cpp
 set_tests_properties(LoMovieDataTest PROPERTIES WORKING_DIRECTORY "${LO_TESTS}")
 add_subdirectory("${LO_TESTS}/xma_streaming" "${CMAKE_CURRENT_BINARY_DIR}/xma_streaming")
 lo_review_test(LoFramePacerTest frame_pacer_test.cpp)
+lo_review_test(LoPresentDeadlineTest present_deadline_test.cpp)
 lo_review_test(LoDisplayPacingTest display_pacing_test.cpp)
 lo_review_test(LoSamplerMipBiasTest sampler_mip_bias_test.cpp)
 lo_review_test(LoAndroidTvTesterTest android_tv_tester_test.cpp)
