@@ -39,6 +39,11 @@ void SetPerformanceHints(bool enabled);
 // Audio producer thread, once at its start: Android's audio thread priority,
 // so a busy, thermally capped CPU still runs it on time. No-op elsewhere.
 void RaiseAudioThreadPriority();
+// Steprant 2.0.2 (Android): the calling thread's id for SetThreadNice, and the
+// nice value of a thread of this process (0 normal, -8 intermediate, -16
+// audio). Both return 0/false elsewhere.
+int CurrentThreadId();
+bool SetThreadNice(int threadId, int nice);
 
 // Sleeps until deadline with sub-millisecond wakeup accuracy. macOS applies
 // timer coalescing to ordinary threads, which wakes 18 ms sleeps about 5 ms
