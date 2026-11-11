@@ -691,8 +691,8 @@ jobs:
       - name: Cache Android DXC
         uses: actions/cache@v4
         with:
-          path: ${{ env.LO_ANDROID_CI_CACHE }}/android-dxc
-          key: android-dxc-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/build-dxc.sh', 'tools/android/ci_build.sh') }}
+          path: ${{ env.LO_ANDROID_CI_CACHE }}/android-dxc/artifacts
+          key: android-dxc-bin-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/build-dxc.sh') }}
       - name: Cache Gradle dependencies
         uses: actions/cache@v4
         with:
@@ -705,10 +705,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LO_ANDROID_CI_CACHE }}/ccache
-          key: android-ccache-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/*.sh', 'CMakeLists.txt', 'cmake/**') }}-${{ github.sha }}
-          restore-keys: |
-            android-ccache-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/*.sh', 'CMakeLists.txt', 'cmake/**') }}-
-            android-ccache-${{ runner.os }}-ndk28.2.13676358-
+          key: android-ccache-v2-${{ runner.os }}-${{ runner.arch }}-ndk28.2.13676358-off-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: android-ccache-v2-${{ runner.os }}-${{ runner.arch }}-ndk28.2.13676358-off-
       - name: Retrieve private build input
         uses: actions/checkout@v4
         with:

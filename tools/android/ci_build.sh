@@ -90,6 +90,9 @@ else
     fi
     LO_DXC_JOBS=${LO_DXC_JOBS:-$jobs} bash "$repo/tools/android/build-dxc.sh"
 fi
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo 'dxc_ready=true' >> "$GITHUB_OUTPUT"
+fi
 
 echo "== Runtime build, debug APK and lint"
 export LO_ANDROID_BUILD_DIR="$repo/out/build/android-runtime"
@@ -126,9 +129,10 @@ case "${LO_PGO:-off}" in
         echo "== Profile-guided build ($(sha256sum "$profile" | cut -c1-16))" ;;
     *) echo "LO_PGO must be off, generate or use; got '$LO_PGO'" >&2; exit 1 ;;
 esac
-bash "$repo/tools/android/build-runtime.sh" \
+CCACHE_COMPILERCHECK=content CCACHE_SLOPPINESS=pch_defines,time_macros \
+    bash "$repo/tools/android/build-runtime.sh" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "${steprant_args[@]}" "${pgo_args[@]}"
-ccache --show-stats || true
+ccache --show-stats --verbose || true
 
 echo "== JVM tests"
 (cd "$repo/packaging/android" && ./gradlew :runtime:testDebugUnitTest)

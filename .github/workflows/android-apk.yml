@@ -6,6 +6,10 @@ name: Android APK
 on:
   workflow_dispatch:
     inputs:
+      steprant_version:
+        description: 'Version override for steprant/android-build (e.g. 2.0.5)'
+        type: string
+        default: ''
       pgo:
         description: 'Profile-guided build (SR4 C-4): off, generate (instrumented APK) or use (profile from build-inputs)'
         type: choice
@@ -27,26 +31,64 @@ on:
 permissions:
   contents: read
 jobs:
+  identity:
+    name: Select the Steprant build identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      pin: ${{ steps.version.outputs.pin }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.ref == 'refs/heads/steprant/android-build'
+        with:
+          sparse-checkout: packaging/android/steprant-version.txt
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - id: version
+        env:
+          VERSION_OVERRIDE: ${{ inputs.steprant_version }}
+        run: |
+          set -euo pipefail
+          pin=false
+          case "$GITHUB_REF_NAME" in
+            integration/v1.1.0-steprant-all) version=1.5 ;;
+            integration/v1.6-candidate-*) version=1.6 ;;
+            integration/v1.7-optimization-*) version=1.7 ;;
+            steprant/v1.8) version=1.8 ;;
+            steprant/v2.0-dev) version=1.9; pin=true ;;
+            steprant/v2.0|steprant/v2.0.[2-5]) version=${GITHUB_REF_NAME#steprant/v}; pin=true ;;
+            steprant/android-build)
+              version=${VERSION_OVERRIDE:-$(<packaging/android/steprant-version.txt)}
+              if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]{0,3})$ ]]; then
+                echo '::error::Expected a three-part Steprant version such as 2.0.5'
+                exit 1
+              fi
+              pin=true
+              ;;
+            *) version= ;;
+          esac
+          {
+            echo "version=$version"
+            echo "pin=$pin"
+          } >> "$GITHUB_OUTPUT"
+
   pin-test-build:
     name: Preserve Steprant test build commit
-    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2' || github.ref == 'refs/heads/steprant/v2.0.3' || github.ref == 'refs/heads/steprant/v2.0.4' || github.ref == 'refs/heads/steprant/v2.0.5'
+    needs: identity
+    if: needs.identity.outputs.pin == 'true'
     permissions:
       contents: write
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.identity.outputs.version }}
     steps:
       - name: Pin this build before the development branch advances
         run: |
           set -euo pipefail
-          version=1.9
-          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0 ]] && version=2.0
-          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0.2 ]] && version=2.0.2
-          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0.3 ]] && version=2.0.3
-          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0.4 ]] && version=2.0.4
-          [[ "$GITHUB_REF" == refs/heads/steprant/v2.0.5 ]] && version=2.0.5
-          pin="steprant/build-$version-$GITHUB_RUN_ID"
+          pin="steprant/build-$VERSION-$GITHUB_RUN_ID"
           if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
             [[ "$actual" == "$GITHUB_SHA" ]] || { echo "::error::Build ref points to another commit"; exit 1; }
           else
@@ -56,12 +98,14 @@ jobs:
           fi
   apk:
     name: Android arm64 APK
+    needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
       LO_BUILD_JOBS: 4
       CCACHE_MAXSIZE: 2G
+      STEPRANT_VERSION: ${{ needs.identity.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,14 +168,23 @@ jobs:
         with:
           path: ${{ env.LO_ANDROID_CI_CACHE }}/android-sdk
           key: android-sdk-${{ runner.os }}-cmdline11076708-api35-build35-ndk28.2.13676358-cmake3.22.1-v1
-      - name: Cache Android DXC
-        uses: actions/cache@v4
+      - name: Restore Android DXC library
+        id: android-dxc
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LO_ANDROID_CI_CACHE }}/android-dxc/artifacts
+          key: android-dxc-bin-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/build-dxc.sh') }}
+      - name: Restore legacy Android DXC cache
+        id: legacy-dxc
+        if: steps.android-dxc.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.LO_ANDROID_CI_CACHE }}/android-dxc
           key: android-dxc-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/build-dxc.sh', 'tools/android/ci_build.sh') }}
-          # A DXC source build takes about 25 minutes; keep it when a later
-          # step fails (build-dxc.sh verifies the cached library before use).
-          save-always: true
+          restore-keys: android-dxc-${{ runner.os }}-ndk28.2.13676358-
+      - name: Keep the legacy DXC library for verification
+        if: steps.legacy-dxc.outputs.cache-matched-key != ''
+        run: rm -rf -- "$LO_ANDROID_CI_CACHE/android-dxc/source" "$LO_ANDROID_CI_CACHE/android-dxc/build-android-cmake322"
       - name: Cache Gradle dependencies
         uses: actions/cache@v4
         with:
@@ -144,10 +197,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LO_ANDROID_CI_CACHE }}/ccache
-          key: android-ccache-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/*.sh', 'CMakeLists.txt', 'cmake/**') }}-${{ github.sha }}
-          restore-keys: |
-            android-ccache-${{ runner.os }}-ndk28.2.13676358-${{ hashFiles('tools/android/*.sh', 'CMakeLists.txt', 'cmake/**') }}-
-            android-ccache-${{ runner.os }}-ndk28.2.13676358-
+          key: android-ccache-v2-${{ runner.os }}-${{ runner.arch }}-ndk28.2.13676358-${{ inputs.pgo || 'off' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: android-ccache-v2-${{ runner.os }}-${{ runner.arch }}-ndk28.2.13676358-${{ inputs.pgo || 'off' }}-
       - name: Retrieve private build input
         if: steps.build-input.outputs.source == 'repository'
         uses: actions/checkout@v4
@@ -196,71 +247,35 @@ jobs:
         run: |
           out/build/tools/xexdump LostOdysseyRecompLib/private/disc1/default.xex LostOdysseyRecompLib/private/image_disc1.bin
           python tools/ppc_codegen.py generate --executable out/build/tools/XenonRecomp/XenonRecomp/XenonRecomp
-      - name: Select the Steprant build identity
-        id: steprant
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          # Steprant fork builds: the 1.5 integration branch, the 1.6
-          # candidate and 1.7 optimization branches share the fork's package,
-          # label and icon.
-          case "$REF_NAME" in
-            integration/v1.1.0-steprant-all) version=1.5 ;;
-            integration/v1.6-candidate-*) version=1.6 ;;
-            integration/v1.7-optimization-*) version=1.7 ;;
-            steprant/v1.8) version=1.8 ;;
-            steprant/v2.0-dev) version=1.9 ;;
-            steprant/v2.0) version=2.0 ;;
-            # 2.0.2 stable base (11/11): from 2.0 Final, versionCode 2000002 so
-            # it installs over the 2.0.1 test builds (2000001); no developer page.
-            steprant/v2.0.2) version=2.0.2 ;;
-            # 2.0.3 (Fase 3, one group per build on the 2.0.2 base): versionCode
-            # 2000003, over 2.0.2; no developer page.
-            steprant/v2.0.3) version=2.0.3 ;;
-            steprant/v2.0.4) version=2.0.4 ;;
-            steprant/v2.0.5) version=2.0.5 ;;
-            *) version= ;;
-          esac
-          # The developer page (A/B switches) is compiled out: the 1.9 logs
-          # settled every switch (D8), and its built-in values are the chosen
-          # ones. LO_STEPRANT_DEVELOPER_PAGE=1 in a local build brings it back.
-          developer=0
-          echo "developer=$developer" >> "$GITHUB_OUTPUT"
-          if [[ -n "$version" ]]; then
-            {
-              echo "version=$version"
-              echo 'application_id=io.github.freefrank.lostodyssey.steprant'
-              echo 'label=Lost Odyssey Steprant'
-              echo 'icon=@mipmap/ic_launcher_steprant'
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo 'version='
-              echo 'application_id=io.github.freefrank.lostodyssey'
-              echo 'label=Lost Odyssey Recomp'
-              echo 'icon=@mipmap/ic_launcher'
-            } >> "$GITHUB_OUTPUT"
-          fi
       - name: Build the APK
+        id: build-apk
         env:
-          RELEASE_TAG: ${{ steps.steprant.outputs.version && format('v{0}', steps.steprant.outputs.version) || '' }}
-          ORG_GRADLE_PROJECT_loApplicationId: ${{ steps.steprant.outputs.application_id }}
-          ORG_GRADLE_PROJECT_loAppLabel: ${{ steps.steprant.outputs.label }}
-          ORG_GRADLE_PROJECT_loAppIcon: ${{ steps.steprant.outputs.icon }}
-          LO_STEPRANT_VERSION: ${{ steps.steprant.outputs.version }}
-          LO_STEPRANT_DEVELOPER_PAGE: ${{ steps.steprant.outputs.developer }}
+          RELEASE_TAG: ${{ env.STEPRANT_VERSION && format('v{0}', env.STEPRANT_VERSION) || '' }}
+          ORG_GRADLE_PROJECT_loApplicationId: ${{ env.STEPRANT_VERSION && 'io.github.freefrank.lostodyssey.steprant' || 'io.github.freefrank.lostodyssey' }}
+          ORG_GRADLE_PROJECT_loAppLabel: ${{ env.STEPRANT_VERSION && 'Lost Odyssey Steprant' || 'Lost Odyssey Recomp' }}
+          ORG_GRADLE_PROJECT_loAppIcon: ${{ env.STEPRANT_VERSION && '@mipmap/ic_launcher_steprant' || '@mipmap/ic_launcher' }}
+          LO_STEPRANT_VERSION: ${{ env.STEPRANT_VERSION }}
+          LO_STEPRANT_DEVELOPER_PAGE: '0'
           LO_PGO: ${{ inputs.pgo || 'off' }}
         run: bash tools/android/ci_build.sh
+      - name: Save the verified Android DXC library
+        if: ${{ !cancelled() && steps.build-apk.outputs.dxc_ready == 'true' && steps.android-dxc.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LO_ANDROID_CI_CACHE }}/android-dxc/artifacts
+          key: ${{ steps.android-dxc.outputs.cache-primary-key }}
       - name: Verify and name the integrated APK
-        if: steps.steprant.outputs.version != ''
+        if: env.STEPRANT_VERSION != ''
         env:
-          VERSION: ${{ steps.steprant.outputs.version }}
+          VERSION: ${{ env.STEPRANT_VERSION }}
         run: |
           set -euo pipefail
           apk="out/apk/LostOdysseyRecomp-android-arm64-v$VERSION.apk"
           "$LO_ANDROID_CI_CACHE/android-sdk/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
           "$LO_ANDROID_CI_CACHE/android-sdk/build-tools/35.0.0/zipalign" -c -P 16 4 "$apk"
           python tools/android/verify-apk.py "$apk"
+          "$LO_ANDROID_CI_CACHE/android-sdk/build-tools/35.0.0/aapt" dump badging "$apk" \
+            | grep -F "versionName='$VERSION'"
           # Steprant 1.5 was signed with this certificate; an update signed
           # with another key does not install over it.
           expected=ecaadcdc715ff7e4aeaaf265ec11f1854d4039175dbc7e53fd4f86fd03af6f3f

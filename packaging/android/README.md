@@ -305,14 +305,13 @@ name the phone, every Vulkan device and its driver before device creation.
 
 ## Continuous integration
 
-Two GitHub Actions workflows build this APK through `tools/android/ci_build.sh` on
-GitHub-hosted `ubuntu-22.04` runners, after the same host recompiler tools and
-PPC code generation as the Linux release job. The script installs the Android
+Two GitHub Actions workflows build this APK through `tools/android/ci_build.sh`
+after building the host recompiler tools and generating the PPC code. The script installs the Android
 SDK packages with `sdkmanager`, seeds the Android DXC from the verified
 prebuilt in the private build-inputs repository (`android/libdxcompiler.so`,
 hash pinned in the script; `tools/android/build-dxc.sh` only compiles it as a
-fallback, which exceeds the runner's memory), runs `tools/android/build-runtime.sh`
-(assemble + lint) and `:runtime:testDebugUnitTest`. The SDK/NDK, the DXC build,
+fallback), runs `tools/android/build-runtime.sh` (assemble + lint) and
+`:runtime:testDebugUnitTest`. The SDK/NDK, the verified DXC library,
 the Gradle home and ccache are restored through GitHub Actions caches. Private inputs
 are fetched with the existing `LO_BUILD_INPUT_KEY` SSH deploy key. Every
 APK is signed with the project's debug keystore from the private build-inputs
@@ -323,12 +322,17 @@ a release keystore, so each release installs over the previous one.
 - `.github/workflows/android-apk.yml` runs on matching branch pushes and manual
   dispatch; its path filters include `packaging/android`, `tools/android`,
   `thirdparty/libadrenotools`, Signalsmith and audio changes. It uploads
-  `LostOdysseyRecomp-android-arm64-debug` and reports a native GitHub check.
+  `LostOdysseyRecomp-android-arm64` and logs verbose ccache statistics.
   It has no pull-request trigger, preserving the private-input boundary for forks.
 - `.github/workflows/release.yml` has an Android job for every `v*` tag (and
   build-only dispatches). It builds the release build type with the tag as
   `versionName` (`versionCode` = major×1000000 + minor×10000 + patch) and
   publishes `LostOdysseyRecomp-android-arm64-<tag>.apk` with the other
   packages, signed with the same debug keystore.
+
+Run Steprant APK builds from `steprant/android-build` so Actions can restore the
+previous run's compiler cache. Update `packaging/android/steprant-version.txt`
+for the next version or use the `steprant_version` override for a single manual
+run. The version goes into the APK metadata and the title-menu source file.
 
 A green run proves packaging, lint and the JVM tests, not device behaviour.

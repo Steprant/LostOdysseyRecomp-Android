@@ -181,6 +181,9 @@ add_custom_target(LoBuildRevision
     BYPRODUCTS "${LO_BUILD_REVISION_HEADER}" VERBATIM)
 add_dependencies(LostOdysseyRecomp LoBuildRevision)
 target_include_directories(LostOdysseyRecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+if(ANDROID)
+    configure_file(settings/steprant_version.h.in generated/lo_steprant_version.h @ONLY)
+endif()
 # The game files rebuilt for model and text mods are cached under a key that
 # includes a hash of the code building them (modding/ and the readers it uses):
 # a release that leaves that code alone keeps the cache, any change rebuilds it.
@@ -231,8 +234,11 @@ target_include_directories(LostOdysseyRecomp PRIVATE
 target_precompile_headers(LostOdysseyRecomp PRIVATE stdafx.h)
 target_compile_features(LostOdysseyRecomp PRIVATE cxx_std_20)
 target_compile_options(LostOdysseyRecomp PRIVATE -fno-strict-aliasing -Wno-switch -Wno-unused-function)
-target_compile_definitions(LostOdysseyRecomp PRIVATE NOMINMAX LO_SOURCE_VERSION="${LO_SOURCE_VERSION}"
-    LO_STEPRANT_VERSION_W=L"${LO_STEPRANT_VERSION}")
+if(ANDROID AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # ccache can reuse Clang PCH objects across fresh checkouts.
+    target_compile_options(LostOdysseyRecomp PRIVATE -Xclang -fno-pch-timestamp)
+endif()
+target_compile_definitions(LostOdysseyRecomp PRIVATE NOMINMAX LO_SOURCE_VERSION="${LO_SOURCE_VERSION}")
 if(LO_STEPRANT_DEVELOPER_PAGE)
     target_compile_definitions(LostOdysseyRecomp PRIVATE LO_STEPRANT_DEVELOPER_PAGE=1)
 endif()

@@ -6,6 +6,9 @@
 #include "../host_ui/rasterizer.h"
 #include "../hid/controller_glyphs.h"
 #include "../apu/test_signal.h"
+#if LO_PLATFORM_ANDROID && __has_include("lo_steprant_version.h")
+#include "lo_steprant_version.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <optional>

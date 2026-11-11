@@ -1,0 +1,3 @@
+#pragma once
+
+#define LO_STEPRANT_VERSION_W L"@LO_STEPRANT_VERSION@"
