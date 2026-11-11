@@ -9,7 +9,7 @@ name: Steprant test draft
 # ({"run_id": "...", "short_name": "..."}) to steprant/v2.0-dev.
 on:
   push:
-    branches: ['steprant/v2.0-dev', 'steprant/v2.0.2', 'steprant/v2.0.3', 'steprant/v2.0.4', 'steprant/v2.0.5']
+    branches: ['steprant/v2.0-dev', 'steprant/v2.0.2', 'steprant/v2.0.3', 'steprant/v2.0.4', 'steprant/v2.0.5', 'steprant/v2.0.6']
     paths: ['.github/steprant-test-draft.json']
   workflow_dispatch:
     inputs:
@@ -70,6 +70,7 @@ jobs:
             steprant/v2.0.3) echo "VERSION=2.0.3" >> "$GITHUB_ENV" ;;
             steprant/v2.0.4) echo "VERSION=2.0.4" >> "$GITHUB_ENV" ;;
             steprant/v2.0.5) echo "VERSION=2.0.5" >> "$GITHUB_ENV" ;;
+            steprant/v2.0.6) echo "VERSION=2.0.6" >> "$GITHUB_ENV" ;;
             *) echo "::error::run $RUN_ID built $branch, not a Steprant 2.0 branch"; exit 1 ;;
           esac
           echo "BRANCH=$branch" >> "$GITHUB_ENV"
