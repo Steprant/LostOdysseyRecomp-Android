@@ -56,6 +56,12 @@ struct GuestThreadContext {
     void SetCpuNumber(uint32_t) {}
 };
 namespace os { void SetCurrentThreadName(const char*) {} }
+namespace os::scheduling {
+inline void PreferPerformanceCores(bool = false) {}
+inline int CurrentThreadId() { return 0; }
+inline bool SetThreadNice(int, int) { return false; }
+}
+#include "gpu/gpu_sync_stats.h"
 void DumpGuestThreadStates() {}
 namespace host_ui {
 inline uint32_t SuspendEpoch() { return 0; }
