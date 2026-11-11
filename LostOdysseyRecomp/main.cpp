@@ -35,6 +35,7 @@
 #include "settings/restart.h"
 #include "updater/update.h"
 #include "updater/game_prompt.h"
+#include "updater/title_check.h"
 #include "updater/shader_pack_download.h"
 #include "updater/pipeline_corpus_download.h"
 #include "updater/apply_mode.h"
@@ -532,7 +533,11 @@ int main(int argc, char* argv[])
     if (!getenv("LO_HEADLESS") && !getenv("LO_BACKGROUND"))
     {
         const auto startupPreferences = updater::ReadStartupPreferences(os::user_paths::SettingsPath());
-        if (startupPreferences.automaticUpdates)
+        // Steprant 2.0.2 (Android): no request before the game starts. The
+        // title menu starts the check on its own thread (updater/title_check.h).
+        if (startupPreferences.automaticUpdates && updater::title_check::Enabled())
+            LOG_INFO("update check: at the title screen, on its own thread");
+        else if (startupPreferences.automaticUpdates)
         {
             updater::StartupOptions updateOptions;
             updateOptions.currentVersion = lo_version::Source;

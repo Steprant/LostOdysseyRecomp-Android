@@ -43,6 +43,7 @@ enum class Switch : uint32_t
     AudioWorkerPriority,  // A1: the game's audio worker thread raised by its measured CPU share (on); off leaves it alone
     ScreenDrawJitterWide, // C11: the 2.0.1 rule for the SGSR2 jitter on screen draws, every draw without a depth test (off)
     AsyncLog,             // B6: log lines written by a writer thread through a bounded queue (on)
+    UpdateAtTitle,        // B7: the update check runs at the title screen on its own thread (on); off: at the start as in 2.0
     Count
 };
 inline constexpr size_t Count = size_t(Switch::Count);
@@ -77,6 +78,7 @@ inline constexpr std::array<Definition, Count> Definitions{{
     {"audio_worker_priority", L"Game audio thread priority", L"遊戲音訊執行緒優先權", 0, 2, "LO_AUDIO_WORKER_PRIORITY"},
     {"screen_draw_jitter_wide", L"SGSR2 jitter on every screen draw (2.0.1)", L"所有螢幕繪製套用 SGSR2 抖動（2.0.1）", 1, 2, "LO_SR_JITTER_SCREEN_DRAWS_WIDE"},
     {"async_log", L"Asynchronous log", L"非同步記錄", 0, 2, "LO_LOG_ASYNC"},
+    {"update_at_title", L"Update check at the title screen", L"於標題畫面檢查更新", 0, 2, "LO_UPDATE_AT_TITLE"},
 }};
 
 // The value each stored choice writes to its variable (nullptr: unset, the

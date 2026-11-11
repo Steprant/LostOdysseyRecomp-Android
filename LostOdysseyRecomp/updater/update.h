@@ -147,6 +147,11 @@ struct StartupPreferences
 StartupPreferences ReadStartupPreferences(const std::filesystem::path &settingsPath);
 
 StartupResult PrepareAtStartup(const StartupOptions &options);
+#if defined(__ANDROID__)
+// The release request and its parsing only, for any thread (posix_startup.cpp).
+StartupResult CheckLatestAndroidRelease(const StartupOptions &options, std::string &tag, std::string &assetUrl,
+                                        std::string *changelog = nullptr);
+#endif
 std::filesystem::path CurrentExecutablePath();
 std::vector<std::wstring> CurrentLaunchArguments();
 std::wstring ApplyHelperArguments(const std::filesystem::path &planPath);
