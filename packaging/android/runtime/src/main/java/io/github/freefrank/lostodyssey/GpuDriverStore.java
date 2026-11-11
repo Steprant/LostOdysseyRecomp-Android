@@ -45,7 +45,7 @@ final class GpuDriverStore {
     static final long MAX_META_BYTES = 500_000L;
     static final long MAX_LIBRARY_BYTES = 256L << 20;
     /** The driver the menu text fix was verified with on an Adreno 750 (2026-10-03). */
-    static final String VERIFIED_DRIVER = "KIMCHI Turnip v26.0.0 R8";
+    static final String VERIFIED_DRIVER = "Mr. Purple T30 (PurpleVK 26.3.0-devel)";
     /** meta.json "backend" of the Mesa PanVK packages for Mali (panvk-kbase-android). */
     static final String BACKEND_PANVK = "panvk-kbase";
     /**

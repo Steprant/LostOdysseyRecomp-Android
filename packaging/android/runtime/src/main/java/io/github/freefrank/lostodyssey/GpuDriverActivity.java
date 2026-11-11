@@ -101,7 +101,7 @@ public final class GpuDriverActivity extends Activity {
         pendingSelection = originalSelection;
         GpuDriverStore.Installed active = GpuDriverStore.selectedDriver(this);
         originalMode = active != null ? GpuDriverStore.loadMode(this, active) : null;
-        // Mali has one source: show its releases with the recommended one at once.
+        // Sources with a recommended release start unfolded (PanVK on Mali, Mr. Purple on Adreno).
         for (GpuDriverCatalog.Source source : GpuDriverCatalog.sourcesFor(vendor)) {
             if (source.recommendedTag != null) expandedSources.add(source.path);
         }
@@ -402,7 +402,7 @@ public final class GpuDriverActivity extends Activity {
 
     private void renderSources() {
         sourcesSection.removeAllViews();
-        // The recommended package first, as one button (PanVK on Mali).
+        // The recommended package first, as one button (PanVK on Mali, Mr. Purple on Adreno).
         for (GpuDriverCatalog.Feed feed : feeds) {
             for (GpuDriverCatalog.Release release : feed.releases) {
                 if (!release.recommended) continue;

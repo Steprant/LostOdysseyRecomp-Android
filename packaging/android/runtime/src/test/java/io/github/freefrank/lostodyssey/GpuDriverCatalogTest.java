@@ -99,7 +99,13 @@ public class GpuDriverCatalogTest {
             adreno.get(2).releasesUrl());
         for (GpuDriverCatalog.Source source : adreno) {
             assertEquals(".zip", source.assetSuffix);
-            assertNull(source.recommendedTag);
+            if (source.path.equals("MrPurple666/purple-turnip")) {
+                assertEquals(GpuDriverCatalog.PURPLE_RECOMMENDED_TAG, source.recommendedTag);
+                assertEquals("https://api.github.com/repos/MrPurple666/purple-turnip/releases/tags/vturnip_mrpurple_T30-toasted.adpkg",
+                    source.recommendedUrl());
+            } else {
+                assertNull(source.recommendedTag);
+            }
         }
     }
 

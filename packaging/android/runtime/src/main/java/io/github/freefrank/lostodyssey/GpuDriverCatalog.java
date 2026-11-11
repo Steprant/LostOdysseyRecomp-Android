@@ -85,9 +85,18 @@ final class GpuDriverCatalog {
      */
     static final String PANVK_RECOMMENDED_TAG = "panvk-kbase-v0.1.0-rc3";
 
+    /**
+     * Steprant 2.0.8: the Turnip release recommended for this game on Adreno.
+     * PurpleVK 26.3.0-devel (Mr. Purple T30) cut the GPU time per frame by about
+     * a third on the Xiaomi 14 (Adreno 750) against Mesa 26.0, on 11/11/2026
+     * (median 15.7 ms against 24.5 ms in gameplay, no spikes over 33 ms).
+     */
+    static final String PURPLE_RECOMMENDED_TAG = "vturnip_mrpurple_T30-toasted.adpkg";
+
     /** Eden's sources and flags for Adreno, then the PanVK builds for Mali. */
     static final List<Source> SOURCES = Collections.unmodifiableList(Arrays.asList(
-        new Source("Mr. Purple Turnip", "MrPurple666/purple-turnip", false, false),
+        new Source("Mr. Purple Turnip", "MrPurple666/purple-turnip", false, false,
+            GpuDriverStore.Vendor.ADRENO, ".zip", PURPLE_RECOMMENDED_TAG),
         new Source("GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", false, false),
         new Source("KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", true, true),
         new Source("Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", false, false),
