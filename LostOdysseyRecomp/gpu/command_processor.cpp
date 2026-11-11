@@ -1,4 +1,5 @@
 #include <stdafx.h>
+#include "gpu_sync_stats.h"
 #include "command_processor.h"
 #include "movie_clear.h"
 #include "movie_replace.h"
@@ -759,6 +760,9 @@ namespace gpu
     void CommandProcessor::VsyncMain()
     {
         os::SetCurrentThreadName("GPU Vsync");
+        // Steprant 2.0.8: as the interrupt thread (InterruptMain).
+        os::scheduling::PreferPerformanceCores();
+        os::scheduling::SetThreadNice(os::scheduling::CurrentThreadId(), -8);
         GuestThreadContext ctx(2); // Xenia dispatches vblanks on CPU 2
         FramePacer pacer;
         while (m_running)
@@ -819,15 +823,25 @@ namespace gpu
         }
     }
 
+    // Steprant 2.0.8 (gpu_sync_stats.h): interrupt round trips, read by the
+    // command thread for its 10 s report.
+    static std::mutex g_isrStatsMutex;
+    static gpu::sync_stats::InterruptStats g_isrStats;
+
     // Interrupt callbacks run on their own guest thread (they need a PCR/TEB
     // and a guest stack like any other guest code).
     void CommandProcessor::InterruptMain()
     {
         os::SetCurrentThreadName("GPU Interrupt");
+        // Steprant 2.0.8: the command thread waits (WAIT_REG_MEM) for what this
+        // handler writes; on an efficiency core at normal priority the wake
+        // and the guest code ran late. Big cores, intermediate priority (-8).
+        os::scheduling::PreferPerformanceCores();
+        os::scheduling::SetThreadNice(os::scheduling::CurrentThreadId(), -8);
         GuestThreadContext ctx(2);
         while (m_running)
         {
-            std::pair<uint32_t, uint32_t> item;
+            PendingInterrupt item{};
             {
                 std::unique_lock lock(m_interruptMutex);
                 m_interruptCv.wait(lock, [this] {
@@ -845,13 +859,14 @@ namespace gpu
 
             // The handler clears "its" CPU bit in the D3D interrupt block, so
             // the PCR must report the CPU the interrupt was aimed at.
-            ctx.SetCpuNumber(item.second);
-            ctx.ppcContext.r3.u64 = item.first;
+            ctx.SetCpuNumber(item.cpu);
+            ctx.ppcContext.r3.u64 = item.source;
+            const auto handlerStart = std::chrono::steady_clock::now();
             ctx.ppcContext.r4.u64 = registration.userData;
             auto* blk = reinterpret_cast<be<uint32_t>*>(TranslatePhysical(0xB000));
             bool trace = g_swapCount >= 110;
             if (trace)
-                LOG_VERBOSE("isr source={} cpu={} block=[{:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]", item.first, item.second,
+                LOG_VERBOSE("isr source={} cpu={} block=[{:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]", item.source, item.cpu,
                     uint32_t(blk[0]), uint32_t(blk[1]), uint32_t(blk[2]), uint32_t(blk[3]), uint32_t(blk[4]), uint32_t(blk[5]));
             g_memory.FindFunction(registration.callback)(ctx.ppcContext, g_memory.base);
             {
@@ -859,6 +874,12 @@ namespace gpu
                 m_interruptsCompleted.fetch_add(1, std::memory_order_release);
             }
             m_waitProgress.notify_all();
+            {
+                const auto end = std::chrono::steady_clock::now();
+                std::lock_guard lock(g_isrStatsMutex);
+                g_isrStats.Add(std::chrono::duration<double, std::milli>(handlerStart - item.queued).count(),
+                    std::chrono::duration<double, std::milli>(end - handlerStart).count());
+            }
             if (trace)
                 LOG_VERBOSE("isr done block=[{:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]",
                     uint32_t(blk[0]), uint32_t(blk[1]), uint32_t(blk[2]), uint32_t(blk[3]), uint32_t(blk[4]), uint32_t(blk[5]));
@@ -869,7 +890,7 @@ namespace gpu
     {
         {
             std::lock_guard lock(m_interruptMutex);
-            m_pendingInterrupts.emplace_back(source, cpu);
+            m_pendingInterrupts.push_back({ source, cpu, std::chrono::steady_clock::now() });
         }
         m_interruptCv.notify_one();
     }
@@ -1426,7 +1447,33 @@ namespace gpu
                 else
                     std::this_thread::yield();
             }
-            frame_timing::AddWaitRegMem(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count());
+            const double waitedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+            frame_timing::AddWaitRegMem(waitedMs);
+            {
+                // Steprant 2.0.8 (gpu_sync_stats.h): what the waits poll, every 10 s.
+                static gpu::sync_stats::WaitTable table;
+                static auto windowStart = std::chrono::steady_clock::now();
+                static uint32_t reports = 0;
+                table.Add(isMemory, isMemory ? (pollRegAddr & ~3u) : pollRegAddr, waitedMs);
+                const auto now = std::chrono::steady_clock::now();
+                if (now - windowStart >= std::chrono::seconds(10))
+                {
+                    gpu::sync_stats::InterruptStats isr;
+                    {
+                        std::lock_guard lock(g_isrStatsMutex);
+                        isr = g_isrStats;
+                        g_isrStats.Reset();
+                    }
+                    if (table.LongWaits() && reports < 120)
+                    {
+                        ++reports;
+                        LOG_INFO("gpu sync: wait_reg_mem n={} over_1ms={} total_ms={:.1f} swaps={} top: {} | {}",
+                            table.Waits(), table.LongWaits(), table.TotalMs(), g_swapCount.load(), table.Top(), isr.Text());
+                    }
+                    table.Reset();
+                    windowStart = now;
+                }
+            }
             // Guest writes made before the waited-for value are visible from here.
             AdvanceSyncEpoch(SyncSource::WaitRegMem);
             return true;

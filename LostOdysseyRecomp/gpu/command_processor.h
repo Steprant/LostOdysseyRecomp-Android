@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 
 #include <atomic>
 #include <condition_variable>
@@ -220,7 +221,8 @@ namespace gpu
         std::atomic<uint64_t> m_interruptsCompleted{ 0 };
         std::mutex m_waitProgressMutex;
         std::condition_variable m_waitProgress;
-        std::vector<std::pair<uint32_t, uint32_t>> m_pendingInterrupts; // (source, cpu)
+        struct PendingInterrupt { uint32_t source, cpu; std::chrono::steady_clock::time_point queued; };
+        std::vector<PendingInterrupt> m_pendingInterrupts;
         uint64_t m_binMask = 0xFFFFFFFFFFFFFFFFull;
         uint64_t m_binSelect = 0xFFFFFFFFFFFFFFFFull;
 
