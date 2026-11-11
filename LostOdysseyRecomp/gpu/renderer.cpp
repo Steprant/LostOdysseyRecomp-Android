@@ -165,6 +165,9 @@ namespace gpu::renderer
     namespace binding = gpu::taa_collection::binding;
     namespace {
         std::atomic<bool> hdrSceneEnabled{false};
+        // Steprant 2.0.2: set by RequestMemoryTrim from any thread, taken by
+        // the renderer at the start of its next frame (TrimForLowMemory).
+        std::atomic<bool> g_memoryTrimRequested{false};
         // Scene tags of maps and battles that started loading (game thread),
         // consumed by the renderer's scene prefetch once a frame.
         std::mutex g_scenePrefetchMutex;
@@ -1342,6 +1345,7 @@ namespace gpu::renderer
                 std::vector<std::unique_ptr<RenderTexture>> retiredTextures;
                 std::vector<std::unique_ptr<RenderFramebuffer>> retiredFramebuffers;
                 gpu::sgsr2_continuation::Images images;
+                uint64_t retiredFrame = 0; // when images were last replaced (TrimForLowMemory)
                 uint64_t runStart = ~0ull, lastFrame = ~0ull, runFrames = 0;
                 uint32_t runPending = 0, runIncomplete = 0, logs = 0;
                 uint64_t total = 0;
@@ -1390,6 +1394,7 @@ namespace gpu::renderer
                 if (c.framebuffer) c.retiredFramebuffers.push_back(std::move(c.framebuffer));
                 if (c.motion) c.retiredTextures.push_back(std::move(c.motion));
                 if (c.invalidity) c.retiredTextures.push_back(std::move(c.invalidity));
+                c.retiredFrame = frame;
                 c.motion = std::move(motion);
                 c.invalidity = std::move(invalidity);
                 c.framebuffer = std::move(framebuffer);
@@ -5656,6 +5661,9 @@ void main()
                     }
                     listOpen = true;
                     PrepareSgsr2ZeroMotion();
+                    if (drawsThisFrame == 0 && g_memoryTrimRequested.load(std::memory_order_relaxed) &&
+                        g_memoryTrimRequested.exchange(false, std::memory_order_acq_rel))
+                        TrimForLowMemory();
                 }
                 return true;
             }
@@ -8518,6 +8526,76 @@ void main()
                 LOG_INFO("renderer: freed {} parked render targets not used for {} s ({} MB); {} still parked ({} MB)",
                     evicted.size(), kParkedTargetAgeMs / 1000, bytes >> 20, parking::Count(parkedTargets),
                     parking::TotalBytes(parkedTargets, bytesOf) >> 20);
+            }
+
+            // Steprant 2.0.2: Android reported low memory (SDL_EVENT_LOW_MEMORY).
+            // Besides the allocator's free pages (video.cpp), give back what the
+            // renderer keeps only to save time later:
+            //   - the parked render targets (spares for a switch back);
+            //   - the idle promotion images (up to 12 at the output size);
+            //   - guest textures not bound for kTrimTextureIdleFrames, which are
+            //     read again from guest memory if they are ever used again;
+            //   - the zero-motion images replaced by larger ones.
+            // Pipelines are not touched: their slots are never erased or replaced
+            // (GetPipeline's caches and the compile threads hold their addresses).
+            // Runs at the start of a frame, in the command list being recorded:
+            // the textures go to the slot's retired list as a guest write does
+            // (InvalidateRange), so nothing in flight loses an image.
+            // LO_LOW_MEMORY_TRIM=0 turns it off (2.0: allocator pages only).
+            static constexpr uint64_t kTrimTextureIdleFrames = 9000; // five minutes at 30 FPS
+            std::chrono::steady_clock::time_point lastMemoryTrim{};
+            uint32_t memoryTrims = 0;
+            void TrimForLowMemory()
+            {
+                static const bool enabled = [] {
+                    const char* value = std::getenv("LO_LOW_MEMORY_TRIM");
+                    return !(value && std::string_view(value) == "0");
+                }();
+                const auto now = std::chrono::steady_clock::now();
+                if (!enabled || (memoryTrims && now - lastMemoryTrim < std::chrono::seconds(5))) return;
+                lastMemoryTrim = now;
+                ++memoryTrims;
+                const auto bytesOf = [](const HostTexture& target) {
+                    return uint64_t(target.width) * target.height * std::max(1u, RenderFormatSize(target.format));
+                };
+                uint64_t parkedBytes = 0, pooledBytes = 0, textureBytes = 0;
+                size_t parkedCount = 0, textureCount = 0;
+                for (auto& [key, pair] : parkedTargets)
+                    for (auto& slot : pair)
+                        if (slot.Used()) {
+                            parkedBytes += bytesOf(*slot.target);
+                            ++parkedCount;
+                            Gpu().retiredTextures.push_back(std::move(slot.target));
+                        }
+                parkedTargets.clear();
+                const size_t pooledCount = promotionPool.size();
+                for (auto& entry : promotionPool) {
+                    pooledBytes += uint64_t(entry.width) * entry.height * std::max(1u, RenderFormatSize(entry.format));
+                    auto idle = std::make_unique<HostTexture>();
+                    idle->texture = std::move(entry.texture);
+                    Gpu().retiredTextures.push_back(std::move(idle));
+                }
+                promotionPool.clear();
+                for (auto it = textures.begin(); it != textures.end();) {
+                    const HostTexture* tex = it->second.get();
+                    if (tex && tex->guestBytes != 0 && tex->checkedFrame != ~0ull && frame > tex->checkedFrame + kTrimTextureIdleFrames) {
+                        textureBytes += bytesOf(*tex);
+                        ++textureCount;
+                        Gpu().retiredTextures.push_back(std::move(it->second));
+                        it = textures.erase(it);
+                    } else ++it;
+                }
+                if (textureCount) ++texturesVersion;
+                size_t zeroMotion = 0;
+                if (auto& c = sgsr2Continuation; frame >= c.retiredFrame + 8 && (!c.retiredTextures.empty() || !c.retiredFramebuffers.empty())) {
+                    zeroMotion = c.retiredTextures.size();
+                    c.retiredFramebuffers.clear();
+                    c.retiredTextures.clear();
+                }
+                if (memoryTrims <= 32)
+                    LOG_INFO("memory trim: renderer freed {} parked targets ({} MB), {} idle promotion images ({} MB), {} textures unused for {} frames ({} MB of {} cached), {} old zero-motion images",
+                        parkedCount, parkedBytes >> 20, pooledCount, pooledBytes >> 20, textureCount, kTrimTextureIdleFrames,
+                        textureBytes >> 20, textures.size() + textureCount, zeroMotion);
             }
 
             void FailCurrentPlan(frame_plan::FailureReason reason = frame_plan::FailureReason::Unknown)
@@ -16977,6 +17055,11 @@ void main()
         return ReadbackTexture(*rs->tex, pixels, width, height);
     }
 
+    void RequestMemoryTrim()
+    {
+        g_memoryTrimRequested.store(true, std::memory_order_release);
+    }
+
     void RequestUpscalerInputCapture()
     {
         if (g_renderer) {
@@ -17285,6 +17368,7 @@ void main()
     void SetFrameGenerationInputCaptureEnabled(bool) {}
     bool ReadbackResolvedSurface(uint32_t, std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }
     void RequestUpscalerInputCapture() {}
+    void RequestMemoryTrim() {}
     void RequestFrameDissection() {}
     void CompleteFrameDissection() {}
     bool ReadbackUpscalerInput(std::vector<uint32_t>&, uint32_t&, uint32_t&) { return false; }

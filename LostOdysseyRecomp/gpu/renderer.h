@@ -57,6 +57,9 @@ namespace gpu::renderer
     // Steprant 2.0.1: Tester frame dissection of the next frame, written into
     // the frame-samples directory once that frame has been flushed.
     void RequestFrameDissection();
+    // Steprant 2.0.2: the system is low on memory. Any thread; the renderer
+    // frees its unused caches at the start of its next frame.
+    void RequestMemoryTrim();
     void CompleteFrameDissection();
     std::wstring DebugCaptureStatus();
     bool DebugCaptureBusy();

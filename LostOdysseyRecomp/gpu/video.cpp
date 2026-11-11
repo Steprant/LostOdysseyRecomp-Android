@@ -479,6 +479,10 @@ namespace gpu::video
 #endif
                 if (trims.fetch_add(1, std::memory_order_relaxed) < 32)
                     LOG_INFO("memory trim: low memory from Android, allocator purge={} hidden={}", done, hidden ? 1 : 0);
+                // Steprant 2.0.2: and the renderer's unused caches, at the start
+                // of its next frame (parked targets, idle promotion images,
+                // textures not bound for five minutes). LO_LOW_MEMORY_TRIM=0: off.
+                renderer::RequestMemoryTrim();
             }
             return true;
         }
