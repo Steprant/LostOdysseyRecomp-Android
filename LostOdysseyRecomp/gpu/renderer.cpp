@@ -15,6 +15,7 @@
 #include "sgsr2_status.h"
 #include "movie_clear.h"
 #include "sgsr2_continuation.h"
+#include "screen_draw_jitter.h"
 #if !defined(LO_RENDERER_P2_EMBEDDED_TEST)
 #include "movie_yuv_shader.h"
 #include "loading_pacing.h"
@@ -3803,6 +3804,20 @@ namespace gpu::renderer
                 const bool scene = srPromotionFrame == frame;
                 idleSceneFrames = idle_ui::NextIdleFrames(idleSceneFrames, scene);
                 if (scene) idlePromotionPause.active = transitionPromotionPause.active = false;
+                if (screenJitterStats.SummaryDue(frame)) {
+                    using Reason = gpu::screen_jitter::Reason;
+                    const auto& n = screenJitterStats.counts;
+                    const uint64_t skipped = n[size_t(Reason::NotSceneTarget)] + n[size_t(Reason::NotOneQuad)] +
+                        n[size_t(Reason::NoOrdinaryTexture)] + n[size_t(Reason::SamplesResolved)] + n[size_t(Reason::Blended)] +
+                        n[size_t(Reason::PartialColorWrite)];
+                    if (n[size_t(Reason::Jittered)] || skipped)
+                        LOG_INFO("renderer: SR screen-draw jitter summary frame={} jittered={} left_still={} (not_scene_target={} not_one_quad={} "
+                            "no_ordinary_texture={} samples_resolved={} blended={} partial_color_write={})",
+                            frame, n[size_t(Reason::Jittered)], skipped, n[size_t(Reason::NotSceneTarget)], n[size_t(Reason::NotOneQuad)],
+                            n[size_t(Reason::NoOrdinaryTexture)], n[size_t(Reason::SamplesResolved)], n[size_t(Reason::Blended)],
+                            n[size_t(Reason::PartialColorWrite)]);
+                    screenJitterStats.Clear();
+                }
                 if (idlePromotionStats.SummaryDue(frame))
                     LOG_INFO("renderer: interface promotion summary frame={} promoted={} undone={} transition_promoted={} transition_undone={} paused={} transition_paused={}",
                         frame, idlePromotionStats.promoted, idlePromotionStats.undone, idlePromotionStats.transitionPromoted,
@@ -3825,19 +3840,45 @@ namespace gpu::renderer
                 return true;
             }
 
-            // A draw that samples a surface resolved in this frame (the scene
-            // copy a post-process pass reads).
-            bool DrawSamplesFrameResolved(const Shader* ps)
+            // Steprant 2.0.2 (gpu/screen_draw_jitter.h): whether a draw that does
+            // not test depth, in the scene viewport, moves with the SGSR2 jitter.
+            gpu::screen_jitter::SceneTargets screenJitterTargets;
+            gpu::screen_jitter::Stats screenJitterStats;
+            uint32_t screenJitterSkipLogs = 0;
+            bool ScreenDrawJitterWanted(gpu::screen_jitter::Mode mode, const Shader* ps, uint32_t colorInfo, uint32_t primitive,
+                uint32_t indexCount, uint32_t blendControl, uint32_t colorMask, uint64_t vsHash, uint64_t psHash)
             {
-                const uint32_t mask = ps ? ps->info.textureSlotMask : 0u;
-                for (uint32_t pending = mask; pending; pending &= pending - 1) {
-                    const uint32_t slot = uint32_t(std::countr_zero(pending));
-                    const uint32_t f0 = Reg(REG_FETCH_CONSTANTS + slot * 6), f1 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 1);
-                    if ((f0 & 3) != 2) continue;
-                    const auto* source = FindResolved((f1 >> 12) << 12, f1 & 0x3f);
-                    if (source && source->frame == frame) return true;
+                gpu::screen_jitter::Facts facts;
+                facts.afterCapture = Gpu().srPrefixClosed || srPromotionFrame == frame;
+                // The texture scan only before the capture (the interface comes after it).
+                if (!facts.afterCapture) {
+                    const uint32_t mask = ps ? ps->info.textureSlotMask : 0u;
+                    for (uint32_t pending = mask; pending; pending &= pending - 1) {
+                        const uint32_t slot = uint32_t(std::countr_zero(pending));
+                        const uint32_t f0 = Reg(REG_FETCH_CONSTANTS + slot * 6), f1 = Reg(REG_FETCH_CONSTANTS + slot * 6 + 1);
+                        const auto* source = (f0 & 3) == 2 ? FindResolved((f1 >> 12) << 12, f1 & 0x3f) : nullptr;
+                        if (!source) { ++facts.ordinaryTextures; continue; }
+                        facts.samplesResolved = true;
+                        if (source->frame == frame) facts.samplesFrameResolved = true;
+                    }
                 }
-                return false;
+                facts.sceneTarget = screenJitterTargets.Matches(frame, colorInfo & 0xFFF, (colorInfo >> 16) & 0xF);
+                facts.primitive = primitive; facts.indexCount = indexCount;
+                facts.blendControl = blendControl; facts.colorMask = colorMask;
+                const auto reason = gpu::screen_jitter::Decide(mode, facts);
+                screenJitterStats.Count(reason);
+                using Reason = gpu::screen_jitter::Reason;
+                // The first draws the 2.0.1 rule would have moved and this one does not.
+                if (reason != Reason::Jittered && reason != Reason::AfterCapture && reason != Reason::SamplesFrameResolved &&
+                    screenJitterSkipLogs < 24 &&
+                    gpu::screen_jitter::Decide(gpu::screen_jitter::Mode::Wide, facts) == Reason::Jittered) {
+                    ++screenJitterSkipLogs;
+                    LOG_INFO("renderer: SR screen-draw jitter not applied vs={:016x} ps={:016x} reason={} prim={} indices={} blend={:#x} color_mask={} "
+                        "ordinary_textures={} rt=base{:#x}/fmt{} frame={}",
+                        vsHash, psHash, gpu::screen_jitter::Name(reason), primitive, indexCount, blendControl, colorMask,
+                        facts.ordinaryTextures, colorInfo & 0xFFF, (colorInfo >> 16) & 0xF, frame);
+                }
+                return reason == Reason::Jittered;
             }
 
             bool IdleUiPromotionWanted(const RenderTargetKey& key, const HostTexture* color, bool hasDepth, const Shader* ps)
@@ -11154,30 +11195,39 @@ void main()
                     return !(value && std::string_view(value) == "0");
                 }();
                 // Steprant 2.0.1: the same for a scene-viewport draw that does not
-                // test depth (a painted backdrop or sky quad, a glow, a decal laid
-                // in screen space) drawn before SGSR2 takes the scene. Left still
-                // while everything else moves by the jitter, SGSR2's de-jittering
-                // made its texture swim by up to half a pixel every frame: the
-                // shimmering textures of the 10/11 cutscenes. A draw that samples
-                // a surface resolved in this frame (a post-process pass over the
-                // already jittered scene) stays still. LO_SR_JITTER_SCREEN_DRAWS=0
-                // turns this part off.
-                static const bool screenJitterEnabled = [] {
-                    const char* value = std::getenv("LO_SR_JITTER_SCREEN_DRAWS");
-                    return !(value && std::string_view(value) == "0");
-                }();
-                const bool screenDraw = screenJitterEnabled && !(depth && (depthControl & 2)) && !Gpu().srPrefixClosed &&
-                    srPromotionFrame != frame && !DrawSamplesFrameResolved(ps);
-                if (viewportJitterEnabled && jitterEnabled && dlssSrRequested && !drawJitter.applied &&
-                    temporalViewport && temporalSlot < 0 && ((depth && (depthControl & 2)) || screenDraw) && frameRasterJitter.phase &&
-                    drawJitter.rejection == temporal::JitterRejection::UnknownShader) {
+                // test depth (a painted backdrop or sky quad) drawn before SGSR2
+                // takes the scene. Left still while everything else moves by the
+                // jitter, SGSR2's de-jittering made its texture swim by up to half
+                // a pixel every frame: the shimmering textures of the 10/11
+                // cutscenes.
+                // 2.0.2 (gpu/screen_draw_jitter.h): only a draw that is certainly a
+                // backdrop or scene quad. 2.0.1 also moved glows, fades, interface
+                // drawn before the capture and quads into other targets.
+                // LO_SR_JITTER_SCREEN_DRAWS=0 turns this part off;
+                // LO_SR_JITTER_SCREEN_DRAWS_WIDE=1 restores the 2.0.1 rule.
+                static const gpu::screen_jitter::Mode screenJitterMode = gpu::screen_jitter::ParseMode(
+                    std::getenv("LO_SR_JITTER_SCREEN_DRAWS"), std::getenv("LO_SR_JITTER_SCREEN_DRAWS_WIDE"));
+                const bool depthTested = depth && (depthControl & 2);
+                const bool viewportJitterCandidate = viewportJitterEnabled && jitterEnabled && dlssSrRequested && !drawJitter.applied &&
+                    temporalViewport && temporalSlot < 0 && frameRasterJitter.phase &&
+                    drawJitter.rejection == temporal::JitterRejection::UnknownShader;
+                bool screenDraw = false;
+                if (viewportJitterCandidate && !depthTested && screenJitterMode != gpu::screen_jitter::Mode::Off)
+                    screenDraw = ScreenDrawJitterWanted(screenJitterMode, ps, colorInfo, info.primitiveType, info.indexCount,
+                        key.blend, key.colorMask, key.vs, key.ps);
+                bool viewportJittered = false;
+                if (viewportJitterCandidate && (depthTested || screenDraw)) {
                     rasterViewport.x += float(frameRasterJitter.pixelX);
                     rasterViewport.y += float(frameRasterJitter.pixelY);
+                    viewportJittered = true;
                     ++temporalJitterViewportDraws;
                     if (viewportJitterLog.First(key.vs, key.ps, drawJitter.rejection))
                         LOG_INFO("renderer: SR viewport jitter for unknown scene draw vs={:016x} ps={:016x} depth_control={:#x} color_mask={} frame={}",
                             key.vs, key.ps, depthControl, key.colorMask, frame);
                 }
+                // The colour target of the jittered 3D draws is the scene's.
+                if (depthTested && temporalViewport && (drawJitter.applied || viewportJittered) && (key.colorMask & 7))
+                    screenJitterTargets.Note(frame, colorInfo & 0xFFF, (colorInfo >> 16) & 0xF);
                 // Jitter writes the draw's constant copy; the next draw restores it.
                 if (drawJitter.applied) {
                     drawConstantsModified[0] = true;
