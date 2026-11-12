@@ -20,7 +20,7 @@ An independent Android edition maintained by **Steprant**, based on the official
 
 ## Steprant Android 2.1
 
-Less GPU work, steadier frame pacing, SMAA on every frame and audio that stays in sync, measured on a Xiaomi 14 (Adreno 750, 30 FPS). "Before" is the first Steprant builds (1.1–1.7) unless the row says otherwise. Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-2.1-release.md) list every change point by point, with the measurements behind them.
+Less GPU work, steadier frame pacing, SMAA on every frame and audio that stays in sync, measured on a Xiaomi 14 (Adreno 750, 30 FPS). Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-2.1-release.md) list every change point by point, with the measurements behind them.
 
 > [!IMPORTANT]
 > **Snapdragon (Adreno): play 2.1 with the Mr. Purple T30 GPU driver (PurpleVK 26.3).** 2.1 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup.
@@ -31,26 +31,38 @@ Less GPU work, steadier frame pacing, SMAA on every frame and audio that stays i
 
 ### Measured improvements
 
+The same measurements as the 1.8 table, now from 1.1 to 2.1. "1.1" is the "Before" of the 1.8 table: the first Steprant builds and the 1.7 test builds.
+
+| What was measured | 1.1 | 1.8 | 2.1 | Change 1.1 → 2.1 |
+| :--- | ---: | ---: | ---: | ---: |
+| Frames over 50 ms per minute, city / open field | 18.2 / 20.7 | 6.2 / 10.0 | 3.7 in normal play (1) | **−80% / −82%** |
+| 99th percentile frame time, city / open field | 48.5 / 51.2 ms | 37.5 / 39.0 ms | 37.6 ms in normal play (1) | **−22% / −27%** |
+| GPU time per frame: native 2403×1080 → SGSR2 (1780×800 in 1.8, 2003×900 in 2.1) | ~23 ms | 16–17 ms | 15.4–16.0 ms (1) | **−30 to −33%** |
+| GPU occupancy at 30 FPS: native 1080 → SGSR2 Quality | 81% | 66–74% | 46–48% (1) | **−41 to −43%** |
+| Render passes per frame | 100% | ~60% | ~60% | **−40%** |
+| GPU time inside render passes | 100% | ~92% | ~85% (2) | **−15%** |
+| Render passes split by an EDRAM resolve, city / open field | 14.7 / 15.0 | 7.1 / 8.6 | 7.0 (1) | **−52% / −53%** |
+| Hitches at menus, loading screens and fades | 40–300 ms each | none | none | **−100%** |
+| GPU occupancy in menus (1) | ~60% | 28–40% | 11–24% | **−60 to −82%** |
+| XMA audio decode errors | 12–14 thousand in a second | 56–150 per session | 11 in 8.5 minutes | **over −99%** |
+| Audio queue running empty (1) | 74–91 per session | 0 | 0 in play (9 in the first seconds of startup) | **−100% in play** |
+| Shadow casters with dynamic shadows on Low | 8 | 16 | 16 | **×2** |
+| Memory per pixel of 8-bit render targets | 8 bytes | 4 bytes | 4 bytes | **−50%** |
+
+(1) Different sessions and scenes, before and after; indicative. 2.1 GPU figures were measured with the recommended driver. (2) Estimate: the −8% of 1.8 followed by the 2.0 frame graph (−4 to −9% GPU time per frame); not measured as one number.
+
+#### Also measured in 2.1
+
 | What was measured | Before | 2.1 | Change |
 | :--- | ---: | ---: | ---: |
-| GPU time per frame, native 2403×1080 → 2003×900 + SGSR2 (1) | ~23 ms | 15.4–16.0 ms | **−32%** |
-| GPU occupancy at 30 FPS (1) | 62–81% | 46–48% | **−34%** |
-| Frames over 50 ms per minute, normal play (1) | 18.2–20.7 | 3.7 | **−80 to −82%** |
-| 99th percentile frame time (1) | 48.5–51.2 ms | 37.6 ms | **−22 to −27%** |
-| Split-screen scenes with two cameras, against 2.0 (1) | ~12 FPS | ~20 FPS | **+67%** |
-| Hitches at menus, loading screens and fades | 40–300 ms each | none | **−100%** |
-| Opening the settings menu over the game, against 1.8 | 113–137 ms | 9.4 ms | **−93%** |
-| Pixels rendered at 900p with SGSR2, phone / TV, against 1.8 | 1780×800 / 1280×720 | 2003×900 / 1600×900 | **+27% / +56%** |
-| Frames shown without anti-aliasing when SGSR2 cannot upscale, against 1.8 | all of them | none (SMAA) | **−100%** |
-| Render passes per frame | 100% | ~60% | **−40%** |
-| Stores to memory that nothing reads | all kept | 48–54 MB less per frame | **−93%** |
-| XMA audio decode errors | 12–14 thousand in a second | 11 in 8.5 minutes | **over −99%** |
-| Longest audio callback stall, against 1.8 (1) | 705 ms | 84 ms | **−88%** |
-| Audio queue running empty during play (1) | 74–91 per session | 0 | **−100%** |
-| Peak GPU memory with phone ↔ TV switches, against 2.0 (1) | 2,592 MiB | 2,336 MiB | **−10%** |
-| Memory per pixel of 8-bit render targets | 8 bytes | 4 bytes | **−50%** |
-
-(1) Different sessions and scenes, before and after; indicative. 2.1 GPU figures were measured with the recommended driver.
+| Pixels rendered at 900p with SGSR2, phone / TV (1.8) | 1780×800 / 1280×720 | 2003×900 / 1600×900 | **+27% / +56%** |
+| Frames shown without anti-aliasing when SGSR2 cannot upscale (1.8) | all of them | none (SMAA) | **−100%** |
+| Opening the settings menu over the game (1.8) | 113–137 ms | 9.4 ms | **−93%** |
+| Longest audio callback stall (1.8) (1) | 705 ms | 84 ms | **−88%** |
+| Audio behind the picture after a stall (1.8) | stays behind | caught up | **fixed** |
+| Stores to memory that nothing reads (1.8) | all kept | 48–54 MB less per frame | **−93%** |
+| Split-screen scenes with two cameras (2.0) (1) | ~12 FPS | ~20 FPS | **+67%** |
+| Peak GPU memory with phone ↔ TV switches (2.0) (1) | 2,592 MiB | 2,336 MiB | **−10%** |
 
 Against 1.8, frame times in normal play are about the same, while 2.1 renders 27% more pixels with about a quarter less GPU occupancy. Split-screen scenes still run at about 20 FPS: they are limited by the CPU, not the GPU.
 
