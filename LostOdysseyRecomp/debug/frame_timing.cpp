@@ -15,6 +15,8 @@
 
 #if defined(__ANDROID__)
 #include <diagnostics/android_tester.h>
+#include <diagnostics/sched_window.h>
+#include <os/host_scheduling.h>
 #endif
 
 namespace frame_timing
@@ -57,8 +59,13 @@ void AddWaitRegMem(double milliseconds)
 // processor idle (waiting for the guest to submit), busy (executing PM4 and
 // recording, which includes GPU fence waits and WAIT_REG_MEM), then flush,
 // pacing sleep and present. Rate-limited: the first 300, then one in ten.
+// Steprant 2.0.9 (sched_window.h): this frame of the command thread and of
+// the guest main thread, on a CPU and runnable but waiting for one.
+struct SchedFrame { bool valid = false; double cpRun = 0, cpWait = 0, mainRun = 0, mainWait = 0; };
+
 static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double presentMs,
-    const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs, double acquireMs)
+    const PacingSample& pacing, double idleMs, double fenceMs, double regMemMs, double acquireMs,
+    const SchedFrame& sched)
 {
     // An interval that spans a pause of the game (F1 / Quick tools overlay,
     // Android background) is tagged: it is a suspension, not a slow frame.
@@ -73,10 +80,12 @@ static void ReportSlowFrame(uint32_t swap, double flushMs, double waitMs, double
     const uint32_t n = reported++;
     if (n >= 300 && n % 10 != 0) return;
     LOG_INFO("slow frame swap={} total={:.1f}ms between={:.1f}ms cp_idle={:.1f}ms cp_busy={:.1f}ms gpu_fence_wait={:.1f}ms "
-        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms present_slowest={}:{:.1f}ms previous_post={:.1f}ms n={}{}",
+        "wait_reg_mem={:.1f}ms flush={:.1f}ms pace_sleep={:.1f}ms present={:.1f}ms present_acquire={:.1f}ms present_slowest={}:{:.1f}ms previous_post={:.1f}ms n={}{}{}",
         swap, total, pacing.betweenMs, idleMs, std::max(0.0, pacing.betweenMs - idleMs), fenceMs, regMemMs,
         flushMs, waitMs, presentMs, acquireMs, pacing.presentSlowestStage, pacing.presentSlowestStageMs, pacing.previousSwapPostMs, n + 1,
-        suspended ? " game_paused=1" : "");
+        suspended ? " game_paused=1" : "",
+        sched.valid ? fmt::format(" cp_oncpu={:.1f}ms cp_runq={:.1f}ms main_oncpu={:.1f}ms main_runq={:.1f}ms",
+            sched.cpRun, sched.cpWait, sched.mainRun, sched.mainWait) : std::string());
 }
 void EngineTick(double delta)
 {
@@ -103,7 +112,40 @@ void Present(uint32_t swap, uint32_t fps, double flushMs, double waitMs, double 
     const double fenceMs = double(gpuFenceWaitUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
     const double regMemMs = double(waitRegMemUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
     const double acquireMs = double(acquireUs.exchange(0, std::memory_order_relaxed)) / 1000.0;
-    ReportSlowFrame(swap, flushMs, waitMs, presentMs, pacing, presentIdleMs, fenceMs, regMemMs, acquireMs);
+    SchedFrame sched;
+    {
+        // Steprant 2.0.9 (sched_window.h): this runs on the command thread.
+        namespace sw = diagnostics::sched_window;
+        static sw::ThreadClock cpClock, mainClock;
+        static sw::Window window;
+        static auto windowStart = std::chrono::steady_clock::now();
+        static uint32_t reports = 0;
+        const auto toSample = [](const os::scheduling::SchedStat& s) { return sw::Sample{ s.runNs, s.waitNs, s.valid }; };
+        const bool cpOk = cpClock.Next(toSample(os::scheduling::ReadSchedStat(os::scheduling::CurrentThreadId())), sched.cpRun, sched.cpWait);
+        const bool mainOk = mainClock.Next(toSample(os::scheduling::ReadSchedStat(os::scheduling::GuestMainThreadId())), sched.mainRun, sched.mainWait);
+        sched.valid = cpOk;
+        if (!mainOk) sched.mainRun = sched.mainWait = 0;
+        if (cpOk && pacing.hasPrevious && pacing.presentAccepted && std::isfinite(pacing.betweenMs))
+            window.Add(pacing.betweenMs + flushMs + waitMs + presentMs, sched.cpRun, sched.cpWait, sched.mainRun, sched.mainWait);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - windowStart >= std::chrono::seconds(10))
+        {
+            if (window.frames && reports < 120)
+            {
+                ++reports;
+                LOG_INFO("cp sched: frames={} per_frame cp_oncpu={:.1f} cp_runq={:.1f} main_oncpu={:.1f} main_runq={:.1f} max_cp_runq={:.1f} "
+                    "| slow(>40ms) frames={} wall={:.1f} cp_oncpu={:.1f} cp_runq={:.1f} main_oncpu={:.1f} main_runq={:.1f}",
+                    window.frames, sw::Window::Per(window.cpRunMs, window.frames), sw::Window::Per(window.cpWaitMs, window.frames),
+                    sw::Window::Per(window.mainRunMs, window.frames), sw::Window::Per(window.mainWaitMs, window.frames), window.maxCpWaitMs,
+                    window.slowFrames, sw::Window::Per(window.slowWallMs, window.slowFrames),
+                    sw::Window::Per(window.slowCpRunMs, window.slowFrames), sw::Window::Per(window.slowCpWaitMs, window.slowFrames),
+                    sw::Window::Per(window.slowMainRunMs, window.slowFrames), sw::Window::Per(window.slowMainWaitMs, window.slowFrames));
+            }
+            window.Reset();
+            windowStart = now;
+        }
+    }
+    ReportSlowFrame(swap, flushMs, waitMs, presentMs, pacing, presentIdleMs, fenceMs, regMemMs, acquireMs, sched);
     if (!Enabled()) return;
     if (gpu::render_timing::Enabled())
     {

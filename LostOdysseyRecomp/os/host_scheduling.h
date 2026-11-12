@@ -44,6 +44,13 @@ void RaiseAudioThreadPriority();
 // audio). Both return 0/false elsewhere.
 int CurrentThreadId();
 bool SetThreadNice(int threadId, int nice);
+// Steprant 2.0.9 (Android): a thread's time on a CPU and its time runnable
+// but waiting for one (/proc/self/task/<tid>/schedstat, nanoseconds since
+// the thread started), and the guest main thread's id (0 until known).
+// Invalid / 0 elsewhere.
+struct SchedStat { int64_t runNs = 0, waitNs = 0; bool valid = false; };
+SchedStat ReadSchedStat(int threadId);
+int GuestMainThreadId();
 
 // Sleeps until deadline with sub-millisecond wakeup accuracy. macOS applies
 // timer coalescing to ordinary threads, which wakes 18 ms sleeps about 5 ms

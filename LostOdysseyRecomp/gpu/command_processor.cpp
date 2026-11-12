@@ -683,6 +683,13 @@ namespace gpu
         os::SetCurrentThreadName("GPU CmdProc");
         os::scheduling::PreferPerformanceCores();
         os::scheduling::PinCriticalThread(os::scheduling::CriticalThread::GpuCommands);
+        // Steprant 2.0.9: in the two-camera scenes (12/11 17:03) this thread
+        // needed 32-38 ms a frame but ran only ~32% of a core: half its busy
+        // time it was off a CPU. Intermediate priority (-8, as the audio
+        // worker and the interrupt threads), so another runnable thread on its
+        // core does not delay it; the "cp sched:" lines measure the effect.
+        if (!os::scheduling::SetThreadNice(os::scheduling::CurrentThreadId(), -8))
+            LOG_INFO("gpu command thread: priority unchanged");
         auto idleStart = std::chrono::steady_clock::time_point{};
         bool timingIdle = false;
         while (m_running)

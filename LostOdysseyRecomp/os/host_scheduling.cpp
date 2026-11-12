@@ -395,9 +395,32 @@ bool SetThreadNice(int threadId, int nice)
 {
     return threadId > 0 && setpriority(PRIO_PROCESS, id_t(threadId), nice) == 0;
 }
+
+SchedStat ReadSchedStat(int threadId)
+{
+    SchedStat stat;
+    if (threadId <= 0) return stat;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/task/%d/schedstat", threadId);
+    if (FILE* file = fopen(path, "re")) {
+        unsigned long long run = 0, wait = 0;
+        stat.valid = fscanf(file, "%llu %llu", &run, &wait) == 2;
+        stat.runNs = int64_t(run);
+        stat.waitNs = int64_t(wait);
+        fclose(file);
+    }
+    return stat;
+}
+
+int GuestMainThreadId()
+{
+    return int(g_guestMainTid.load(std::memory_order_relaxed));
+}
 #else
 int CurrentThreadId() { return 0; }
 bool SetThreadNice(int, int) { return false; }
+SchedStat ReadSchedStat(int) { return {}; }
+int GuestMainThreadId() { return 0; }
 void PinCriticalThread(CriticalThread) {}
 void PreferPerformanceCores(bool)
 {
