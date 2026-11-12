@@ -4,6 +4,20 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
+## Steprant Android 2.1 (branch `steprant/v2.1`)
+
+### English
+
+The 2.0.8 code tested on the phone, released as 2.1; every change and the measurements behind it, including the comparison from 1.1 to 2.1, are in the [2.1 release notes](docs/notes/steprant-2.1-release.md).
+
+- GPU driver: Mr. Purple T30 (PurpleVK 26.3.0-devel) is recommended on Adreno (CTRL → GPU driver → Download recommended): about −35% GPU time per frame against Turnip Mesa 26.0 on a Xiaomi 14, GPU frames over 33 ms 2.08% → 0.27%. The first start after a driver change prepares shaders for about 50 s, once.
+- Four swap chain images on Android: present calls over 10 ms 25% → 0.8% of frames with recent Turnip builds.
+- SMAA on every frame SGSR2 skips, in any cutscene; scenes whose motion is not ready stay in SGSR2; loading screens and movies at output size.
+- Audio catches up after a stall instead of staying behind the picture, and does not resync while the picture is frozen; the game's audio worker gets audio priority while it mostly waits.
+- Render targets parked at a phone ↔ TV switch are freed after 60 s; settings menu over the game without upload-buffer reads (first frame 9.4 ms); update check at the title screen.
+- Tester: one profile, Clear diagnostics, exports with only the current run's captures; `gpu sync:` diagnostics; interrupt and vblank threads on the big cores.
+- Known: split-screen scenes with two cameras about 20 FPS (CPU-bound GPU command thread).
+
 ## Steprant Android 2.0 (branch `steprant/v2.0`) — draft, not published
 
 ### English

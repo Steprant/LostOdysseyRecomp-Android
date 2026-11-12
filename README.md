@@ -2,67 +2,93 @@
 
 <img src="assets/steprant-android-logo.webp" alt="Lost Odyssey Recomp Android — Steprant logo" width="360">
 
-# Lost Odyssey Recomp — Steprant Android 1.8
+# Lost Odyssey Recomp — Steprant Android 2.1
 
-**Android 1.8: Qualcomm SGSR2 + SMAA, smoother frame pacing, Vulkan optimizations, audio fixes and TV/HDMI play.**
+**Android 2.1: a third less GPU time with the recommended Mr. Purple T30 driver, frame graph rendering, audio that stays in sync, Qualcomm SGSR2 + SMAA on every frame and TV/HDMI play.**
 
-[![Download Android 1.8 APK](https://img.shields.io/badge/Download-Android_1.8_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk)
+[![Download Android 2.1 APK](https://img.shields.io/badge/Download-Android_2.1_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest)
 
-**[Download APK 1.8](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v1.8-steprant.20261108/LostOdyssey-Steprant-v1.8-20261108.apk) · [Release notes](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v1.8-steprant.20261108) · [Android guide](docs/STEPRANT_ANDROID.md)**
+**[Download APK 2.1](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest) · [Release notes](docs/notes/steprant-2.1-release.md) · [Android guide](docs/STEPRANT_ANDROID.md)**
 
 ![Android ARM64](https://img.shields.io/badge/Android-8.0%2B_ARM64-3DDC84?logo=android&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/Graphics-Vulkan-AC162C)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 1.8 is this fork's version, separate from upstream's release numbering.
+An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 2.1 is this fork's version, separate from upstream's release numbering.
 
 </div>
 
-## Steprant Android 1.8
+## Steprant Android 2.1
 
-Steadier frame pacing, sharper upscaling and less redundant GPU work on Android, measured on a Xiaomi 14 (Adreno 750, Turnip, 30 FPS). Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-1.8-release.md) list every change since the first Steprant build, point by point, with the measurements behind them.
+### First: install the recommended GPU driver (Adreno)
 
-### Measured improvements
+> **On Snapdragon phones and tablets, the single biggest gain in 2.1 is the driver.** With **Mr. Purple T30 (PurpleVK 26.3.0-devel)** the GPU needs about **35% less time per frame** than with Turnip Mesa 26.0, in the same scenes at the same settings, and GPU frames over 33 ms drop from 2.08% to 0.27%.
 
-| What was measured | Before | 1.8 | Change |
+1. In the game, open **CTRL → GPU driver**.
+2. Tap **Download recommended: Mr. Purple T30** (from [MrPurple666/purple-turnip](https://github.com/MrPurple666/purple-turnip/releases)), then restart the game when asked.
+3. The **first start after any driver change prepares the shaders for about 50 seconds** in the background: expect some stutter in that minute, once. From the second start the cache is warm (about 1 second).
+
+| Driver on a Xiaomi 14 (Adreno 750), same scenes and settings, 11/11/2026 | GPU time per frame, median (p90) | Main scene, time per draw | GPU frames over 33 ms |
 | :--- | ---: | ---: | ---: |
-| Frames over 50 ms per minute, city / open field | 18.2 / 20.7 | 6.2 / 10.0 | **−66% / −52%** |
-| 99th percentile frame time, city / open field | 48.5 / 51.2 ms | 37.5 / 39.0 ms | **−23% / −24%** |
-| GPU time per frame, native 2403×1080 → 1780×800 + SGSR2 | ~23 ms | 16–17 ms | **−26 to −30%** |
-| Render passes per frame (depth-only draws in the scene pass) | 100% | ~60% | **−40%** |
-| GPU time inside render passes (same change) | 100% | ~92% | **−8%** |
-| Render passes split by an EDRAM resolve, city / field | 14.7 / 15.0 | 7.1 / 8.6 | **−52% / −43%** |
-| Hitches at menus, loading screens and fades | 40–300 ms each | none | **−100%** |
-| GPU occupancy in menus | ~60% | 28–40% | **−33 to −53%** |
-| XMA audio decode errors | 12–14 thousand in a second, every session | 56–150 per session | **over −99%** |
-| Audio queue running empty | 74–91 per session | 0 | **−100%** |
-| Shadow casters with dynamic shadows on Low | 8 | 16 | **×2** |
-| Memory per pixel of 8-bit render targets | 8 bytes | 4 bytes | **−50%** |
+| **Mr. Purple T30, PurpleVK 26.3.0-devel (recommended)** | **15.9 ms (18.0)** | **~2.6 µs** | **0.27%** |
+| Turnip Mesa 26.0.0-devel | 24.5 ms (28.6) | ~4.4 µs | 2.08% |
+| Turnip Mesa 26.2.3 (whitebelyash) | 24.9 ms (27.5) | ~3.9 µs | — |
+| Qualcomm system driver | 34.6 ms (40.8) | ~8.9 µs | — |
 
-GPU occupancy in gameplay at the new defaults stays at about 60–65% at 30 FPS: 1.8 gains smoothness, image quality and less redundant work, not lower total GPU load.
+The driver is verified on Adreno 750; other Adreno GPUs can try it and go back to the system driver from the same page. Recent Turnip builds can block the present call; 2.1 keeps four swap chain images on Android so this no longer costs frames (present calls over 10 ms: 25% of frames with three images, 0.8% in 2.1). Mali devices keep the PanVK recommendation.
 
-### What is in 1.8
+### From 1.1 to 2.1: measured on the same phone
 
-| Area | In 1.8 |
+Xiaomi 14, Snapdragon 8 Gen 3, Adreno 750, 30 FPS, in-game Tester. Each column is the build of that time, at its own defaults; the [2.1 release notes](docs/notes/steprant-2.1-release.md) give the session behind every number. Rows marked (1) come from different sessions and scenes and are indicative. Results depend on device, driver, scene and settings.
+
+| What was measured | First builds (1.1–1.7) | 1.8 | 2.0 | **2.1** | 1.1 → 2.1 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| GPU time per frame in gameplay | 21–26 ms, native 1080 | 16–17 ms, 1780×800 + SGSR2 | 17.3–18.4 ms, 2003×900 + SGSR2 | **15.4–16.0 ms**, 2003×900 + SGSR2 | **about −30 to −40%** (1) |
+| GPU occupancy at 30 FPS | 62–81% | 60–65% | — | **46–48%** | **−15 to −33 points** (1) |
+| Frames over 50 ms per minute, normal play | 18.2–20.7 | 6.2–10.0 | 9.5 | **3.7** (6.7 over a whole session) | **−63 to −82%** (1) |
+| 99th percentile frame time | 48.5–51.2 ms | 37.5–39.0 ms | 42.2 ms | **37.6–41.2 ms** | **−15 to −27%** (1) |
+| Split-screen scenes (two cameras) | — | — | ~12 FPS | **~20 FPS** | **+67%** from 2.0 (1) |
+| SGSR2 render size from the 900p row, phone / TV | — | 1780×800 / 1280×720 | 2003×900 / 1600×900 | **2003×900 / 1600×900** | **+27% / +56% pixels** from 1.8 |
+| Frames SGSR2 hands over without anti-aliasing (loads, cut-ins, cutscenes without a camera) | — | all of them | all of them | **none: SMAA on every one** | **−100%** from 1.8 |
+| Render passes per frame | 100% | ~60% | ~60% | **~60%** | **−40%** |
+| Stores to memory nothing reads | all kept | all kept | 48–54 MB less per frame | **48–54 MB less per frame** | **−93% of such stores** |
+| Hitches at menus, loading screens and fades | 40–300 ms each | none | none | **none** | **−100%** |
+| Opening the settings menu over the game | — | 113–137 ms | first frame ≤ 250 ms | **first frame 9.4 ms** | **−93%** from 1.8 |
+| XMA audio decode errors | 12–14 thousand in a second | 56–150 per session | 48 in 90 minutes | **11 in 8.5 minutes** | **over −99%** |
+| Longest audio callback stall | — | 705 ms | 322 ms | **84 ms** | **−88%** from 1.8 (1) |
+| Audio behind the picture after a stall | stays behind | stays behind | stays behind | **measured and caught up** | **fixed** |
+| Audio queue running empty in play | 74–91 per session | 0 | 68 | **only in the first seconds of startup** | **−100% in play** (1) |
+| Peak GPU memory, phone ↔ TV switches | — | — | 2,592 MiB | **2,336 MiB** | **−10%** from 2.0 (1) |
+
+In short: against the first Steprant builds, 2.1 needs about a third less GPU time per frame while rendering through SGSR2 + SMAA, has a fraction of the long frames, and keeps audio in sync. Against 1.8, frame times are about the same in normal play while 2.1 renders 27% more pixels (the 900p row now really means 900 lines) and uses less than half the GPU; most of that GPU headroom comes from the recommended driver.
+
+### What is in 2.1
+
+| Area | In 2.1 |
 | :--- | :--- |
-| **SGSR2** | Qualcomm's temporal upscaler (Anti-aliasing → SGSR2), with SMAA before the upscale in Quality. **Default on a fresh install: 900p, SGSR2 Quality, shadows ×2, 30 FPS.** Menus and loading screens keep the render size and draw their interface at display resolution. |
-| **SGSR1** | Optional spatial upscaling in the Vulkan SDR presentation path. |
-| **Rendering** | Compact render targets, depth-only draws kept in the scene pass, early depth rejection, render-target reuse, render passes limited to the drawn area, EDRAM resolve copies that no longer split render passes. Fixes for shadow blocks with jitter, SSAO stripes and the title screen. |
-| **Frame pacing** | Frames over 50 ms −66% (city) and −52% (field) against the 1.7 test builds; 99th percentile frame time under 40 ms in those scenes. |
-| **Audio** | AAudio reopen protection, XMA decoder on performance cores, XMA error bursts resolved, 64 ms buffer. |
+| **GPU driver** | Mr. Purple T30 (PurpleVK 26.3.0-devel) recommended on Adreno, one tap from CTRL → GPU driver: about −35% GPU time per frame. |
+| **Presentation** | Four swap chain images on Android, so a slow present call from the driver no longer turns a 33 ms frame into a 50 ms one. |
+| **Frame graph (2.0)** | Each frame's commands are kept and replayed unchanged with knowledge of what comes next: unread stores dropped, exact render areas, copies and transitions at the end of the pass. |
+| **SGSR2 + SMAA** | Qualcomm's temporal upscaler with SMAA; the resolution row decides the render size, also on TV; Soft filter by default; no trails without motion vectors; SMAA on every frame SGSR2 skips (cutscenes without a camera); scenes whose motion is not ready stay in SGSR2; loading screens and movies drawn at output size. **Default on a fresh install: 900p, SGSR2 Quality, shadows ×2, 30 FPS.** |
+| **Audio** | The game's audio catches up after a stall instead of staying behind the picture, and does not resync while the picture is frozen (loads, shader preparation); the game's audio worker gets audio priority while it mostly waits; no XMA error bursts. |
+| **Frame pacing** | Interrupt and vblank threads on the big cores; menus, settings and notifications without stalls; fast-forward in battles and events at a rate that never freezes. |
+| **Memory** | Render targets parked at a phone ↔ TV switch are freed after 60 s if nothing takes them back; free allocator pages returned when Android asks. |
 | **TV / HDMI** | Independent external output, 16:9 fitting, 720p/1080p requests and controller forwarding. [TV guide](docs/ANDROID_TV_HDMI.md). |
-| **Tester** | Bounded diagnostic recordings with GPU, pacing and memory profiling and ZIP export. [Tester guide](docs/ANDROID_TESTER.md). |
-| **Extras** | EXP ×2 and SP ×2 quick tools, MediaCodec replacement movies, new launcher icon. |
+| **Gameplay extras** | Official save points restore HP and MP; Battle EXP ×2/×3/×4/×10, SP ×2, encounter rate 0.75×. |
+| **Tester** | One accurate profile, Clear diagnostics, exports with only the current run's captures, crash reasons of previous runs. [Tester guide](docs/ANDROID_TESTER.md). |
+| **Build** | Profile-guided build of the runtime and the recompiled game code. |
 
-**Install:** Android 8.0+, ARM64 and Vulkan. The APK is `LostOdyssey-Steprant-v1.8-20261108.apk`, launcher **Lost Odyssey Steprant**, package `io.github.freefrank.lostodyssey.steprant`. It installs over earlier Steprant builds and coexists with the official app; saves and settings are separate.
+**Known in 2.1:** split-screen scenes with two cameras run at about 20 FPS (the GPU command thread needs 32–38 ms per such frame); short hitches while the game streams textures in a new area; about 50 s of shader preparation at the first start after a driver change; HDMI output not yet measured with the new driver.
 
-[Installation](docs/STEPRANT_ANDROID.md#installation) · [All Steprant releases](https://github.com/Steprant/LostOdysseyRecomp-Android/releases) · [Changelog](CHANGELOG.md) · [Optimization notes](docs/notes/android-optimization-20261108.md)
+**Install:** Android 8.0+, ARM64 and Vulkan. Launcher **Lost Odyssey Steprant**, package `io.github.freefrank.lostodyssey.steprant`. 2.1 installs over 1.8, 2.0 and every 2.0.x test build (same package and signing key) and keeps saves, settings and the shader cache; it coexists with the official app.
 
-Supply supported game data from your own discs. Game assets, executables, private inputs and generated game sources are not distributed in this repository. The runtime remains [GPL-3.0](LICENSE); dependencies retain their licenses, including [Qualcomm SGSR](thirdparty/licenses/SnapdragonGSR.txt).
+[Installation](docs/STEPRANT_ANDROID.md#installation) · [All Steprant releases](https://github.com/Steprant/LostOdysseyRecomp-Android/releases) · [Changelog](CHANGELOG.md) · [2.0 release notes](docs/notes/steprant-2.0-release.md) · [1.8 release notes](docs/notes/steprant-1.8-release.md)
 
-Thanks to **Frank / freefrank**, the upstream contributors and the original community for Lost Odyssey Recomp and its platform support. [Official project](https://github.com/freefrank/LostOdysseyRecomp) · [Official downloads](https://github.com/freefrank/LostOdysseyRecomp/releases/latest) · [Upstream Discord](https://discord.gg/z2yPct6z2w) · [Support Frank](https://ko-fi.com/dotslash).
+Supply supported game data from your own discs. Game assets, executables, private inputs and generated game sources are not distributed in this repository. The runtime remains [GPL-3.0](LICENSE); dependencies retain their licenses, including [Qualcomm SGSR](thirdparty/licenses/SnapdragonGSR.txt). GPU drivers downloaded from the driver page come from their own projects under their own licenses.
 
-> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the **Steprant APK 1.8** download above for this Android edition.
+Thanks to **Frank / freefrank**, the upstream contributors and the original community for Lost Odyssey Recomp and its platform support, and to **Mr. Purple** for the PurpleVK Turnip builds. [Official project](https://github.com/freefrank/LostOdysseyRecomp) · [Official downloads](https://github.com/freefrank/LostOdysseyRecomp/releases/latest) · [Upstream Discord](https://discord.gg/z2yPct6z2w) · [Support Frank](https://ko-fi.com/dotslash).
+
+> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the **Steprant APK 2.1** download above for this Android edition.
 
 ## Contents
 
