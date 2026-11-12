@@ -4,7 +4,7 @@
 
 # Lost Odyssey Recomp — Steprant Android 2.1
 
-**Android 2.1: a third less GPU time with the recommended Mr. Purple T30 driver, frame graph rendering, audio that stays in sync, Qualcomm SGSR2 + SMAA on every frame and TV/HDMI play.**
+**Android 2.1: frame graph rendering, steadier frame pacing, Qualcomm SGSR2 + SMAA on every frame, audio that stays in sync and TV/HDMI play.**
 
 [![Download Android 2.1 APK](https://img.shields.io/badge/Download-Android_2.1_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest)
 
@@ -20,16 +20,14 @@ An independent Android edition maintained by **Steprant**, based on the official
 
 ## Steprant Android 2.1
 
-A third less GPU time with the recommended driver, steadier frame pacing, SMAA on every frame and audio that stays in sync, measured on a Xiaomi 14 (Adreno 750, 30 FPS). "Before" is the first Steprant builds (1.1–1.7) unless the row says otherwise. Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-2.1-release.md) list every change point by point, with the measurements behind them.
+Less GPU work, steadier frame pacing, SMAA on every frame and audio that stays in sync, measured on a Xiaomi 14 (Adreno 750, 30 FPS). "Before" is the first Steprant builds (1.1–1.7) unless the row says otherwise. Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-2.1-release.md) list every change point by point, with the measurements behind them.
 
-> **Recommended GPU driver (Adreno): Mr. Purple T30 (PurpleVK 26.3).** In the game: **CTRL → GPU driver → Download recommended**, then restart. The first start after a driver change prepares shaders for about 50 seconds, once.
+> **Recommended GPU driver on Adreno: Mr. Purple T30 (PurpleVK 26.3).** In the game: **CTRL → GPU driver → Download recommended**, then restart. The first start after a driver change prepares shaders for about 50 seconds, once.
 
 ### Measured improvements
 
 | What was measured | Before | 2.1 | Change |
 | :--- | ---: | ---: | ---: |
-| GPU time per frame, Mr. Purple T30 against Turnip Mesa 26.0 (same scenes) | 24.5 ms | 15.9 ms | **−35%** |
-| GPU frames over 33 ms (same comparison) | 2.08% | 0.27% | **−87%** |
 | GPU time per frame, native 2403×1080 → 2003×900 + SGSR2 (1) | ~23 ms | 15.4–16.0 ms | **−32%** |
 | GPU occupancy at 30 FPS (1) | 62–81% | 46–48% | **−34%** |
 | Frames over 50 ms per minute, normal play (1) | 18.2–20.7 | 3.7 | **−80 to −82%** |
@@ -47,7 +45,7 @@ A third less GPU time with the recommended driver, steadier frame pacing, SMAA o
 | Peak GPU memory with phone ↔ TV switches, against 2.0 (1) | 2,592 MiB | 2,336 MiB | **−10%** |
 | Memory per pixel of 8-bit render targets | 8 bytes | 4 bytes | **−50%** |
 
-(1) Different sessions and scenes, before and after; indicative.
+(1) Different sessions and scenes, before and after; indicative. 2.1 GPU figures were measured with the recommended driver.
 
 Against 1.8, frame times in normal play are about the same, while 2.1 renders 27% more pixels with about a quarter less GPU occupancy. Split-screen scenes still run at about 20 FPS: they are limited by the CPU, not the GPU.
 
@@ -55,7 +53,6 @@ Against 1.8, frame times in normal play are about the same, while 2.1 renders 27
 
 | Area | In 2.1 |
 | :--- | :--- |
-| **GPU driver** | Mr. Purple T30 (PurpleVK 26.3.0-devel) recommended on Adreno, one tap from CTRL → GPU driver: about −35% GPU time per frame. |
 | **Presentation** | Four swap chain images on Android, so a slow present call from the driver no longer turns a 33 ms frame into a 50 ms one. |
 | **Frame graph (2.0)** | Each frame's commands are kept and replayed unchanged with knowledge of what comes next: unread stores dropped, exact render areas, copies and transitions at the end of the pass. |
 | **SGSR2 + SMAA** | Qualcomm's temporal upscaler with SMAA; the resolution row decides the render size, also on TV; Soft filter by default; no trails without motion vectors; SMAA on every frame SGSR2 skips (cutscenes without a camera); scenes whose motion is not ready stay in SGSR2; loading screens and movies drawn at output size. **Default on a fresh install: 900p, SGSR2 Quality, shadows ×2, 30 FPS.** |
@@ -66,6 +63,7 @@ Against 1.8, frame times in normal play are about the same, while 2.1 renders 27
 | **Gameplay extras** | Official save points restore HP and MP; Battle EXP ×2/×3/×4/×10, SP ×2, encounter rate 0.75×. |
 | **Tester** | One accurate profile, Clear diagnostics, exports with only the current run's captures, crash reasons of previous runs. [Tester guide](docs/ANDROID_TESTER.md). |
 | **Build** | Profile-guided build of the runtime and the recompiled game code. |
+| **GPU driver** | Mr. Purple T30 (PurpleVK 26.3.0-devel) is the recommended driver on Adreno, one tap from CTRL → GPU driver. The first start after a driver change prepares shaders for about 50 s. |
 
 **Known in 2.1:** split-screen scenes with two cameras run at about 20 FPS (the GPU command thread needs 32–38 ms per such frame); short hitches while the game streams textures in a new area; about 50 s of shader preparation at the first start after a driver change; HDMI output not yet measured with the new driver.
 
