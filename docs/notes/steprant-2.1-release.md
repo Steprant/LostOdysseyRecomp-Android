@@ -1,4 +1,4 @@
-**Steprant Android 2.1 — release notes.** Branch `steprant/v2.1`, versionCode 2010000. 2.1 is the code tested on the phone as 2.0.8 ("Sync", 12 November 2026), released under its own number. The download link is on the [releases page](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest) once Steprant publishes it.
+**Steprant Android 2.1 — release notes.** On Adreno, play with the **Mr. Purple T30** GPU driver: see [section 3](#3-gpu-driver-play-with-mr-purple-t30). Branch `steprant/v2.1`, versionCode 2010000. 2.1 is the code tested on the phone as 2.0.8 ("Sync", 12 November 2026), released under its own number. The download link is on the [releases page](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest) once Steprant publishes it.
 
 An independent Android edition maintained by **Steprant**, based on the official **Lost Odyssey Recomp v1.1.0** by **Frank / freefrank and the original community**. 2.1 installs over 1.8, 2.0 and every 2.0.x test build (same package and signing key) and keeps saves, settings and the shader cache.
 
@@ -66,9 +66,9 @@ All figures were measured on one device: Xiaomi 14, Snapdragon 8 Gen 3, Adreno 7
 13. **Tester:** one profile (the most accurate), **Clear diagnostics** with the freed MB shown, exports with only the current run's frame captures and profiles (a stale capture had made every export 130 MB; now under 1 MB).
 14. **Diagnostics:** `gpu sync:` lines measure where the GPU command thread waits for the game.
 
-## 3. Recommended GPU driver
+## 3. GPU driver: play with Mr. Purple T30
 
-The driver page recommends **Mr. Purple T30 (PurpleVK 26.3.0-devel)** on Adreno.
+**On Adreno, play 2.1 with Mr. Purple T30 (PurpleVK 26.3.0-devel).** 2.1 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup. The driver page offers it as the recommended download.
 
 **How:** CTRL → **GPU driver** → **Download recommended: Mr. Purple T30** → restart when asked. The package comes from [MrPurple666/purple-turnip](https://github.com/MrPurple666/purple-turnip/releases) and is installed in the app's private storage; the system driver is untouched and can be chosen again from the same page.
 

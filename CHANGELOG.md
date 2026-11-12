@@ -15,7 +15,7 @@ The 2.0.8 code tested on the phone, released as 2.1; every change and the measur
 - Audio catches up after a stall instead of staying behind the picture, and does not resync while the picture is frozen; the game's audio worker gets audio priority while it mostly waits.
 - Render targets parked at a phone ↔ TV switch are freed after 60 s; settings menu over the game without upload-buffer reads (first frame 9.4 ms); update check at the title screen.
 - Tester: one profile, Clear diagnostics, exports with only the current run's captures; `gpu sync:` diagnostics; interrupt and vblank threads on the big cores.
-- The GPU driver page recommends Mr. Purple T30 (PurpleVK 26.3.0-devel) on Adreno; the first start after a driver change prepares shaders for about 50 s, once.
+- GPU driver: on Adreno, play with Mr. Purple T30 (PurpleVK 26.3.0-devel), the driver 2.1 is tested and measured with (CTRL → GPU driver → Download recommended); the first start after the change prepares shaders for about 50 s, once.
 - Known: split-screen scenes with two cameras about 20 FPS (CPU-bound GPU command thread).
 
 ## Steprant Android 2.0 (branch `steprant/v2.0`) — draft, not published

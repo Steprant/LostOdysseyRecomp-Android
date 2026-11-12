@@ -22,7 +22,12 @@ An independent Android edition maintained by **Steprant**, based on the official
 
 Less GPU work, steadier frame pacing, SMAA on every frame and audio that stays in sync, measured on a Xiaomi 14 (Adreno 750, 30 FPS). "Before" is the first Steprant builds (1.1–1.7) unless the row says otherwise. Results depend on device, driver, scene and settings; the [release notes](docs/notes/steprant-2.1-release.md) list every change point by point, with the measurements behind them.
 
-> **Recommended GPU driver on Adreno: Mr. Purple T30 (PurpleVK 26.3).** In the game: **CTRL → GPU driver → Download recommended**, then restart. The first start after a driver change prepares shaders for about 50 seconds, once.
+> [!IMPORTANT]
+> **Snapdragon (Adreno): play 2.1 with the Mr. Purple T30 GPU driver (PurpleVK 26.3).** 2.1 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup.
+>
+> 1. In the game, open **CTRL → GPU driver**.
+> 2. Tap **Download recommended: Mr. Purple T30** and restart the game.
+> 3. The first start after the change prepares shaders for about 50 seconds, once; from the next start it is ready.
 
 ### Measured improvements
 
@@ -63,7 +68,7 @@ Against 1.8, frame times in normal play are about the same, while 2.1 renders 27
 | **Gameplay extras** | Official save points restore HP and MP; Battle EXP ×2/×3/×4/×10, SP ×2, encounter rate 0.75×. |
 | **Tester** | One accurate profile, Clear diagnostics, exports with only the current run's captures, crash reasons of previous runs. [Tester guide](docs/ANDROID_TESTER.md). |
 | **Build** | Profile-guided build of the runtime and the recompiled game code. |
-| **GPU driver** | Mr. Purple T30 (PurpleVK 26.3.0-devel) is the recommended driver on Adreno, one tap from CTRL → GPU driver. The first start after a driver change prepares shaders for about 50 s. |
+| **GPU driver** | **Mr. Purple T30 (PurpleVK 26.3.0-devel) is the driver to use on Adreno**: 2.1 is tested and measured with it. One tap from CTRL → GPU driver; the first start after the change prepares shaders for about 50 s. |
 
 **Known in 2.1:** split-screen scenes with two cameras run at about 20 FPS (the GPU command thread needs 32–38 ms per such frame); short hitches while the game streams textures in a new area; about 50 s of shader preparation at the first start after a driver change; HDMI output not yet measured with the new driver.
 
