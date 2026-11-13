@@ -4,7 +4,7 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
-## Steprant Android 2.1 (branch `steprant/v2.1`)
+## [v2.1-steprant.20261112-Release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.1-steprant.20261112-Release) — Steprant Android 2.1
 
 ### English
 

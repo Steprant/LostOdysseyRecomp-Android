@@ -1,9 +1,9 @@
 # Android TV output: implementation and device validation
 
-[Steprant Android 1.8](STEPRANT_ANDROID.md) retains independent external output
-using public Android APIs and automatic phone blackout after ten seconds
-without touch. HDMI/audio routing and A/V synchronization on other devices
-remain unverified; see the [current release notes](notes/steprant-1.8-release.md).
+[Steprant Android 2.1](STEPRANT_ANDROID.md) supports independent external output
+using public Android APIs and automatically blacks out the phone display after
+ten seconds without touch. HDMI performance with Mr. Purple T30 still needs
+measurement. See the [2.1 release notes](notes/steprant-2.1-release.md).
 The original 1.5 build checks below did not include a physical Xiaomi 14 or HDMI
 TV; no device was attached to that development host. The standalone diagnostic
 APK is a canvas calibration app, not a rebuilt game or a Vulkan performance

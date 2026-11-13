@@ -1,4 +1,6 @@
-**Steprant Android 2.1 — release notes.** On Adreno, play with the **Mr. Purple T30** GPU driver: see [section 3](#3-gpu-driver-play-with-mr-purple-t30). Branch `steprant/v2.1`, versionCode 2010000. 2.1 is the code tested on the phone as 2.0.8 ("Sync", 12 November 2026), released under its own number. The download link is on the [releases page](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest) once Steprant publishes it.
+**Steprant Android 2.1 — release notes.** [Download the Android 2.1 APK](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.1-steprant.20261112-Release/LostOdyssey-Steprant-v2.1-Release-20261112.apk) · [GitHub release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.1-steprant.20261112-Release). On Adreno, use the **Mr. Purple T30** GPU driver. See [section 3](#3-gpu-driver-play-with-mr-purple-t30).
+
+Branch `steprant/v2.1`, versionCode 2010000. The 2.1 build uses the gameplay code tested as 2.0.8 (“Sync”, 12 November 2026).
 
 An independent Android edition maintained by **Steprant**, based on the official **Lost Odyssey Recomp v1.1.0** by **Frank / freefrank and the original community**. 2.1 installs over 1.8, 2.0 and every 2.0.x test build (same package and signing key) and keeps saves, settings and the shader cache.
 
@@ -19,7 +21,7 @@ The same measurements as the 1.8 table, now from 1.1 to 2.1. "1.1" is the "Befor
 | Render passes per frame | 100% | ~60% | ~60% | **−40%** |
 | GPU time inside render passes | 100% | ~92% | ~85% (2) | **−15%** |
 | Render passes split by an EDRAM resolve, city / open field | 14.7 / 15.0 | 7.1 / 8.6 | 7.0 (1) | **−52% / −53%** |
-| Hitches at menus, loading screens and fades | 40–300 ms each | none | none | **−100%** |
+| Hitches caused by resolution switches at menus, loading screens and fades | 40–300 ms each | none | none | **−100%** |
 | GPU occupancy in menus (1) | ~60% | 28–40% | 11–24% | **−60 to −82%** |
 | XMA audio decode errors | 12–14 thousand in a second | 56–150 per session | 11 in 8.5 minutes | **over −99%** |
 | Audio queue running empty (1) | 74–91 per session | 0 | 0 in play (9 in the first seconds of startup) | **−100% in play** |
@@ -44,8 +46,12 @@ The same measurements as the 1.8 table, now from 1.1 to 2.1. "1.1" is the "Befor
 **Reading the table honestly:**
 - The GPU row mixes render sizes: the first builds rendered at native 1080 (2403×1080), 1.8 at 1780×800, 2.0 and 2.1 at 2003×900, all at 30 FPS. 2.1 renders 31% fewer pixels than native 1080 and 27% more than 1.8. The same-scene driver comparison is in section 3.
 - From 2.0.3 the Tester always records per-draw GPU timestamps, which add their own cost: the 2.0.x and 2.1 GPU times are, if anything, slightly high.
-- Against 1.8, frame times in normal play are about the same, at 27% more pixels and about a quarter less GPU occupancy.
+- In the sampled gameplay, 2.1 renders 27% more pixels than 1.8 with similar frame times.
 - 2.1 frame pacing: whole session of 12 November 17:03 without the split-screen scene, p99 41.2 ms and 6.7 frames over 50 ms per minute; normal play from 280 to 440 s, p99 37.6 ms and 3.7 per minute; a quiet stretch of the 2.0.7 session, 1.0 per minute. The remaining clusters are the game itself pausing (`cp_idle` of 50–100 ms at loads and scene changes).
+
+### GPU load and battery use
+
+On a Xiaomi 14 at 900p, SGSR2 Quality and 30 FPS with Mr. Purple T30, 2.1 used 15.4–16.0 ms of GPU time per frame in the sampled gameplay (46–48% of the frame budget). Battery draw and runtime still need direct measurement. The 1.8 release notes report about 60–65% GPU occupancy during gameplay at the 1.8 defaults, which used a lower internal render resolution. The two builds were recorded in different gameplay sessions.
 
 ## 2. Every improvement since 2.0, point by point
 
@@ -121,6 +127,14 @@ Verified on Adreno 750 only. Other Adreno GPUs can try it; if the game fails to 
 | 11/11 20:19, 20:48, 20:53, 20:57 | 2.0.5 | Driver comparison |
 | 11/11 22:43, 22:46; 12/11 00:01 | 2.0.6, 2.0.7 | Audio catch-up, four swap chain images |
 | 12/11 17:03 | 2.0.8 = 2.1 | 2.1 frame pacing, GPU time, audio, split-screen |
+
+## APK and build
+
+`LostOdyssey-Steprant-v2.1-Release-20261112.apk`
+
+SHA-256 `5ea4f42175295972bc58584ec110861205a01594fb245d25d186fe9926958184`
+
+Built from commit `90ef437e22cb3ec93eba72d73dcf665f1c0937df`. [Successful Android build](https://github.com/Steprant/LostOdysseyRecomp-Android/actions/runs/43275026759).
 
 ## Credits
 

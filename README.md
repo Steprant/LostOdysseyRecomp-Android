@@ -4,11 +4,11 @@
 
 # Lost Odyssey Recomp — Steprant Android 2.1
 
-**Android 2.1: frame graph rendering, steadier frame pacing, Qualcomm SGSR2 + SMAA on every frame, audio that stays in sync and TV/HDMI play.**
+**Android 2.1: frame graph rendering, steadier frame pacing, Qualcomm SGSR2 with SMAA, including a fallback in cutscenes, audio that stays in sync and TV/HDMI play.**
 
-[![Download Android 2.1 APK](https://img.shields.io/badge/Download-Android_2.1_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest)
+[![Download Android 2.1 APK](https://img.shields.io/badge/Download-Android_2.1_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.1-steprant.20261112-Release/LostOdyssey-Steprant-v2.1-Release-20261112.apk)
 
-**[Download APK 2.1](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/latest) · [Release notes](docs/notes/steprant-2.1-release.md) · [Android guide](docs/STEPRANT_ANDROID.md)**
+**[Download APK 2.1](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.1-steprant.20261112-Release/LostOdyssey-Steprant-v2.1-Release-20261112.apk) · [GitHub release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.1-steprant.20261112-Release) · [Release notes](docs/notes/steprant-2.1-release.md) · [Android guide](docs/STEPRANT_ANDROID.md)**
 
 ![Android ARM64](https://img.shields.io/badge/Android-8.0%2B_ARM64-3DDC84?logo=android&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/Graphics-Vulkan-AC162C)
@@ -42,7 +42,7 @@ The same measurements as the 1.8 table, now from 1.1 to 2.1. "1.1" is the "Befor
 | Render passes per frame | 100% | ~60% | ~60% | **−40%** |
 | GPU time inside render passes | 100% | ~92% | ~85% (2) | **−15%** |
 | Render passes split by an EDRAM resolve, city / open field | 14.7 / 15.0 | 7.1 / 8.6 | 7.0 (1) | **−52% / −53%** |
-| Hitches at menus, loading screens and fades | 40–300 ms each | none | none | **−100%** |
+| Hitches caused by resolution switches at menus, loading screens and fades | 40–300 ms each | none | none | **−100%** |
 | GPU occupancy in menus (1) | ~60% | 28–40% | 11–24% | **−60 to −82%** |
 | XMA audio decode errors | 12–14 thousand in a second | 56–150 per session | 11 in 8.5 minutes | **over −99%** |
 | Audio queue running empty (1) | 74–91 per session | 0 | 0 in play (9 in the first seconds of startup) | **−100% in play** |
@@ -64,7 +64,11 @@ The same measurements as the 1.8 table, now from 1.1 to 2.1. "1.1" is the "Befor
 | Split-screen scenes with two cameras (2.0) (1) | ~12 FPS | ~20 FPS | **+67%** |
 | Peak GPU memory with phone ↔ TV switches (2.0) (1) | 2,592 MiB | 2,336 MiB | **−10%** |
 
-Against 1.8, frame times in normal play are about the same, while 2.1 renders 27% more pixels with about a quarter less GPU occupancy. Split-screen scenes still run at about 20 FPS: they are limited by the CPU, not the GPU.
+In the sampled gameplay, 2.1 renders 27% more pixels than 1.8 with similar frame times. Split-screen scenes still run at about 20 FPS because of CPU work on the GPU command thread.
+
+### GPU load and battery use
+
+On a Xiaomi 14 at 900p, SGSR2 Quality and 30 FPS with Mr. Purple T30, 2.1 used 15.4–16.0 ms of GPU time per frame in the sampled gameplay (46–48% of the frame budget). Battery draw and runtime still need direct measurement.
 
 ### What is in 2.1
 

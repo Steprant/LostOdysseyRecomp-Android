@@ -1,16 +1,16 @@
-# Android tester diagnostics — Steprant 1.8
+# Android tester diagnostics — Steprant 2.1
 
 On Android, open **Settings → System → Android diagnostics** with the ordinary
 settings controls (LB/RB change category). The separate LB+RB debug-overlay
-chord is unchanged. Switch Tester mode on, choose a profile, then select
+chord opens the Quick Tools overlay. Switch Tester mode on, then select
 **Recording → Start**. Stop the recording and select **Export diagnostics**;
 Android's document picker asks where to save the ZIP. Export also works while
 recording or after an interrupted process, if a trace was already written.
-Tester mode starts off on every process start and its choices are not persisted.
+Tester mode starts off on every process start. Use **Clear diagnostics** to remove stored Tester sessions, frame captures and profiles. The menu shows the space freed.
 
-## Added by Steprant 1.8
+## What Tester records
 
-Advanced and Intensive recordings include per-render-pass GPU profiling,
+Recordings include per-render-pass GPU profiling,
 attachment load/store counts, reasons render passes end, and state commands per
 frame. About every ten seconds, a sampled frame is timed draw by draw, grouped
 by draw type, with the ten most expensive shaders reported. Slow frames over
@@ -18,27 +18,17 @@ by draw type, with the ten most expensive shaders reported. Slow frames over
 pacing. These sampled timings do not give continuous hardware utilization.
 
 Compare two exported recordings with `tools/android/compare-tester.py`.
-Use the same scene, settings, driver, profile and starting temperature. See the
-[1.8 release notes](notes/steprant-1.8-release.md) for the measured results and
-their limits. Intensive recording retains no fixed two-minute limit; rolling
-data and storage remain bounded as described below.
+Use the same scene, settings, driver and starting temperature. See the
+[2.1 release notes](notes/steprant-2.1-release.md) for measured results.
+Recording continues until you stop it or an I/O error occurs. Data and storage
+are bounded as described below.
 
-## Profiles and data
+## Sampling
 
-- **Standard:** present-call intervals and wall/CPU time, renderer frame/draw
-  count, audio queue counters, movie lifecycle/guest update, process CPU at
-  one-second intervals, optional Android thermal state and battery temperature.
-- **Advanced:** also brackets renderer and presentation GPU queue batches
-  with the existing timestamp-query machinery and samples XMA send/receive
-  wall time, synchronous inline pipeline creation and per-thread
-  `/proc/self/task` CPU ticks. Queries are read only
-  after existing submission fences; no new GPU wait is introduced.
-- **Intensive:** the advanced probes with process sampling every 250 ms by
-  default. The selectable 250/500/1000/2000 ms sample period affects process
-  sampling; recording continues until stopped manually or an I/O error. It may
-  alter performance. Thread sampling
-  is limited to once per second, CPU frequency and thermal headroom to once
-  per ten seconds. Headroom can be unavailable even on a supported API.
+2.1 uses a single Intensive profile. It samples process data every 250 ms,
+threads at most once per second and CPU frequencies and thermal headroom at
+most once every ten seconds. It also records GPU queue timings, render-pass
+profiles and slow-frame windows. The recording can affect performance.
 
 Per-core scaling frequencies are attempted from public, readable sysfs files;
 Android may deny access. Missing values are blank or `null`. Battery temperature
@@ -66,7 +56,8 @@ belong to the latest such attempt, not to every shader used by the frame.
 
 The ZIP includes device/build metadata, selected non-identifying settings,
 frame, CPU, thread, frequency, memory and thermal CSVs, summary and event information,
-and up to 2 MiB from the newest runtime log. GPU hardware utilization/frequency,
+and up to 2 MiB from the newest runtime log. Frame captures and profiles in the
+ZIP come from the current run of the app. GPU hardware utilization/frequency,
 CPU/GPU sensor temperatures, A/V synchronization and display latency are not
 implemented. Zero counts mean no recorded observations, not necessarily that
 the underlying subsystem was available. The export may include no runtime log
@@ -88,9 +79,8 @@ exportable; a session marked `recording: true` may have ended abruptly.
 
 ## Device coverage and further validation
 
-The 1.8 release notes include Tester measurements from one Xiaomi 14; they do
-not establish overhead or feature coverage on other devices. The implementation
-checks recorded below refer to the original 1.5 checkpoint.
+The 2.1 release notes include Tester measurements from one Xiaomi 14.
+The implementation checks recorded below refer to the original 1.5 checkpoint.
 
 The host settings fixture, native recorder tests and JVM trace tests do not run
 the game, SDL lifecycle, an Android driver or a physical controller. The
@@ -98,8 +88,8 @@ complete ARM64 runtime and Steprant 1.5 APK built with authorized local inputs;
 the APK was signed and statically checked. On Xiaomi 14, verify controller
 navigation, start/stop/export, background/resume, a CGI, the intro boss and
 recordings longer than two minutes. Compare repeated identical scenes with
-the same build, graphics settings, temperature and diagnostic mode off versus
-each profile; report frame-time percentiles, sustained temperature and power.
+the same build, graphics settings and temperature with diagnostic mode off and on.
+Record frame-time percentiles, sustained temperature and power.
 Those initial checks did not include a device run or overhead measurement;
 they are separate from the later 1.8 sessions.
 
