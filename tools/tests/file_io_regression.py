@@ -537,7 +537,10 @@ def main() -> int:
     reads += between(source, "uint32_t NtReadFile(", "uint32_t NtWriteFile(")
     query_set_directory = between(source, "uint32_t NtQueryInformationFile(", "uint32_t NtQueryFullAttributesFile(")
     scatter = between(source, "uint32_t NtReadFileScatter(", "GUEST_FUNCTION_HOOK(__imp__NtCreateFile,")
-    cpp = COMMON.replace("// EXTRACTED_GUEST_TYPES", guest_types) + helpers + schemas + handle + lock + FIXTURES + queue_apc + reads + query_set_directory + scatter + TESTS
+    # Steprant 2.1.1: the read timing the extracted reads use (off in the test).
+    read_stats = "#include <chrono>\n" + (ROOT / "LostOdysseyRecomp/kernel/io/io_read_stats.h").read_text().replace("#pragma once", "")
+    read_stats += between(source, "static uint64_t IoNowNs()", "// Use the existing blocking mutex.")
+    cpp = COMMON.replace("// EXTRACTED_GUEST_TYPES", guest_types) + read_stats + helpers + schemas + handle + lock + FIXTURES + queue_apc + reads + query_set_directory + scatter + TESTS
     with tempfile.TemporaryDirectory(prefix="lo-file-io-") as temporary:
         out = args.out.resolve() if args.out else Path(temporary)
         out.mkdir(parents=True, exist_ok=True)
