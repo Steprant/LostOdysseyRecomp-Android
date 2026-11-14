@@ -20,7 +20,15 @@
 // collision only wakes a thread early.
 //
 // Linux and Android (futex); elsewhere NoteTryEnter never waits.
-// LO_CS_POLL_WAIT=0 turns it off.
+//
+// OFF by default (LO_CS_POLL_WAIT=1 turns it on, for experiments only).
+// The 2.1.1-C build had it on and the game did not start: a thread that
+// does real work under a lock only it uses (take, pop an item, release,
+// again) looks exactly like a poller to this rule, because no other thread
+// ever releases that lock. It then slept 0.5 ms per item: 2,000 items took
+// 1.1 s instead of microseconds. The lock alone cannot tell "nothing new"
+// from "the thread changed the data itself", so this needs a different
+// design (the job worker's own idle loop) before it can be used.
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -57,7 +65,7 @@ inline bool Enabled()
 {
     static const bool enabled = [] {
         const char* value = std::getenv("LO_CS_POLL_WAIT");
-        return !(value && std::strcmp(value, "0") == 0);
+        return value && std::strcmp(value, "1") == 0;
     }();
     return enabled;
 }

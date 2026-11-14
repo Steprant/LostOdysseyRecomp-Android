@@ -82,7 +82,12 @@ section it released itself, while no other thread has released it since,
 cannot see anything new under that lock. After 32 such polls in a row the
 thread sleeps until another thread releases that critical section, at most
 0.5 ms, so changes made outside the lock are still seen within that time.
-A lock the thread already owns never waits. `LO_CS_POLL_WAIT=0` turns it off.
+A lock the thread already owns never waits.
+
+It is **off by default** (`LO_CS_POLL_WAIT=1` turns it on, for experiments
+only). The first 2.1.1-C build had it on and the game did not start: a
+thread doing real work under a lock that only it uses (take, pop an item,
+release, again) matches the same rule and slept 0.5 ms per item.
 
 Slow-interval windows (`events/`) are again saved for slow intervals. Since
 2.0 they were triggered by the line's last column, which had become

@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <stdexcept>
 #include <thread>
+#include <cstdlib>
+#include <unistd.h>
 
 namespace
 {
@@ -25,6 +27,30 @@ int main()
 #endif
     try {
         namespace cpw = cs_poll_wait;
+        // 0. Off by default: a thread working alone under a lock it takes
+        //    with TryEnter (the 2.1.1-C start-up hang) runs at full speed.
+        //    Then the process runs itself again with the poll wait on, for
+        //    the mechanism tests (Enabled() is read once per process).
+        if (std::getenv("LO_CS_POLL_WAIT_CHILD") == nullptr) {
+            if (std::getenv("LO_CS_POLL_WAIT") == nullptr) {
+                Check(!cpw::Enabled(), "the poll wait is off unless LO_CS_POLL_WAIT=1");
+                Section cs;
+                const auto start = Clock::now();
+                for (int i = 0; i < 20000; ++i) {
+                    Check(GuestCriticalSection::TryEnter(cs.recursion, cs.owner, 0x1234), "free lock taken");
+                    GuestCriticalSection::Leave(cs.recursion, cs.owner);
+                }
+                const uint64_t ms = Ms(Clock::now() - start);
+                std::printf("default off: one thread, 20000 TryEnter/Leave in %llu ms (%u checks)\n", (unsigned long long)ms, checks);
+                Check(ms < 200, "a lock used by one thread is never slowed down when off");
+                Check(cpw::g_stats.waits.load() == 0, "no waits when off");
+            }
+            std::fflush(stdout);
+            Check(setenv("LO_CS_POLL_WAIT", "1", 1) == 0 && setenv("LO_CS_POLL_WAIT_CHILD", "1", 1) == 0, "setenv");
+            execl("/proc/self/exe", "cs_poll_wait_test", static_cast<char*>(nullptr));
+            throw std::runtime_error("re-exec with the poll wait on failed");
+        }
+        Check(cpw::Enabled(), "LO_CS_POLL_WAIT=1 turns the poll wait on");
         // 1. A queue polled with TryEnter/Leave; the producer pushes under the lock.
         {
             Section cs;
