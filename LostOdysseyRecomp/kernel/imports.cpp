@@ -34,6 +34,10 @@
 #include <diagnostics/android_tester.h>
 #endif
 #include <thread>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <unordered_map>
 #include <algorithm>
 #include <atomic>
@@ -58,6 +62,11 @@ struct ThreadWaitState
     uint32_t r1 = 0;
     std::atomic<uint64_t> since{0};
     PPCContext* ctx = nullptr; // live context, read racily for diagnostics only
+    // Steprant 2.1.1: the host thread (threads.csv), and kernel import calls
+    // during a Tester burst (guest_imports in function.h).
+    uint32_t hostTid = 0;
+    std::atomic<uint64_t> importCalls{0};
+    std::atomic<const char*> lastImport{nullptr};
 };
 
 static Mutex g_waitStatesMutex;
@@ -87,10 +96,29 @@ static ThreadWaitState& CurrentWaitState()
         guard.state = new ThreadWaitState();
         guard.state->threadId = GuestThread::GetCurrentThreadId();
         guard.state->ctx = g_ppcContext;
+#if defined(__linux__)
+        guard.state->hostTid = uint32_t(syscall(SYS_gettid));
+#endif
         std::lock_guard lock(g_waitStatesMutex);
         g_waitStates.push_back(guard.state);
     }
     return *guard.state;
+}
+
+// Steprant 2.1.1: kernel import calls per import and per thread.
+static Mutex g_importCountersMutex;
+static std::vector<guest_imports::Counter*> g_importCounters;
+
+void guest_imports::Note(Counter& counter)
+{
+    counter.calls.fetch_add(1, std::memory_order_relaxed);
+    if (!counter.linked.load(std::memory_order_relaxed) && !counter.linked.exchange(true)) {
+        std::lock_guard lock(g_importCountersMutex);
+        g_importCounters.push_back(&counter);
+    }
+    auto& st = CurrentWaitState();
+    st.importCalls.fetch_add(1, std::memory_order_relaxed);
+    st.lastImport.store(counter.name, std::memory_order_relaxed);
 }
 
 struct WaitScope
@@ -162,19 +190,21 @@ uint64_t NowNs()
 }
 
 // One place: the live LR and the first two return addresses of the back chain.
-struct Place { uint32_t lr = 0, caller = 0, caller2 = 0; };
+struct Place { uint32_t lr = 0, caller = 0, caller2 = 0, caller3 = 0, caller4 = 0; };
 struct PlaceHash { size_t operator()(uint64_t key) const { return std::hash<uint64_t>{}(key); } };
 
 Place Read(uint32_t liveLr, uint32_t r1)
 {
     Place place{liveLr};
     uint32_t frame = r1;
-    for (int i = 0; i < 2 && frame >= 0x1000 && frame < 0x7C000000; ++i) {
+    // Steprant 2.1.1: four callers (was two), to name the loop around a hot spot.
+    uint32_t* callers[4] = {&place.caller, &place.caller2, &place.caller3, &place.caller4};
+    for (int i = 0; i < 4 && frame >= 0x1000 && frame < 0x7C000000; ++i) {
         const uint32_t caller = *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(frame));
         if (caller <= frame || caller >= 0x7C000000) break;
         const uint32_t ret = *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(caller - 8));
         if (ret < 0x82000000 || ret >= 0x83400000) break;
-        (i == 0 ? place.caller : place.caller2) = ret;
+        *callers[i] = ret;
         frame = caller;
     }
     return place;
@@ -186,16 +216,20 @@ struct Tally
     std::unordered_map<uint64_t, uint32_t> second; // same key -> caller2
     std::unordered_map<uint64_t, uint32_t> thread; // same key -> guest thread id
     std::unordered_map<uint64_t, const char*> wait; // same key -> kernel wait (2.1.1; waiting threads only)
+    std::unordered_map<uint64_t, uint64_t> deeper;  // same key -> caller3 << 32 | caller4 (2.1.1)
+    std::unordered_map<uint64_t, uint32_t> host;    // same key -> host thread id (2.1.1)
     uint32_t samples = 0;
-    void Add(uint32_t threadId, const Place& place, const char* waitingIn = nullptr)
+    void Add(uint32_t threadId, const Place& place, const char* waitingIn = nullptr, uint32_t hostTid = 0)
     {
         const uint64_t key = (uint64_t(place.lr) << 32) | place.caller;
         ++counts[key];
         second[key] = place.caller2;
         thread[key] = threadId;
         if (waitingIn) wait[key] = waitingIn;
+        if (place.caller3) deeper[key] = (uint64_t(place.caller3) << 32) | place.caller4;
+        if (hostTid) host[key] = hostTid;
     }
-    void Clear() { counts.clear(); second.clear(); thread.clear(); wait.clear(); samples = 0; }
+    void Clear() { counts.clear(); second.clear(); thread.clear(); wait.clear(); deeper.clear(); host.clear(); samples = 0; }
     std::string Top(size_t limit) const
     {
         std::vector<std::pair<uint64_t, uint32_t>> sorted(counts.begin(), counts.end());
@@ -204,9 +238,17 @@ struct Tally
         for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
             const uint64_t key = sorted[i].first;
             const auto waiting = wait.find(key);
-            out += fmt::format(" tid={:#x} {}{:#x}<-{:#x}<-{:#x} x{};", thread.at(key),
+            const auto further = deeper.find(key);
+            const auto hostId = host.find(key);
+            std::string tail;
+            if (further != deeper.end()) {
+                tail = fmt::format("<-{:#x}", uint32_t(further->second >> 32));
+                if (uint32_t(further->second)) tail += fmt::format("<-{:#x}", uint32_t(further->second));
+            }
+            out += fmt::format(" tid={:#x}{} {}{:#x}<-{:#x}<-{:#x}{} x{};", thread.at(key),
+                hostId != host.end() ? fmt::format(" host={}", hostId->second) : std::string{},
                 waiting != wait.end() ? fmt::format("[{}] ", waiting->second) : std::string{},
-                uint32_t(key >> 32), uint32_t(key), second.at(key), sorted[i].second);
+                uint32_t(key >> 32), uint32_t(key), second.at(key), tail, sorted[i].second);
         }
         return out;
     }
@@ -222,7 +264,7 @@ void SampleRunning(Tally& tally, PPCContext* only)
             const bool running = st->what[0] == 'r';
             const uint32_t liveLr = uint32_t(st->ctx->lr);
             if (!only && (!running || liveLr == 0x82BECACC || liveLr == 0)) continue; // idle pool / unknown
-            tally.Add(st->threadId, Read(liveLr, running ? st->ctx->r1.u32 : st->r1));
+            tally.Add(st->threadId, Read(liveLr, running ? st->ctx->r1.u32 : st->r1), nullptr, st->hostTid);
             matched = true;
         }
     }
@@ -246,8 +288,8 @@ void SampleAll(Tally& tally, PPCContext* except)
             const bool running = what[0] == 'r';
             const uint32_t liveLr = uint32_t(st->ctx->lr);
             if (running && (liveLr == 0x82BECACC || liveLr == 0)) continue; // idle pool / unknown
-            if (running) tally.Add(st->threadId, Read(liveLr, st->ctx->r1.u32));
-            else tally.Add(st->threadId, Read(st->lr, st->r1), what);
+            if (running) tally.Add(st->threadId, Read(liveLr, st->ctx->r1.u32), nullptr, st->hostTid);
+            else tally.Add(st->threadId, Read(st->lr, st->r1), what, st->hostTid);
         }
     }
     ++tally.samples;
@@ -262,6 +304,51 @@ bool TesterRecording()
 #endif
 }
 
+bool TesterBurst()
+{
+#if defined(__ANDROID__)
+    return ::diagnostics::android_tester::g_recorder.CollectGpu();
+#else
+    return false;
+#endif
+}
+
+// Steprant 2.1.1: the import counts of one burst: the most called imports
+// and the threads that call the kernel most, with their host id, last import
+// and where they are.
+std::string TakeImportLine(double seconds)
+{
+    std::vector<std::pair<uint64_t, const char*>> imports;
+    {
+        std::lock_guard lock(g_importCountersMutex);
+        for (auto* counter : g_importCounters)
+            if (const uint64_t calls = counter->calls.exchange(0, std::memory_order_relaxed))
+                imports.emplace_back(calls, counter->name);
+    }
+    struct ThreadCalls { uint64_t calls; uint32_t tid, host, lr; const char* last; };
+    std::vector<ThreadCalls> threads;
+    {
+        std::lock_guard lock(g_waitStatesMutex);
+        for (auto* st : g_waitStates)
+            if (const uint64_t calls = st->importCalls.exchange(0, std::memory_order_relaxed))
+                threads.push_back({calls, st->threadId, st->hostTid, st->ctx ? uint32_t(st->ctx->lr) : 0,
+                    st->lastImport.load(std::memory_order_relaxed)});
+    }
+    if (imports.empty() || seconds <= 0) return {};
+    std::sort(imports.begin(), imports.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::sort(threads.begin(), threads.end(), [](const auto& a, const auto& b) { return a.calls > b.calls; });
+    uint64_t total = 0;
+    for (const auto& i : imports) total += i.first;
+    std::string out = fmt::format("guest imports: seconds={:.1f} calls_per_s={:.0f} top:", seconds, total / seconds);
+    for (size_t i = 0; i < imports.size() && i < 14; ++i)
+        out += fmt::format(" {}={:.0f}", imports[i].second, imports[i].first / seconds);
+    out += " | threads:";
+    for (size_t i = 0; i < threads.size() && i < 10; ++i)
+        out += fmt::format(" tid={:#x} host={} calls_per_s={:.0f} last={} lr={:#x};", threads[i].tid, threads[i].host,
+            threads[i].calls / seconds, threads[i].last ? threads[i].last : "?", threads[i].lr);
+    return out;
+}
+
 void Run()
 {
     Tally frame, audio, audioOthers, periodic;
@@ -271,7 +358,8 @@ void Run()
     // is also sampled every 100 ms outside stalls (where the game spends its
     // CPU, spin waits included), one line a minute; and file reads are
     // timed (io_read_stats.h), one line every ten seconds.
-    uint64_t nextPeriodic = 0, periodicStart = 0, nextIoLine = 0;
+    uint64_t nextPeriodic = 0, periodicStart = 0, nextIoLine = 0, importStart = 0;
+    uint32_t importLines = 0;
     bool sampling = true;
     for (;;) {
         // 5 ms while the Tester records or a stall is being sampled; 20 ms
@@ -284,6 +372,17 @@ void Run()
             io_read_stats::Take();
             nextIoLine = now + 10'000'000'000ull;
             periodic.Clear(); periodicStart = now; nextPeriodic = now;
+        }
+        // Kernel import counting during the Tester's bursts.
+        const bool burst = recording && TesterBurst();
+        if (burst != guest_imports::g_counting.load(std::memory_order_relaxed)) {
+            guest_imports::g_counting.store(burst, std::memory_order_relaxed);
+            if (burst) { TakeImportLine(1.0); importStart = now; }
+            else if (importStart) {
+                const std::string line = TakeImportLine((now - importStart) / 1e9);
+                if (!line.empty() && importLines < 120) { ++importLines; LOG_INFO("{}", line); }
+                importStart = 0;
+            }
         }
         if (recording && now >= nextIoLine) {
             nextIoLine = now + 10'000'000'000ull;

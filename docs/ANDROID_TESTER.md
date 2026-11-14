@@ -58,6 +58,12 @@ New measurements, for the whole recording:
   kind=periodic` once a minute (where the running guest threads are, sampled
   every 100 ms); and with each long audio callback, `stall samples:
   kind=audio_others`, every guest thread and the kernel wait it is in.
+  Samples now carry four callers and the host thread id (`host=`, as in
+  `threads.csv`).
+- `runtime.log`, once per heavy-profiling burst: `record phases:` (where the
+  GPU command thread's per-draw "record" time goes, per frame) and `guest
+  imports:` (kernel import calls per second, the most called imports and the
+  threads calling them, with their last import).
 
 Slow-interval windows (`events/`) are again saved for slow intervals. Since
 2.0 they were triggered by the line's last column, which had become

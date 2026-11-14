@@ -3,6 +3,8 @@
 #include <cpu/guest_thread.h>
 #include <cpu/ppc_context.h>
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <tuple>
 #include "memory.h"
 
@@ -292,8 +294,30 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
         static_assert(std::is_void_v<T>, "Unsupported return type.");
 }
 
+// Steprant 2.1.1: kernel import calls, counted per import and per guest
+// thread during the Android Tester's heavy-profiling bursts (the stall
+// sampler switches g_counting and logs one "guest imports:" line per burst).
+// Outside them each call pays one relaxed load. It shows which threads call
+// the kernel how often (a polling loop) and what they call.
+namespace guest_imports
+{
+    struct Counter
+    {
+        const char* name = nullptr;
+        std::atomic<uint64_t> calls{0};
+        std::atomic<bool> linked{false};
+    };
+    inline std::atomic<bool> g_counting{false};
+    void Note(Counter& counter); // kernel/imports.cpp
+}
+
 #define GUEST_FUNCTION_HOOK(subroutine, function) \
-    PPC_FUNC(subroutine) { HostToGuestFunction<function>(ctx, base); }
+    PPC_FUNC(subroutine) { \
+        if (::guest_imports::g_counting.load(std::memory_order_relaxed)) { \
+            static ::guest_imports::Counter counter{#function}; \
+            ::guest_imports::Note(counter); \
+        } \
+        HostToGuestFunction<function>(ctx, base); }
 
 #define GUEST_FUNCTION_STUB(subroutine) \
     PPC_FUNC(subroutine) { }

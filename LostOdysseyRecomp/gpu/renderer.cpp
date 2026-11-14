@@ -1197,6 +1197,7 @@ namespace gpu::renderer
             // LO_RECORD_TIMING: phase split of the record timer. The create
             // counters below are bumped on slow paths only.
             record_timing::Recorder recordTiming;
+            bool recordBurst = false; // the record probe runs for a Tester burst (2.1.1)
             uint32_t recordFramebufferCreates = 0, recordOtherPipelineCreates = 0;
             double recordOtherPipelineMs = 0;
             static void ReadRecordCounters(const void* context, record_timing::Counters& out)
@@ -12506,7 +12507,8 @@ void main()
                 // Record.
                 if (pass_profile::Enabled()) pass_profile::CountDraw((colorInfo >> 16) & 0xF, depthOnlyRaster);
                 ScopedTimer recordTimer{ tRecord, cpuTimingEnabled };
-                const bool recordProbeOn = record_timing::Enabled();
+                // Steprant 2.1.1: also during the Android Tester's bursts (quiet).
+                const bool recordProbeOn = record_timing::Enabled() || recordBurst;
                 if (recordProbeOn) recordTiming.SetCounterReader(&ReadRecordCounters, this);
                 record_timing::Probe recordProbe{ recordTiming, recordProbeOn, drawsThisFrame };
                 if (auto* sample = recordProbe.Sample()) {
@@ -14774,7 +14776,19 @@ void main()
                 if (fgUiCapture && fgUiCapture->frame == frame && !fgUiCapture->finalRecorded)
                     ExportFgUiCapture(fgUiCapture);
                 OcclusionFrameEnd();
-                if (record_timing::Enabled()) recordTiming.EndFrame(frame);
+                {
+                    // Steprant 2.1.1: the record phases per Tester burst
+                    // (record_timing.h). The state is read once per frame.
+                    const bool burst = bool(LO_PLATFORM_ANDROID) && pass_profile::Enabled();
+                    if (record_timing::Enabled() || recordBurst) recordTiming.EndFrame(frame, !record_timing::Enabled());
+                    if (recordBurst && !burst) {
+                        const std::string line = recordTiming.TakeWindow();
+                        if (!line.empty()) LOG_INFO("{}", line);
+                    } else if (burst && !recordBurst) {
+                        recordTiming.TakeWindow();
+                    }
+                    recordBurst = burst;
+                }
                 ++frame; drawsThisFrame = 0; drops = {};
                 if ((frame & 127) == 0) ReleaseAgedParkedTargets();
             }

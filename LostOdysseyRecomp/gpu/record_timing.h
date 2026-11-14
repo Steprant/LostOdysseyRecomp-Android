@@ -27,6 +27,11 @@
 // pipeline counts, motion-vector replay work and its slowest draws
 // (LO_RECORD_TIMING_TOP, default 8). Every 600th frame logs the same summary as
 // a baseline. Off: one branch per phase mark, no clock reads.
+//
+// Steprant 2.1.1: the Android Tester also turns the probe on during its
+// heavy-profiling bursts (android_tester.h), quietly: frames are only summed,
+// and one "record phases:" line per burst gives the average per frame, to
+// show where the GPU command thread's 3-5 ms of "record" go on the phone.
 namespace gpu::record_timing
 {
     inline bool Enabled()
@@ -152,6 +157,12 @@ namespace gpu::record_timing
         std::array<DrawSample, 32> top{};
         uint32_t topCount = 0;
 
+        // Quiet window (Tester bursts): sums over the frames since TakeWindow.
+        std::array<double, kPhases> windowPhaseMs{};
+        double windowRecordMs = 0, windowFirstUseMs = 0;
+        uint64_t windowThread = 0, windowWall = 0;
+        uint32_t windowFrames = 0, windowDraws = 0, windowSlowDraws = 0, windowFirstUse = 0;
+
         static void Add(Counters& total, const Counters& a, const Counters& b)
         {
             total.mvTranslated += a.mvTranslated - b.mvTranslated;
@@ -243,14 +254,23 @@ namespace gpu::record_timing
             Keep(current);
         }
 
-        // Frame end on the render thread. Logs at the threshold or every 600th frame.
-        void EndFrame(uint64_t frame)
+        // Frame end on the render thread. Logs at the threshold or every 600th
+        // frame; quiet (a Tester burst without LO_RECORD_TIMING) only sums.
+        void EndFrame(uint64_t frame, bool quiet = false)
         {
             const auto now = Clock::now();
             const double frameMs = lastFrameEnd.time_since_epoch().count() ? Ms(now - lastFrameEnd) : 0.0;
             lastFrameEnd = now;
+            if (draws) {
+                ++windowFrames;
+                windowDraws += draws; windowSlowDraws += slowDraws;
+                windowRecordMs += recordMs; windowFirstUseMs += firstUseMs;
+                windowThread += threadTicks; windowWall += wallTicks;
+                for (size_t i = 0; i < kPhases; ++i) windowPhaseMs[i] += phaseMs[i];
+                for (size_t i = 0; i < kOrigins; ++i) windowFirstUse += firstUse[i];
+            }
             const bool slow = recordMs >= ThresholdMs();
-            if ((slow || frame % 600 == 0) && draws) {
+            if (!quiet && (slow || frame % 600 == 0) && draws) {
                 uint32_t firstUseTotal = 0;
                 std::string origins;
                 for (size_t i = 0; i < kOrigins; ++i) {
@@ -289,6 +309,26 @@ namespace gpu::record_timing
             firstUseLinked = 0;
             work = {};
             topCount = 0;
+        }
+
+        // The quiet window's line (empty without frames), then a new window.
+        std::string TakeWindow()
+        {
+            std::string line;
+            if (windowFrames) {
+                std::array<double, kPhases> perFrame{};
+                for (size_t i = 0; i < kPhases; ++i) perFrame[i] = windowPhaseMs[i] / windowFrames;
+                line = fmt::format("record phases: frames={} per_frame_ms: record={:.3f} draws={:.0f} us_per_draw={:.2f} draws_over_1ms={} on_cpu={} first_use={} first_use_ms={:.2f} | {}",
+                    windowFrames, windowRecordMs / windowFrames, double(windowDraws) / windowFrames,
+                    windowDraws ? windowRecordMs * 1000.0 / windowDraws : 0.0, windowSlowDraws,
+                    windowWall ? fmt::format("{:.2f}", double(windowThread) / double(windowWall)) : std::string("n/a"),
+                    windowFirstUse, windowFirstUseMs, Phases(perFrame));
+            }
+            windowPhaseMs = {};
+            windowRecordMs = windowFirstUseMs = 0;
+            windowThread = windowWall = 0;
+            windowFrames = windowDraws = windowSlowDraws = windowFirstUse = 0;
+            return line;
         }
     };
 
