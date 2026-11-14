@@ -116,6 +116,9 @@ public final class RuntimeActivity extends SDLActivity {
                 RelativeLayout.LayoutParams.MATCH_PARENT));
             nativeSetTouchInput(0, 0, 0, 0, 0, 0, 0);
             if (!getIntent().getBooleanExtra(EXTRA_IMPORT, false)) {
+                // Steprant 2.1.1: foreground priority for the whole game session
+                // (GameKeepAliveService), started while the game is in front.
+                GameKeepAliveService.start(this);
                 tvOutput = new TvOutputController(this, mLayout, mSurface, tvDiagnostics, (external, height) -> {
                     nativeSetTvOutput(external, height);
                     if (touchControls != null) touchControls.setTvControlsHidden(external && tvOutput.hideTouch());
@@ -327,6 +330,7 @@ public final class RuntimeActivity extends SDLActivity {
             nativeTesterStop();
             AndroidTester.get(this).stop();
         }
+        if (isFinishing()) GameKeepAliveService.stop(this);
         if (tvOutput != null) tvOutput.stop();
         if (tvDiagnostics != null) tvDiagnostics.stop();
         if (touchControls != null) touchControls.clearTouches();

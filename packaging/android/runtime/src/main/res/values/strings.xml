@@ -40,4 +40,8 @@
     <string name="touch_apply">Apply</string>
     <string name="touch_edit_layout">Edit layout</string>
     <string name="touch_cancel">Cancel</string>
+    <string name="keep_alive_channel">Game running</string>
+    <string name="keep_alive_channel_description">Shown while a game session is open</string>
+    <string name="keep_alive_title">Lost Odyssey is running</string>
+    <string name="keep_alive_text">Kept in memory while you use other apps. Tap to return.</string>
 </resources>

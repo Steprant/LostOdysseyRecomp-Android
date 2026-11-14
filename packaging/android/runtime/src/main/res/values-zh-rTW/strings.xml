@@ -40,4 +40,8 @@
     <string name="touch_apply">套用</string>
     <string name="touch_edit_layout">編輯配置</string>
     <string name="touch_cancel">取消</string>
+    <string name="keep_alive_channel">遊戲執行中</string>
+    <string name="keep_alive_channel_description">遊戲工作階段開啟時顯示</string>
+    <string name="keep_alive_title">Lost Odyssey 正在執行</string>
+    <string name="keep_alive_text">使用其他應用程式時保留在記憶體中。輕觸即可返回。</string>
 </resources>

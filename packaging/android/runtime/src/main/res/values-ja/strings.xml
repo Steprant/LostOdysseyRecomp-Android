@@ -40,4 +40,8 @@
     <string name="touch_apply">適用</string>
     <string name="touch_edit_layout">配置を編集</string>
     <string name="touch_cancel">キャンセル</string>
+    <string name="keep_alive_channel">ゲーム実行中</string>
+    <string name="keep_alive_channel_description">ゲームセッションが開いている間表示されます</string>
+    <string name="keep_alive_title">Lost Odyssey を実行中</string>
+    <string name="keep_alive_text">ほかのアプリを使っている間もメモリに保持されます。タップすると戻ります。</string>
 </resources>

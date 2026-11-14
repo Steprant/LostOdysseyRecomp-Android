@@ -40,4 +40,8 @@
     <string name="touch_apply">Applica</string>
     <string name="touch_edit_layout">Modifica layout</string>
     <string name="touch_cancel">Annulla</string>
+    <string name="keep_alive_channel">Gioco in esecuzione</string>
+    <string name="keep_alive_channel_description">Mostrata mentre una partita è aperta</string>
+    <string name="keep_alive_title">Lost Odyssey è in esecuzione</string>
+    <string name="keep_alive_text">Resta in memoria mentre usi altre app. Tocca per tornare.</string>
 </resources>

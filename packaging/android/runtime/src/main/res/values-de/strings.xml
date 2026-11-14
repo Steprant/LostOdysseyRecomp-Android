@@ -40,4 +40,8 @@
     <string name="touch_apply">Übernehmen</string>
     <string name="touch_edit_layout">Layout ändern</string>
     <string name="touch_cancel">Abbrechen</string>
+    <string name="keep_alive_channel">Spiel läuft</string>
+    <string name="keep_alive_channel_description">Wird angezeigt, solange eine Spielsitzung geöffnet ist</string>
+    <string name="keep_alive_title">Lost Odyssey läuft</string>
+    <string name="keep_alive_text">Bleibt im Speicher, während du andere Apps nutzt. Tippen, um zurückzukehren.</string>
 </resources>

@@ -40,4 +40,8 @@
     <string name="touch_apply">적용</string>
     <string name="touch_edit_layout">배치 편집</string>
     <string name="touch_cancel">취소</string>
+    <string name="keep_alive_channel">게임 실행 중</string>
+    <string name="keep_alive_channel_description">게임 세션이 열려 있는 동안 표시됩니다</string>
+    <string name="keep_alive_title">Lost Odyssey 실행 중</string>
+    <string name="keep_alive_text">다른 앱을 사용하는 동안 메모리에 유지됩니다. 탭하여 돌아가기.</string>
 </resources>
