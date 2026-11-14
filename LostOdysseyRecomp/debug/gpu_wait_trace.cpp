@@ -54,6 +54,11 @@ PPC_FUNC(sub_827B6278)
                 PPC_LOAD_U32(state + 12), PPC_LOAD_U32(state + 16), PPC_LOAD_U32(state + 20));
         }
     }
+    // Steprant 2.1.1-D: the generation before the poll; while it says
+    // pending, sleep until the command processor publishes (gpu_progress.h).
+    const uint32_t seen = gpu_progress::Generation();
     __imp__sub_827B6278(ctx, base);
-    poll_wait::GpuPollResult(ctx.r3.s32);
+    if (poll_wait::GpuPollResult(ctx.r3.s32, seen))
+        LOG_WARNING("gpu waits: {} completions arrived with no command processor publish; back to timed polling (50 us) for this run",
+            gpu_progress::g_stats.unannounced.load());
 }

@@ -771,6 +771,7 @@ namespace gpu
             if (m_readPtrWritebackPhysical)
                 *reinterpret_cast<be<uint32_t>*>(TranslatePhysical(m_readPtrWritebackPhysical)) = m_readPtrIndex;
             AdvanceSyncEpoch(SyncSource::Batch);
+            PublishProgress(); // Steprant 2.1.1-D: the read pointer write-back is visible
         }
     }
 
@@ -838,6 +839,7 @@ namespace gpu
             ctx.ppcContext.r3.u64 = 0;
             ctx.ppcContext.r4.u64 = registration.userData;
             g_memory.FindFunction(registration.callback)(ctx.ppcContext, g_memory.base);
+            gpu_progress::Publish(); // Steprant 2.1.1-D: what the handler wrote is visible
             if (g_swapCount >= 110 && (uint32_t(blk[0]) != b0 || uint32_t(blk[1]) != b1))
                 LOG_VERBOSE("vblank isr changed block [{:#x} {:#x}] -> [{:#x} {:#x}] (swap #{})", b0, b1, uint32_t(blk[0]), uint32_t(blk[1]), g_swapCount.load());
         }
@@ -889,6 +891,7 @@ namespace gpu
                 LOG_VERBOSE("isr source={} cpu={} block=[{:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]", item.source, item.cpu,
                     uint32_t(blk[0]), uint32_t(blk[1]), uint32_t(blk[2]), uint32_t(blk[3]), uint32_t(blk[4]), uint32_t(blk[5]));
             g_memory.FindFunction(registration.callback)(ctx.ppcContext, g_memory.base);
+            gpu_progress::Publish(); // Steprant 2.1.1-D: what the handler wrote is visible
             {
                 std::lock_guard lock(m_waitProgressMutex);
                 m_interruptsCompleted.fetch_add(1, std::memory_order_release);
@@ -928,7 +931,9 @@ namespace gpu
             (readIndex * 4) % m_primaryBufferSize, (writeIndex * 4) % m_primaryBufferSize, true };
         while (reader.ReadCount() && m_running)
         {
-            if (!ExecutePacket(reader))
+            const bool executed = ExecutePacket(reader);
+            PublishProgress(); // Steprant 2.1.1-D: after the packet's writes
+            if (!executed)
             {
                 LOG_ERROR("primary ring buffer: bad packet at dword {}", reader.readOffset / 4);
                 break;
@@ -956,7 +961,9 @@ namespace gpu
         Reader reader{ TranslatePhysical(physicalAddress), dwordCount * 4, 0, dwordCount * 4, false };
         while (reader.ReadCount() && m_running)
         {
-            if (!ExecutePacket(reader))
+            const bool executed = ExecutePacket(reader);
+            PublishProgress(); // Steprant 2.1.1-D: after the packet's writes
+            if (!executed)
             {
                 LOG_ERROR("indirect buffer {:#x}: bad packet at dword {}", physicalAddress, reader.readOffset / 4);
                 return false;

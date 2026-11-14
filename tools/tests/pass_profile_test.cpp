@@ -96,6 +96,7 @@ int main()
         frame.replayNs[size_t(Kind::Other)] = 0; frame.replayCmds[size_t(Kind::Other)] = 0;
         frame.replayDriverDrawNs = 900'000; frame.replayPassBeginNs = 400'000; frame.replayPassBegins = 66;
         frame.replayPassEndNs = 250'000; frame.replayPassEnds = 66;
+        frame.replayRepeatedSetBinds = 4000;
         replay.Add(frame, true);
         replay.Add(frame, true);
         assert(replay.HasReplayTiming());
@@ -103,7 +104,7 @@ int main()
         std::printf("%s\n", line.c_str());
         assert(line.rfind("frame graph replay: frames=2 per_frame_ms: total=2.00 analyze=0.20 |", 0) == 0);
         assert(line.find(" draw=1.50/450 pipeline=0.00/0 sets=0.00/0 push=0.30/480 ") != std::string::npos);
-        assert(line.find(" other=0.00/0 | driver_ms: draws=0.90 pass_begin=0.40/66.0 pass_end=0.25/66.0") != std::string::npos);
+        assert(line.find(" other=0.00/0 | driver_ms: draws=0.90 pass_begin=0.40/66.0 pass_end=0.25/66.0 | repeated_set_binds=4000") != std::string::npos);
         assert(!gpu::pass_profile::Summary().HasReplayTiming());
 
         Reporter timed, untimed;

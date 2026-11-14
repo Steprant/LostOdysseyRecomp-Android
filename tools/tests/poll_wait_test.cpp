@@ -5,6 +5,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <thread>
+#include <chrono>
+#include <utility>
 
 int main()
 {
@@ -113,4 +116,73 @@ int main()
     auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();
     assert(elapsed<1000); // Detect unbounded waits, not a scheduler latency promise.
     std::cout << "PASS poll result/reset/nesting/thread isolation/timer failure/progress/stop " << elapsed << "ms\n";
+
+    // Steprant 2.1.1-D: GpuPoll sleeps until the command processor publishes.
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> sleeps; // (seen, us)
+        bool sleepResult = true;
+        auto sleep = [&](uint32_t seen, uint32_t us) { sleeps.push_back({seen, us}); return sleepResult; };
+        delays.clear();
+        assert(!GpuPollResult(1, 5u, fake, sleep) && sleeps.empty()); // outside the wait: nothing
+        {
+            Scope outer(Kind::GpuPoll);
+            for (uint32_t i = 0; i < gpu_progress::kFreePolls; ++i) assert(!GpuPollResult(1, 5u, fake, sleep));
+            assert(sleeps.empty() && delays.empty());
+            assert(!GpuPollResult(1, 6u, fake, sleep));
+            assert(sleeps.size() == 1 && sleeps.back() == std::make_pair(6u, gpu_progress::kWaitUs));
+            for (int i = 0; i < 1000; ++i) GpuPollResult(1, 7u, fake, sleep);
+            assert(sleeps.size() == 1001 && delays.empty() && gpuPoll.polls == 65);
+            // Done after a wake: nothing to note, the next wait starts afresh.
+            const uint64_t before = gpu_progress::g_stats.unannounced.load();
+            assert(!GpuPollResult(0, 7u, fake, sleep));
+            assert(gpuPoll.polls == 0 && !gpuPoll.timedOut && gpu_progress::g_stats.unannounced.load() == before);
+            // Done after a sleep that ran to its limit while publishes moved the
+            // generation: announced, not counted.
+            sleepResult = false;
+            for (uint32_t i = 0; i <= gpu_progress::kFreePolls; ++i) GpuPollResult(1, gpu_progress::Generation(), fake, sleep);
+            assert(gpuPoll.timedOut);
+            gpu_progress::Publish();
+            assert(!GpuPollResult(0, gpu_progress::Generation(), fake, sleep));
+            assert(gpu_progress::g_stats.unannounced.load() == before);
+        }
+        assert(!gpuPoll.active && gpuPoll.polls == 0);
+
+        // The real sleep: woken by a publish well before its limit, and the
+        // limit when nothing publishes.
+        {
+            const uint32_t seen = gpu_progress::Generation();
+            std::thread publisher([] { std::this_thread::sleep_for(std::chrono::microseconds(300)); gpu_progress::Publish(); });
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool moved = gpu_progress::WaitPast(seen, gpu_progress::kWaitUs);
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+            publisher.join();
+            assert(moved == gpu_progress::kSupported);
+            if (gpu_progress::kSupported) assert(us < 1900);
+            const uint32_t still = gpu_progress::Generation();
+            const auto t1 = std::chrono::steady_clock::now();
+            assert(!gpu_progress::WaitPast(still, 1000));
+            const auto limit = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t1).count();
+            assert(limit >= 900 && limit < 200000);
+            std::cout << "gpu progress: woken after " << us << " us by a publish at 300 us; limit 1000 us took " << limit << " us\n";
+        }
+
+        // Completions nobody announced: after kUnannouncedLimit the back-off
+        // returns to timed polling for good (the legacy 50 us pauses).
+        if (gpu_progress::Enabled())
+        {
+            Scope outer(Kind::GpuPoll);
+            sleepResult = false;
+            bool fellBack = false;
+            for (uint32_t n = 0; n < gpu_progress::kUnannouncedLimit && !fellBack; ++n)
+            {
+                for (uint32_t i = 0; i <= gpu_progress::kFreePolls; ++i) GpuPollResult(1, gpu_progress::Generation(), fake, sleep);
+                fellBack = GpuPollResult(0, gpu_progress::Generation(), fake, sleep);
+            }
+            assert(fellBack && !gpu_progress::Enabled());
+            delays.clear();
+            for (int i = 0; i < 33; ++i) GpuPollResult(1, gpu_progress::Generation(), fake, sleep);
+            assert(!delays.empty() && delays.back() == 50); // timed polling again
+        }
+        std::cout << "PASS gpu progress sleep, wake, limit and fall-back\n";
+    }
 }

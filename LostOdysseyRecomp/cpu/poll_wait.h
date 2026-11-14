@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <thread>
 #include <utility>
+#include <gpu/gpu_progress.h>
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -25,6 +26,10 @@ namespace poll_wait
     {
         bool active = false;
         uint32_t polls = 0;
+        // Steprant 2.1.1-D (GpuPoll): the last sleep ended on its time limit,
+        // and the generation it waited past.
+        bool timedOut = false;
+        uint32_t timedOutSeen = 0;
 
         uint32_t NextDelayUs()
         {
@@ -141,5 +146,40 @@ namespace poll_wait
             if (us) wait(us);
         }
         else gpuPoll.polls = 0;
+    }
+
+    // Steprant 2.1.1-D: `seen` is gpu_progress::Generation() read before the
+    // poll. While the poll says pending (1), after kFreePolls polls the thread
+    // sleeps until the command processor publishes progress or kWaitUs. With
+    // gpu_progress off (or fallen back) this is the timed back-off below.
+    // Returns true when this call turned gpu_progress back to timed polling.
+    template<class Wait = decltype(&Pause), class Sleep = decltype(&gpu_progress::WaitPast)>
+    bool GpuPollResult(int32_t result, uint32_t seen, Wait wait = &Pause, Sleep sleep = &gpu_progress::WaitPast)
+    {
+        if (!gpuPoll.active) return false;
+        if (result == 1)
+        {
+            if (!gpu_progress::Enabled())
+            {
+                GpuPollResult(result, wait);
+                return false;
+            }
+            if (gpuPoll.polls < 65) ++gpuPoll.polls;
+            if (gpuPoll.polls <= gpu_progress::kFreePolls) return false;
+            gpuPoll.timedOut = !sleep(seen, gpu_progress::kWaitUs);
+            gpuPoll.timedOutSeen = seen;
+            return false;
+        }
+        bool fellBack = false;
+        if (gpuPoll.timedOut && gpu_progress::Enabled() && gpu_progress::Generation() == gpuPoll.timedOutSeen)
+        {
+            // Completed with no publish since the sleep began: a publish may
+            // trail its write by a moment, so look once more.
+            std::this_thread::yield();
+            if (gpu_progress::Generation() == gpuPoll.timedOutSeen) fellBack = gpu_progress::NoteUnannounced();
+        }
+        gpuPoll.timedOut = false;
+        gpuPoll.polls = 0;
+        return fellBack;
     }
 }

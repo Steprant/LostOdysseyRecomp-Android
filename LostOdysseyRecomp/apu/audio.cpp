@@ -877,8 +877,14 @@ namespace apu
             {
                 // Guest order: FL, FR, FC, LFE, BL, BR. Include center dialogue
                 // and rear effects in the stereo fold-down, with headroom.
-                left = (channel[0] + 0.7071f * (channel[2] + channel[4]) + 0.5f * channel[3]) * 0.5f;
-                right = (channel[1] + 0.7071f * (channel[2] + channel[5]) + 0.5f * channel[3]) * 0.5f;
+                // Steprant 2.1.1-D: dialogue forward. The game's voices are the
+                // mono FC track (patches/voice_volume.cpp); with the usual
+                // -3 dB centre and -3 dB rears, music spread over the front and
+                // rear speakers came out well above the voices in stereo (15/11,
+                // dialogues advanced with A). Centre at 0 dB and rears at -6 dB:
+                // voices +3 dB, rear content -3 dB; same total headroom.
+                left = (channel[0] + channel[2] + 0.5f * channel[4] + 0.5f * channel[3]) * 0.5f;
+                right = (channel[1] + channel[2] + 0.5f * channel[5] + 0.5f * channel[3]) * 0.5f;
             }
             stereo[i * 2] = std::clamp(left, -1.0f, 1.0f);
             stereo[i * 2 + 1] = std::clamp(right, -1.0f, 1.0f);

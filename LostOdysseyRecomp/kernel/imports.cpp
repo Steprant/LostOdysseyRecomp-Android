@@ -352,6 +352,28 @@ std::string TakeImportLine(double seconds)
         out += fmt::format(" | cs_poll_waits={} woken={} at_limit={} wait_ms={:.1f}{}", waits, woken, timeouts, waitNs / 1e6,
             cs_poll_wait::Enabled() ? "" : " (off)");
     }
+    // Steprant 2.1.1-D: multi-object waits (each wakes only on its own
+    // objects now) and their wakeups, per second since the previous line.
+    {
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        const double span = std::max(1e-3, std::chrono::duration<double>(now - last).count());
+        last = now;
+        const uint64_t waits = kernel::wait::g_multipleWaits.exchange(0, std::memory_order_relaxed);
+        const uint64_t wakes = kernel::wait::g_multipleWakes.exchange(0, std::memory_order_relaxed);
+        out += fmt::format(" | multi_waits_per_s={:.0f} multi_wakes_per_s={:.0f}", waits / span, wakes / span);
+        // Steprant 2.1.1-D: waits for the GPU that slept until the command
+        // processor published progress (gpu/gpu_progress.h).
+        auto& gp = gpu_progress::g_stats;
+        const uint64_t sleeps = gp.sleeps.exchange(0, std::memory_order_relaxed);
+        const uint64_t woken = gp.woken.exchange(0, std::memory_order_relaxed);
+        const uint64_t atLimit = gp.atLimit.exchange(0, std::memory_order_relaxed);
+        const uint64_t publishes = gp.publishes.exchange(0, std::memory_order_relaxed);
+        const uint64_t wakeCalls = gp.wakeCalls.exchange(0, std::memory_order_relaxed);
+        out += fmt::format(" | gpu_wait_sleeps_per_s={:.0f} woken={:.0f} at_limit={:.0f} publishes_per_s={:.0f} wake_calls_per_s={:.0f} unannounced={}{}",
+            sleeps / span, woken / span, atLimit / span, publishes / span, wakeCalls / span, gp.unannounced.load(std::memory_order_relaxed),
+            !gpu_progress::Configured() ? " (off)" : gpu_progress::g_fallback.load() ? " (fell back to timed polling)" : "");
+    }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)
         out += fmt::format(" tid={:#x} host={} calls_per_s={:.0f} last={} lr={:#x};", threads[i].tid, threads[i].host,

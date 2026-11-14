@@ -1,4 +1,5 @@
 #pragma once
+#include "gpu_progress.h"
 #include <chrono>
 
 #include <atomic>
@@ -100,6 +101,9 @@ namespace gpu
         void AdvanceSyncEpoch(SyncSource source)
         {
             m_syncEpoch.fetch_add(1, std::memory_order_relaxed);
+            // Steprant 2.1.1-D: published to GPU waiters once the packet (or
+            // batch) that made it is done, after its writes (gpu_progress.h).
+            m_publishPending.store(true, std::memory_order_relaxed);
             if (m_countSyncSources) [[unlikely]]
                 m_syncSources[uint32_t(source)].fetch_add(1, std::memory_order_relaxed);
         }
@@ -208,6 +212,16 @@ namespace gpu
         alignas(64) uint64_t m_commandConstantDirty[2]{};
         std::atomic<uint64_t> m_constantDirty[2]{};
         std::atomic<uint64_t> m_syncEpoch{1};
+        std::atomic<bool> m_publishPending{false};
+    public:
+        // Steprant 2.1.1-D: wakes guest threads waiting for the GPU when a
+        // sync point was passed since the last call (gpu_progress.h).
+        void PublishProgress()
+        {
+            if (m_publishPending.load(std::memory_order_relaxed) && m_publishPending.exchange(false, std::memory_order_acq_rel))
+                gpu_progress::Publish();
+        }
+    private:
         alignas(64) std::atomic<bool> m_running{ false };
         bool m_countSyncSources = false;
         std::atomic<uint64_t> m_syncSources[uint32_t(SyncSource::Count)]{};

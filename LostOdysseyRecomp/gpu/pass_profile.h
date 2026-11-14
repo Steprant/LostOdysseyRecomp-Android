@@ -88,7 +88,7 @@ public:
     static constexpr size_t kReplayKinds = size_t(plume::RenderPassProfile::ReplayKind::Count);
     uint64_t replayNs[kReplayKinds] = {}, replayCmds[kReplayKinds] = {};
     uint64_t replayAnalyzeNs = 0, replayDriverDrawNs = 0, replayPassBeginNs = 0, replayPassEndNs = 0;
-    uint64_t replayPassBegins = 0, replayPassEnds = 0;
+    uint64_t replayPassBegins = 0, replayPassEnds = 0, replayRepeatedSetBinds = 0;
     uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
@@ -126,6 +126,7 @@ public:
         replayPassEndNs += profile.replayPassEndNs;
         replayPassBegins += profile.replayPassBegins;
         replayPassEnds += profile.replayPassEnds;
+        replayRepeatedSetBinds += profile.replayRepeatedSetBinds;
         textureCopyHazards += profile.textureCopyHazards;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
         whatIfMergeablePasses += profile.whatIfMergeablePasses;
@@ -308,8 +309,9 @@ public:
             std::snprintf(buffer, sizeof(buffer), " %s=%.2f/%.0f", names[k], ms(replayNs[k]), double(replayCmds[k]) / f);
             line += buffer;
         }
-        std::snprintf(buffer, sizeof(buffer), " | driver_ms: draws=%.2f pass_begin=%.2f/%.1f pass_end=%.2f/%.1f",
-            ms(replayDriverDrawNs), ms(replayPassBeginNs), double(replayPassBegins) / f, ms(replayPassEndNs), double(replayPassEnds) / f);
+        std::snprintf(buffer, sizeof(buffer), " | driver_ms: draws=%.2f pass_begin=%.2f/%.1f pass_end=%.2f/%.1f | repeated_set_binds=%.0f",
+            ms(replayDriverDrawNs), ms(replayPassBeginNs), double(replayPassBegins) / f, ms(replayPassEndNs), double(replayPassEnds) / f,
+            double(replayRepeatedSetBinds) / f);
         line += buffer;
         return line;
     }
