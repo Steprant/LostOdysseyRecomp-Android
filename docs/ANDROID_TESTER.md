@@ -63,7 +63,26 @@ New measurements, for the whole recording:
 - `runtime.log`, once per heavy-profiling burst: `record phases:` (where the
   GPU command thread's per-draw "record" time goes, per frame) and `guest
   imports:` (kernel import calls per second, the most called imports and the
-  threads calling them, with their last import).
+  threads calling them, with their last import). From 2.1.1-C the `guest
+  imports:` line ends with `cs_poll_waits`, `woken`, `at_limit` and
+  `wait_ms`: how often a thread that kept polling an unchanged critical
+  section slept until another thread released it (see below).
+- `runtime.log`, with each pass profile during a burst (2.1.1-C): `frame graph
+  replay:`, where the command thread's replay of the captured scene goes, per
+  frame: the look-ahead analysis, then for each kind of command (draw,
+  pipeline, sets, push, buffers, view_state, framebuffer, barriers, copies,
+  clears, other) milliseconds and commands, then `driver_ms`: the time inside
+  the driver's draw calls and render pass begins and ends, which are part of
+  the kinds before them.
+
+### 2.1.1-C: polling of a critical section waits
+
+A guest thread that keeps calling `RtlTryEnterCriticalSection` on a critical
+section it released itself, while no other thread has released it since,
+cannot see anything new under that lock. After 32 such polls in a row the
+thread sleeps until another thread releases that critical section, at most
+0.5 ms, so changes made outside the lock are still seen within that time.
+A lock the thread already owns never waits. `LO_CS_POLL_WAIT=0` turns it off.
 
 Slow-interval windows (`events/`) are again saved for slow intervals. Since
 2.0 they were triggered by the line's last column, which had become

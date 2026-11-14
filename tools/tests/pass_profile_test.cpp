@@ -56,9 +56,10 @@ int main()
     Reporter reporter;
     const auto t0 = std::chrono::steady_clock::time_point(std::chrono::seconds(100));
     assert(reporter.Add(scene, false, t0).empty());
-    assert(reporter.Add(present, true, t0 + std::chrono::seconds(5)).empty());
+    // One frame a second: under the 2 s gap that starts a new window (2.1.1).
+    for (int second = 1; second <= 9; ++second) assert(reporter.Add(present, true, t0 + std::chrono::seconds(second)).empty());
     {
-        const std::string window = reporter.Add(present, true, t0 + std::chrono::seconds(11));
+        const std::string window = reporter.Add(present, true, t0 + std::chrono::seconds(10));
         assert(!window.empty());
         // Two lines: gpu passes, then the frame graph what-if (WP1 stage 1a).
         const auto newline = window.find('\n');
@@ -82,6 +83,43 @@ int main()
         std::printf("%s\n", line.c_str());
         assert(line.find("dead_store_mb=2.0 merge_passes=1.0 merge_mb=2.0 savable_mb=4.0") != std::string::npos);
         assert(line.find("diag_discarded_stores=3.0 diag_discarded_mb=3.0") != std::string::npos);
+    }
+    {
+        // Steprant 2.1.1-C: the replay breakdown, per frame, and its line in
+        // the reporting window only when the replays were timed.
+        using Kind = plume::RenderPassProfile::ReplayKind;
+        gpu::pass_profile::Summary replay;
+        plume::RenderPassProfile frame;
+        frame.replayAnalyzeNs = 200'000;
+        frame.replayNs[size_t(Kind::Draw)] = 1'500'000; frame.replayCmds[size_t(Kind::Draw)] = 450;
+        frame.replayNs[size_t(Kind::Push)] = 300'000; frame.replayCmds[size_t(Kind::Push)] = 480;
+        frame.replayNs[size_t(Kind::Other)] = 0; frame.replayCmds[size_t(Kind::Other)] = 0;
+        frame.replayDriverDrawNs = 900'000; frame.replayPassBeginNs = 400'000; frame.replayPassBegins = 66;
+        frame.replayPassEndNs = 250'000; frame.replayPassEnds = 66;
+        replay.Add(frame, true);
+        replay.Add(frame, true);
+        assert(replay.HasReplayTiming());
+        const std::string line = replay.FormatReplay();
+        std::printf("%s\n", line.c_str());
+        assert(line.rfind("frame graph replay: frames=2 per_frame_ms: total=2.00 analyze=0.20 |", 0) == 0);
+        assert(line.find(" draw=1.50/450 pipeline=0.00/0 sets=0.00/0 push=0.30/480 ") != std::string::npos);
+        assert(line.find(" other=0.00/0 | driver_ms: draws=0.90 pass_begin=0.40/66.0 pass_end=0.25/66.0") != std::string::npos);
+        assert(!gpu::pass_profile::Summary().HasReplayTiming());
+
+        Reporter timed, untimed;
+        const auto t1 = std::chrono::steady_clock::time_point(std::chrono::seconds(500));
+        for (int second = 0; second <= 9; ++second) {
+            assert(timed.Add(frame, true, t1 + std::chrono::seconds(second)).empty());
+            assert(untimed.Add(present, true, t1 + std::chrono::seconds(second)).empty());
+        }
+        const std::string window = timed.Add(frame, true, t1 + std::chrono::seconds(10));
+        assert(window.find("\nframe graph what-if: ") != std::string::npos);
+        assert(window.find("\nframe graph replay: frames=11 ") != std::string::npos);
+        // Untimed windows keep their two lines.
+        const std::string plain = untimed.Add(present, true, t1 + std::chrono::seconds(10));
+        assert(!plain.empty() && plain.find("frame graph replay") == std::string::npos);
+        // A gap over 2 s drops the open window: the next line starts after it.
+        assert(timed.Add(frame, true, t1 + std::chrono::seconds(14)).empty());
     }
     std::printf("PASS pass profile summary and reporting window\n");
 }

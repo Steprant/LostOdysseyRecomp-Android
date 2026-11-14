@@ -84,6 +84,11 @@ public:
     uint64_t copiesDeferred = 0, deferredFlushedEarly = 0, deferredEarlyReasons[5] = {};
     uint64_t textureCopiesDeferred = 0, textureCopyHazards = 0; // SR4 G-2
     uint64_t frameGraphCommands = 0, frameGraphReplays = 0, frameGraphDeadStores = 0, frameGraphDeadStoreBytes = 0; // SR4 G-2 1b/1c
+    // Steprant 2.1.1-C: the CPU time of the frame graph replays, by kind.
+    static constexpr size_t kReplayKinds = size_t(plume::RenderPassProfile::ReplayKind::Count);
+    uint64_t replayNs[kReplayKinds] = {}, replayCmds[kReplayKinds] = {};
+    uint64_t replayAnalyzeNs = 0, replayDriverDrawNs = 0, replayPassBeginNs = 0, replayPassEndNs = 0;
+    uint64_t replayPassBegins = 0, replayPassEnds = 0;
     uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
@@ -114,6 +119,13 @@ public:
         frameGraphReplays += profile.frameGraphReplays;
         frameGraphDeadStores += profile.frameGraphDeadStores;
         frameGraphDeadStoreBytes += profile.frameGraphDeadStoreBytes;
+        for (size_t k = 0; k < kReplayKinds; ++k) { replayNs[k] += profile.replayNs[k]; replayCmds[k] += profile.replayCmds[k]; }
+        replayAnalyzeNs += profile.replayAnalyzeNs;
+        replayDriverDrawNs += profile.replayDriverDrawNs;
+        replayPassBeginNs += profile.replayPassBeginNs;
+        replayPassEndNs += profile.replayPassEndNs;
+        replayPassBegins += profile.replayPassBegins;
+        replayPassEnds += profile.replayPassEnds;
         textureCopyHazards += profile.textureCopyHazards;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
         whatIfMergeablePasses += profile.whatIfMergeablePasses;
@@ -267,6 +279,41 @@ public:
             double(frameGraphReplays) / f, double(frameGraphDeadStores) / f, mb(frameGraphDeadStoreBytes));
         return buffer;
     }
+    // Steprant 2.1.1-C: where the replays of the frame graph spend the CPU
+    // time of the command thread, per frame. Each kind: milliseconds, then
+    // commands replayed. driver_ms: the time inside the driver calls of the
+    // draws and of the render pass begins and ends, a part of the kinds above
+    // (a pass begins inside the draw or clear that needs it, and ends inside
+    // the framebuffer change, barrier or copy that closes it).
+    bool HasReplayTiming() const
+    {
+        if (replayAnalyzeNs != 0) return true;
+        for (size_t k = 0; k < kReplayKinds; ++k) if (replayCmds[k] != 0) return true;
+        return false;
+    }
+    std::string FormatReplay() const
+    {
+        static constexpr const char* names[kReplayKinds] = {
+            "draw", "pipeline", "sets", "push", "buffers", "view_state", "framebuffer", "barriers", "copies", "clears", "other" };
+        const double f = double(std::max<uint64_t>(frames, 1));
+        auto ms = [&](uint64_t ns) { return double(ns) / 1e6 / f; };
+        uint64_t total = replayAnalyzeNs;
+        for (size_t k = 0; k < kReplayKinds; ++k) total += replayNs[k];
+        char buffer[160];
+        std::snprintf(buffer, sizeof(buffer), "frame graph replay: frames=%llu per_frame_ms: total=%.2f analyze=%.2f |",
+            static_cast<unsigned long long>(frames), ms(total), ms(replayAnalyzeNs));
+        std::string line = buffer;
+        for (size_t k = 0; k < kReplayKinds; ++k)
+        {
+            std::snprintf(buffer, sizeof(buffer), " %s=%.2f/%.0f", names[k], ms(replayNs[k]), double(replayCmds[k]) / f);
+            line += buffer;
+        }
+        std::snprintf(buffer, sizeof(buffer), " | driver_ms: draws=%.2f pass_begin=%.2f/%.1f pass_end=%.2f/%.1f",
+            ms(replayDriverDrawNs), ms(replayPassBeginNs), double(replayPassBegins) / f, ms(replayPassEndNs), double(replayPassEnds) / f);
+        line += buffer;
+        return line;
+    }
+
     uint64_t PassCount() const
     {
         uint64_t passes = 0;
@@ -346,6 +393,8 @@ public:
         // Two lines: the pass profile, then the frame graph what-if (WP1 1a).
         std::string line = summary.Format() + TakeFormatDraws(double(summary.frames)) + TakeFormatCmdproc() +
             "\n" + summary.FormatWhatIf();
+        // Steprant 2.1.1-C: a third line when the replays were timed.
+        if (summary.HasReplayTiming()) line += "\n" + summary.FormatReplay();
         summary = Summary();
         windowStart = now;
         return line;

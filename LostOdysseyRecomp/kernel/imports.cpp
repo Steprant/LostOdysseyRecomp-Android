@@ -342,6 +342,16 @@ std::string TakeImportLine(double seconds)
     std::string out = fmt::format("guest imports: seconds={:.1f} calls_per_s={:.0f} top:", seconds, total / seconds);
     for (size_t i = 0; i < imports.size() && i < 14; ++i)
         out += fmt::format(" {}={:.0f}", imports[i].second, imports[i].first / seconds);
+    // Steprant 2.1.1-C: lock polls turned into waits since the previous line.
+    {
+        auto& st = cs_poll_wait::g_stats;
+        const uint64_t waits = st.waits.exchange(0, std::memory_order_relaxed);
+        const uint64_t woken = st.woken.exchange(0, std::memory_order_relaxed);
+        const uint64_t timeouts = st.timeouts.exchange(0, std::memory_order_relaxed);
+        const uint64_t waitNs = st.waitNs.exchange(0, std::memory_order_relaxed);
+        out += fmt::format(" | cs_poll_waits={} woken={} at_limit={} wait_ms={:.1f}{}", waits, woken, timeouts, waitNs / 1e6,
+            cs_poll_wait::Enabled() ? "" : " (off)");
+    }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)
         out += fmt::format(" tid={:#x} host={} calls_per_s={:.0f} last={} lr={:#x};", threads[i].tid, threads[i].host,
