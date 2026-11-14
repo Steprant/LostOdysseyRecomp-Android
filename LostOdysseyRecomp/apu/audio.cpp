@@ -4,6 +4,7 @@
 #include "audio_worker_priority.h"
 #include <diagnostics/stall_sampler.h>
 #include "audio_queue_refill.h"
+#include "audio_reserve_boost.h"
 #include "audio_lag_recovery.h"
 #include <gpu/present_clock.h>
 #include <string_view>
@@ -71,6 +72,12 @@ namespace apu
         // (or LO_AUDIO_RESERVE_FRAMES). Read once per driver period.
         std::atomic<uint32_t> g_reserveFrames{ kQueuedFrames };
         std::atomic<bool> g_reserveFromEnvironment{ false };
+        // Steprant 2.1.1 (audio_reserve_boost.h): the reserve the driver keeps
+        // now, g_reserveFrames or a temporary larger one. The policy itself
+        // lives on the driver thread; this copy is for the other readers.
+        std::atomic<uint32_t> g_effectiveReserve{ kQueuedFrames };
+        // Longest guest callback since the driver last updated the reserve.
+        std::atomic<uint32_t> g_periodCallbackMs{ 0 };
         // Driver timing peaks per report period, for the next device logs:
         // how late PreciseSleepUntil woke and the longest guest callback.
         detail::PeakMicros g_wakeLate;
@@ -245,7 +252,7 @@ namespace apu
             const uint32_t queued = std::max(0, SDL_GetAudioStreamQueued(g_stream)) / FrameBytes();
             // The device may drain during our last sleep. Never close a working
             // AAudio stream because an older resume exceeded the timeout.
-            if (queued < g_reserveFrames.load(std::memory_order_relaxed)) return;
+            if (queued < g_effectiveReserve.load(std::memory_order_relaxed)) return;
             // Lost to a pause that began meanwhile, or to a newer resume.
             if (!g_resumedAt.compare_exchange_strong(resumed, 0)) return;
             LOG_WARNING("audio: device not draining {} ms after resume (queued {}), reopened",
@@ -307,6 +314,8 @@ namespace apu
         {
             std::mutex mutex;
             std::atomic<bool> attached{ false };
+            // Steprant 2.1.1: the guest callback waited (driver thread sets it).
+            std::atomic<bool> callbackWaited{ false };
             int threadId = 0;
             clockid_t cpuClock{};
             worker_priority::Policy policy;
@@ -361,6 +370,13 @@ namespace apu
             w.attached.store(false, std::memory_order_release);
             w.threadId = 0;
         }
+        // Driver thread: a guest audio callback ran for kCallbackWaitMs or
+        // more. The callback waits for the worker (see the hook below).
+        void NoteWorkerCallbackWait()
+        {
+            auto& w = GetWorkerPriority();
+            if (w.attached.load(std::memory_order_relaxed)) w.callbackWaited.store(true, std::memory_order_relaxed);
+        }
         // On the audio driver thread, once a period: one load and, every
         // 250 ms, one clock read.
         void SampleWorkerPriority()
@@ -372,6 +388,7 @@ namespace apu
             std::unique_lock lock(w.mutex, std::try_to_lock);
             if (!lock.owns_lock() || !w.attached.load(std::memory_order_relaxed)) return;
             w.nextSample = now + std::chrono::milliseconds(250);
+            if (w.callbackWaited.exchange(false, std::memory_order_relaxed)) w.policy.NoteCallbackWait();
             timespec cpu{};
             if (clock_gettime(w.cpuClock, &cpu) != 0) {
                 // The thread ended without returning through its entry.
@@ -388,8 +405,9 @@ namespace apu
                 ApplyWorkerLevel(w, decision.level);
                 if (w.logged < 32) {
                     ++w.logged;
-                    LOG_INFO("audio: game audio worker thread busy={:.1f}% of a core -> {} priority (windows={} busy_max={:.1f}%)",
-                        decision.busyPermille / 10.0, worker_priority::Name(decision.level), w.windows, w.busyPermilleMax / 10.0);
+                    LOG_INFO("audio: game audio worker thread busy={:.1f}% of a core -> {} priority (windows={} busy_max={:.1f}%{})",
+                        decision.busyPermille / 10.0, worker_priority::Name(decision.level), w.windows, w.busyPermilleMax / 10.0,
+                        decision.callbackWaited ? ", the audio callback waited for it" : "");
                 }
             } else if (w.windows == 150) {
                 // Five minutes in: what the thread does, once.
@@ -418,21 +436,54 @@ namespace apu
             uint32_t pauseChangesSeen = g_pauseChanges.load(std::memory_order_relaxed);
             uint32_t deviceOpensSeen = g_deviceOpens.load(std::memory_order_relaxed);
             uint32_t reserveSeen = g_reserveFrames.load(std::memory_order_relaxed);
+#if LO_PLATFORM_ANDROID
+            detail::ReserveBoost reserveBoost;
+            uint32_t reserveLines = 0;
+#endif
             const auto wallFrames = [&] {
                 return std::chrono::duration<double>(std::chrono::steady_clock::now() - origin) / framePeriod;
             };
             const auto heardFrames = [&] { return guestFramesRun - int64_t(QueuedFrames()); };
             while (g_running)
             {
-                const uint32_t reserve = g_reserveFrames.load(std::memory_order_relaxed);
+                // Steprant 2.0.8: the picture is frozen (a load, a shader
+                // compile): picture and audio stop together, nothing to repay.
+                const bool pictureFrozen = gpu::present_clock::PictureFrozen(gpu::present_clock::NowNs());
+                uint32_t reserve = g_reserveFrames.load(std::memory_order_relaxed);
+#if LO_PLATFORM_ANDROID
+                // Steprant 2.1.1: a longer reserve while there is a risk of
+                // running dry (audio_reserve_boost.h).
+                {
+                    const uint64_t nowNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+                    const auto boost = reserveBoost.Update(nowNs, reserve, g_starved.load(std::memory_order_relaxed),
+                        g_periodCallbackMs.exchange(0, std::memory_order_relaxed), pictureFrozen);
+                    const uint32_t previous = g_effectiveReserve.load(std::memory_order_relaxed);
+                    reserve = boost.frames;
+                    if (boost.changed && reserveLines < 64)
+                    {
+                        if (reserve > previous && boost.reason != detail::ReserveBoost::Reason::None)
+                        {
+                            ++reserveLines;
+                            LOG_INFO("audio buffering: reserve {} frames ({:.1f} ms) for at least {:.0f} s, reason: {} (starved={})",
+                                reserve, FrameMs(reserve), detail::ReserveBoost::kHoldNs / 1e9,
+                                detail::ReserveBoost::Name(boost.reason), g_starved.load(std::memory_order_relaxed));
+                        }
+                        else if (reserve < previous && !reserveBoost.Boosted() && reserve == g_reserveFrames.load(std::memory_order_relaxed))
+                        {
+                            ++reserveLines;
+                            LOG_INFO("audio buffering: reserve back to {} frames ({:.1f} ms)", reserve, FrameMs(reserve));
+                        }
+                    }
+                }
+#endif
+                g_effectiveReserve.store(reserve, std::memory_order_relaxed);
                 // A pause or a trip to the background, a reopened device or a
                 // new reserve since the previous period: start measuring again.
                 const uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
                 const uint32_t deviceOpens = g_deviceOpens.load(std::memory_order_relaxed);
                 bool rebase = pauseChanges != pauseChangesSeen || deviceOpens != deviceOpensSeen || reserve != reserveSeen;
-                // Steprant 2.0.8: the picture is frozen (a load, a shader
-                // compile): picture and audio stop together, nothing to repay.
-                if (gpu::present_clock::PictureFrozen(gpu::present_clock::NowNs())) rebase = true;
+                if (pictureFrozen) rebase = true;
                 pauseChangesSeen = pauseChanges;
                 deviceOpensSeen = deviceOpens;
                 reserveSeen = reserve;
@@ -493,6 +544,17 @@ namespace apu
                                 // on 9/11): a pause, not a stall.
                                 if (g_pauseChanges.load(std::memory_order_relaxed) != pauseChanges) return;
                                 g_callbackPeak.Record(elapsed);
+                                // Steprant 2.1.1: the reserve and the game's audio
+                                // worker priority react to long callbacks.
+                                {
+                                    const auto callbackMs = uint32_t(std::min<int64_t>(UINT32_MAX,
+                                        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+                                    uint32_t seen = g_periodCallbackMs.load(std::memory_order_relaxed);
+                                    while (callbackMs > seen && !g_periodCallbackMs.compare_exchange_weak(seen, callbackMs, std::memory_order_relaxed)) {}
+#if LO_PLATFORM_ANDROID
+                                    if (callbackMs >= worker_priority::kCallbackWaitMs) NoteWorkerCallbackWait();
+#endif
+                                }
                                 // Steprant 2.0 WP3.8: a guest audio callback over 50 ms
                                 // (705 ms in the Great Gate cutscene of 8/11) stops the
                                 // queue. Say where it was: the XMA lock waits and holds
@@ -507,7 +569,7 @@ namespace apu
                                     LOG_WARNING("audio callback stall: {} ms xma_wait_max_us={} xma_wait_audio_max_us={} xma_hold_max_us={} "
                                         "xma_contended_audio={} last_file='{}' reserve_frames={}",
                                         ms, lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs,
-                                        lock.contendedLatencySensitive, FileSystem::LastOpenedFile(), g_reserveFrames.load(std::memory_order_relaxed));
+                                        lock.contendedLatencySensitive, FileSystem::LastOpenedFile(), g_effectiveReserve.load(std::memory_order_relaxed));
                                 }
                             }
                         } recordCallback{ callbackStart };
@@ -619,6 +681,7 @@ namespace apu
             g_reserveFrames = detail::ReserveFrames(uint32_t(atoi(reserve)), kQueuedFrames);
             g_reserveFromEnvironment = true;
         }
+        g_effectiveReserve = g_reserveFrames.load();
         LOG_INFO("audio buffering: reserve {} frames ({:.1f} ms), device {} sample frames{}",
             g_reserveFrames.load(), g_reserveFrames.load() * 1000.0 * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ,
             sampleFrames, g_reserveFromEnvironment ? " (LO_AUDIO_RESERVE_FRAMES)" : "");
@@ -856,7 +919,7 @@ namespace apu
                 if (before == 0 && n > 1) g_starved.fetch_add(1, std::memory_order_relaxed);
                 // Safety cap above the reserve; never reached while the driver
                 // paces production against the reserve.
-                if (before < int(FrameBytes() * (g_reserveFrames.load(std::memory_order_relaxed) + 8)))
+                if (before < int(FrameBytes() * (g_effectiveReserve.load(std::memory_order_relaxed) + 8)))
                 {
                     if (!SDL_PutAudioStreamData(g_stream, data, int(FrameBytes()))) ++queueErrors;
                 }
@@ -874,7 +937,7 @@ namespace apu
                 " resync_stalls={} resync_pending_ms={:.1f} resync_repaid_ms={:.1f} resync_max_ms={:.1f} resync_abandoned={}",
                 n, peak, queued, mute, queueDrops, queueErrors, g_starved.load(std::memory_order_relaxed),
                 g_clockResets.load(std::memory_order_relaxed), g_refillFrames.load(std::memory_order_relaxed),
-                g_reserveFrames.load(std::memory_order_relaxed), g_wakeLate.Take(), g_callbackPeak.Take(),
+                g_effectiveReserve.load(std::memory_order_relaxed), g_wakeLate.Take(), g_callbackPeak.Take(),
                 lock.waitMaxUs, lock.waitLatencySensitiveMaxUs, lock.holdMaxUs, lock.contendedLatencySensitive,
                 g_lagStalls.load(std::memory_order_relaxed), FrameMs(g_lagPending.load(std::memory_order_relaxed)),
                 FrameMs(g_lagRepaid.load(std::memory_order_relaxed)), FrameMs(g_lagMax.load(std::memory_order_relaxed)),

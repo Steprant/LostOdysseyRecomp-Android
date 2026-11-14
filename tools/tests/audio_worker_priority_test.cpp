@@ -67,6 +67,48 @@ int main()
         Check(!everAudio, "a thread that computes 40% of the time never runs at the audio priority");
         busy.Restart();
         Check(busy.Current() == Level::Intermediate, "restart for a new thread");
+
+        // Steprant 2.1.1: a hot phone. The worker uses 30% of a core because
+        // the cores are capped, and the audio callback waits for it.
+        Policy hot;
+        wall = 100 * s; used = 0;
+        hot.Sample(wall, used);
+        hot.NoteCallbackWait();
+        wall += 2 * s; used += 2 * s * 30 / 100;
+        d = hot.Sample(wall, used);
+        Check(d.windowClosed && d.callbackWaited && d.changed && d.level == Level::Audio,
+            "a window in which the callback waited raises the worker at once, busy or not");
+        for (uint32_t i = 0; i < kHoldWindows; ++i) {
+            wall += 2 * s; used += 2 * s * 30 / 100;
+            d = hot.Sample(wall, used);
+            Check(!d.changed && d.level == Level::Audio && d.held, "busy windows right after a wait keep the audio priority");
+        }
+        wall += 2 * s; used += 2 * s * 30 / 100;
+        d = hot.Sample(wall, used);
+        Check(d.changed && d.level == Level::Intermediate && !d.held,
+            "once the hold is used up and the callback no longer waits, a busy window lowers it as before");
+        // The hold also runs out over quiet windows: a later busy window is not
+        // protected by a wait long ago.
+        Policy quiet;
+        wall = 200 * s; used = 0;
+        quiet.Sample(wall, used);
+        quiet.NoteCallbackWait();
+        wall += 2 * s; used += 2 * s * 5 / 100;
+        d = quiet.Sample(wall, used);
+        Check(d.changed && d.level == Level::Audio, "a wait in an idle window raises it too");
+        for (uint32_t i = 0; i < kHoldWindows; ++i) { wall += 2 * s; used += 2 * s * 18 / 100; quiet.Sample(wall, used); }
+        wall += 2 * s; used += 2 * s * 60 / 100;
+        d = quiet.Sample(wall, used);
+        Check(d.changed && d.level == Level::Intermediate, "a busy window after the hold expired lowers it");
+        // A wait renews the hold.
+        Policy renewed;
+        wall = 300 * s; used = 0;
+        renewed.Sample(wall, used);
+        for (int i = 0; i < 20; ++i) {
+            renewed.NoteCallbackWait();
+            wall += 2 * s; used += 2 * s * 40 / 100;
+            Check(renewed.Sample(wall, used).level == Level::Audio, "repeated waits keep the audio priority");
+        }
         std::printf("audio worker priority: %u checks passed\n", checks);
         return 0;
     } catch (const std::exception& e) {
