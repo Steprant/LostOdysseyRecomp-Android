@@ -476,14 +476,10 @@ namespace gpu::video
                 host_ui::SetBackgrounded(true);
                 // SR4 C-4: Android may kill a backgrounded app without an exit.
                 os::pgo::Write("background");
-                // Steprant 2.1.1: Android kills the largest background apps
-                // first under memory pressure (twice on 12/11 at 2.9-3.0 GB).
-                // Give the free pages back as soon as the game is hidden
-                // instead of waiting for onTrimMemory.
-                static std::atomic<uint32_t> backgroundPurges{0};
-                const int done = PurgeAllocator(true);
-                if (backgroundPurges.fetch_add(1, std::memory_order_relaxed) < 16)
-                    LOG_INFO("memory trim: entering the background, allocator purge={}", done);
+                // Steprant 2.1.1 test build: a purge here was removed at
+                // Stefano's request (14/11): nothing is released when the
+                // game goes to the background; only Android's own low-memory
+                // signal still returns the allocator's free pages, as in 2.1.
             }
             else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
                 host_ui::SetBackgrounded(false);
