@@ -685,6 +685,21 @@ namespace gpu
         os::scheduling::PinCriticalThread(os::scheduling::CriticalThread::GpuCommands);
         auto idleStart = std::chrono::steady_clock::time_point{};
         bool timingIdle = false;
+        // Steprant 2.1.1: how long an idle wait lasts without a notification.
+        // New work, occlusion-query waits (renderer::NoteOcclusionWait) and
+        // shutdown all notify this thread, so the timeout only bounds two
+        // things: the SDL event pump between submissions, and a write
+        // pointer that reached the MMIO window without the hook (found by
+        // the mirror check below). 0.5 ms woke the thread ~2000 times a
+        // second while idle; 2 ms keeps the pump well inside a frame. Once a
+        // mirrored write is seen the 0.5 ms polling returns for the session.
+        // LO_CP_IDLE_WAIT_US overrides it (A/B tests).
+        static const auto kDefaultIdleWait = [] {
+            const char* value = getenv("LO_CP_IDLE_WAIT_US");
+            const int us = value ? atoi(value) : 2000;
+            return std::chrono::microseconds(std::clamp(us, 100, 4000));
+        }();
+        auto idleWait = kDefaultIdleWait;
         while (m_running)
         {
             uint32_t writePtr = m_writePtrIndex.load();
@@ -701,6 +716,11 @@ namespace gpu
                         LOG_INFO("swap#{} WPTR mirror {:#x} (was {:#x}, rd {:#x})", g_swapCount.load(), mirrored, writePtr, m_readPtrIndex);
                     writePtr = mirrored;
                     m_writePtrIndex = mirrored;
+                    if (idleWait > std::chrono::microseconds(500))
+                    {
+                        idleWait = std::chrono::microseconds(500);
+                        LOG_INFO("GPU command thread: write pointer seen only in the MMIO window; idle polling back to 0.5 ms");
+                    }
                 }
             }
 
@@ -714,7 +734,7 @@ namespace gpu
                 }
                 {
                     std::unique_lock lock(m_writePtrMutex);
-                    notified_wait::For(m_writePtrChanged, lock, std::chrono::microseconds(500), [&] {
+                    notified_wait::For(m_writePtrChanged, lock, idleWait, [&] {
                         return !m_running || m_writePtrIndex.load() != writePtr ||
                             m_wake.exchange(false, std::memory_order_acq_rel);
                     });

@@ -446,6 +446,22 @@ namespace gpu::video
                 SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
         }
 
+        // Hands the allocator's free pages back to Android: all of them
+        // (M_PURGE_ALL, API 34+) or the cheap pass (M_PURGE). Nothing the game
+        // uses is released. Returns mallopt's result (1: done).
+        int PurgeAllocator(bool all)
+        {
+#if defined(M_PURGE_ALL)
+            return mallopt(all ? M_PURGE_ALL : M_PURGE, 0);
+#elif defined(M_PURGE)
+            (void)all;
+            return mallopt(M_PURGE, 0);
+#else
+            (void)all;
+            return 0;
+#endif
+        }
+
         // SDL3 hands the app lifecycle events only to event watchers; they never
         // reach the event queue. SDL calls this from the Android pause handling
         // inside SDL_PumpEvents on the SDL event thread, before that thread
@@ -460,6 +476,14 @@ namespace gpu::video
                 host_ui::SetBackgrounded(true);
                 // SR4 C-4: Android may kill a backgrounded app without an exit.
                 os::pgo::Write("background");
+                // Steprant 2.1.1: Android kills the largest background apps
+                // first under memory pressure (twice on 12/11 at 2.9-3.0 GB).
+                // Give the free pages back as soon as the game is hidden
+                // instead of waiting for onTrimMemory.
+                static std::atomic<uint32_t> backgroundPurges{0};
+                const int done = PurgeAllocator(true);
+                if (backgroundPurges.fetch_add(1, std::memory_order_relaxed) < 16)
+                    LOG_INFO("memory trim: entering the background, allocator purge={}", done);
             }
             else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
                 host_ui::SetBackgrounded(false);
@@ -470,13 +494,7 @@ namespace gpu::video
                 // game uses is released.
                 static std::atomic<uint32_t> trims{0};
                 const bool hidden = host_ui::IsBackgrounded();
-#if defined(M_PURGE_ALL)
-                const int done = mallopt(hidden ? M_PURGE_ALL : M_PURGE, 0);
-#elif defined(M_PURGE)
-                const int done = mallopt(M_PURGE, 0);
-#else
-                const int done = 0;
-#endif
+                const int done = PurgeAllocator(hidden);
                 if (trims.fetch_add(1, std::memory_order_relaxed) < 32)
                     LOG_INFO("memory trim: low memory from Android, allocator purge={} hidden={}", done, hidden ? 1 : 0);
             }

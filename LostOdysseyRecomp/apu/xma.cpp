@@ -8,6 +8,7 @@
 #include <os/logger.h>
 #include <os/thread_name.h>
 #include <cmath>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #if defined(__ANDROID__)
@@ -208,6 +209,17 @@ namespace apu::xma
         int g_workBudget = 16;
         std::thread g_worker;
         std::atomic<bool> g_running{ false };
+        // Steprant 2.1.1: the worker sleeps until a kick instead of polling
+        // every 250 µs-1 ms (4.3% of a core on 14/11, mostly wakeups). Only a
+        // kick command or the worker itself (a chunk continued on the next
+        // pass) enables a context, so a kick is the only work that can
+        // arrive. g_wakeMutex is never held while taking g_mutex or a
+        // context mutex. LO_XMA_EVENT_WAKE=0 restores the polling loop.
+        std::mutex g_wakeMutex;
+        std::condition_variable g_wakeCv;
+        bool g_kickPending = false;
+        bool g_eventWake = true;
+        constexpr auto kIdleWaitLimit = std::chrono::milliseconds(20);
         std::atomic<uint32_t> g_allocatedCount{ 0 };
         bool g_trace = false;
         bool g_traceContextWrites = false;
@@ -723,7 +735,24 @@ namespace apu::xma
                     g_holdPeak.Record(std::chrono::steady_clock::now() - start);
                     didWork = true;
                 }
-                std::this_thread::sleep_for(std::chrono::microseconds(didWork ? 250 : 1000));
+                if (!g_eventWake)
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(didWork ? 250 : 1000));
+                    continue;
+                }
+                // A chunk continued on the next pass: keep the old short
+                // pause, which lets waiting commands in between chunks.
+                bool pending = false;
+                for (uint32_t id = 0; id < kContextCount && !pending; ++id)
+                    pending = g_contexts[id].enabled.load(std::memory_order_relaxed);
+                if (pending)
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(250));
+                    continue;
+                }
+                std::unique_lock wake(g_wakeMutex);
+                g_wakeCv.wait_for(wake, kIdleWaitLimit, [] { return g_kickPending || !g_running; });
+                g_kickPending = false;
             }
         }
     }
@@ -753,6 +782,11 @@ namespace apu::xma
             else ClearContext(id);
             if (g_trace) LOG_INFO("xma command: register={:#x} context={}", reg, id);
         }
+        if (first == kRegKick0 && value && g_eventWake)
+        {
+            { std::lock_guard wake(g_wakeMutex); g_kickPending = true; }
+            g_wakeCv.notify_one();
+        }
         return true;
     }
 
@@ -765,6 +799,8 @@ namespace apu::xma
         g_traceContextWrites = getenv("LO_TRACE_XMA_CONTEXT_WRITES") != nullptr;
         if (const char* budget = getenv("LO_XMA_WORK_BUDGET"))
             g_workBudget = std::max(0, atoi(budget));
+        if (const char* wake = getenv("LO_XMA_EVENT_WAKE"); wake && std::strcmp(wake, "0") == 0)
+            g_eventWake = false;
         av_log_set_callback(CaptureDecoderLog);
         g_arrayGuest = g_pageAllocator.Alloc(g_pageAllocator.physicalRegion, kContextCount * kContextSize, 0x1000);
         if (!g_arrayGuest)
@@ -788,13 +824,16 @@ namespace apu::xma
         g_running = true;
         g_worker = std::thread(WorkerMain);
         g_worker.detach();
-        LOG_INFO("xma: {} contexts at {:#x} (physical {:#x}), FFmpeg XMA frame decoder, work budget {}, {} locks", kContextCount, g_arrayGuest, g_arrayGuest & 0x1FFFFFFF,
-            g_workBudget > 0 ? std::min(g_workBudget, kUnboundedWork) : kUnboundedWork, g_contextLocks ? "per-context" : "global");
+        LOG_INFO("xma: {} contexts at {:#x} (physical {:#x}), FFmpeg XMA frame decoder, work budget {}, {} locks, {}", kContextCount, g_arrayGuest, g_arrayGuest & 0x1FFFFFFF,
+            g_workBudget > 0 ? std::min(g_workBudget, kUnboundedWork) : kUnboundedWork, g_contextLocks ? "per-context" : "global",
+            g_eventWake ? "woken by kicks" : "polling");
     }
 
     void Shutdown()
     {
         g_running = false;
+        { std::lock_guard wake(g_wakeMutex); g_kickPending = true; }
+        g_wakeCv.notify_one();
     }
 
     uint32_t AllocateContext()
