@@ -21,18 +21,23 @@ import java.util.zip.ZipOutputStream;
 
 /** Bounded, private trace files. All methods run on the collector thread. */
 final class TesterTraceFiles {
-    static final String FRAME_HEADER = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws,gpu_completed_batch_total_ns,gpu_completed_batches,audio_queue_empty_count,audio_clock_resets,xma_decode_attempts,xma_decode_failures,xma_decode_wall_total_ns,movie_guest_frames,movie_guest_pts_ms,movie_update_wall_ns,inline_pipeline_attempts,inline_pipeline_failures,inline_pipeline_wall_total_ns,last_pipeline_vs_hash,last_pipeline_ps_hash,movie_active,present_accepted,slow_interval,game_paused\n";
+    static final String FRAME_HEADER = "monotonic_ns,interval_ns,present_wall_ns,present_thread_cpu_ns,renderer_frame,draws,gpu_completed_batch_total_ns,gpu_completed_batches,audio_queue_empty_count,audio_clock_resets,xma_decode_attempts,xma_decode_failures,xma_decode_wall_total_ns,movie_guest_frames,movie_guest_pts_ms,movie_update_wall_ns,inline_pipeline_attempts,inline_pipeline_failures,inline_pipeline_wall_total_ns,last_pipeline_vs_hash,last_pipeline_ps_hash,movie_active,present_accepted,slow_interval,game_paused,profiling\n";
     static final String CPU_HEADER = "monotonic_ns,process_cpu_time_ms,process_cpu_percent_one_core,logical_processors\n";
     static final String THERMAL_HEADER = "monotonic_ns,android_thermal_status,thermal_headroom,battery_temperature_c,battery_current_ua,battery_voltage_mv,battery_plugged\n";
-    static final String THREAD_HEADER = "monotonic_ns,thread_id,name,state,thread_cpu_ticks,ticks_per_second,thread_cpu_percent_one_core\n";
+    static final String THREAD_HEADER = "monotonic_ns,thread_id,name,state,thread_cpu_ticks,ticks_per_second,thread_cpu_percent_one_core,"
+        + "sched_run_ns,sched_runqueue_wait_ns,sched_timeslices,runqueue_wait_ms_per_s,timeslices_per_s\n";
     static final String FREQUENCY_HEADER = "monotonic_ns,cpu_core,scaling_frequency_khz\n";
-    static final String MEMORY_HEADER = "monotonic_ns,process_pss_kb,native_heap_allocated_bytes\n";
+    static final String MEMORY_HEADER = "monotonic_ns,process_pss_kb,native_heap_allocated_bytes,"
+        + "graphics_kb,native_heap_pss_kb,java_heap_pss_kb,code_kb,stack_kb,private_other_kb,system_kb\n";
+    // Steprant 2.1.1: what else changes power use, every ten seconds.
+    static final String SYSTEM_HEADER = "monotonic_ns,display_refresh_hz,display_mode_refresh_hz,screen_brightness,screen_brightness_mode,"
+        + "power_save_mode,game_mode,battery_level_percent\n";
     private static final long SEGMENT_SIZE = 2L * 1024 * 1024;
     private static final long EVENT_MAX_SIZE = 4L * 1024 * 1024;
     private static final int SEGMENTS = 4, EVENT_LIMIT = 3, RECENT_LIMIT = 16384;
     private static final long BEFORE_NS = 30_000_000_000L, AFTER_NS = 10_000_000_000L;
     private final File directory;
-    private final Rolling frames, cpu, thermal, threads, frequencies, memory;
+    private final Rolling frames, cpu, thermal, threads, frequencies, memory, system;
     private final ArrayDeque<Line> recent = new ArrayDeque<>();
     private FileOutputStream event;
     private long eventEnd, eventBytes;
@@ -71,18 +76,19 @@ final class TesterTraceFiles {
     TesterTraceFiles(File directory) throws IOException {
         this.directory = directory;
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("cannot create trace directory");
-        Rolling f = null, c = null, t = null, th = null, freq = null, mem = null;
+        Rolling f = null, c = null, t = null, th = null, freq = null, mem = null, sys = null;
         try {
             f = new Rolling(directory, "frames"); c = new Rolling(directory, "cpu");
             t = new Rolling(directory, "thermal"); th = new Rolling(directory, "threads");
             freq = new Rolling(directory, "frequencies");
             mem = new Rolling(directory, "memory");
+            sys = new Rolling(directory, "system");
         } catch (IOException error) {
-            for (Rolling stream : new Rolling[]{f, c, t, th, freq, mem})
+            for (Rolling stream : new Rolling[]{f, c, t, th, freq, mem, sys})
                 if (stream != null) try { stream.close(); } catch (IOException closeError) { error.addSuppressed(closeError); }
             throw error;
         }
-        frames = f; cpu = c; thermal = t; threads = th; frequencies = freq; memory = mem;
+        frames = f; cpu = c; thermal = t; threads = th; frequencies = freq; memory = mem; system = sys;
     }
     private static File[] files(File directory, String prefix) {
         File[] list = directory.listFiles((d, name) -> name.startsWith(prefix + "-") && name.endsWith(".csv"));
@@ -107,7 +113,7 @@ final class TesterTraceFiles {
             if (event != null) {
                 appendEvent(line);
                 if (event != null && now >= eventEnd) { event.close(); event = null; }
-            } else if (captureEvents && value.endsWith(",1") && eventCount < EVENT_LIMIT) {
+            } else if (captureEvents && slowInterval(value) && eventCount < EVENT_LIMIT) {
                 event = new FileOutputStream(new File(directory, "event-" + (++eventCount) + ".csv"));
                 eventBytes = 0;
                 appendEvent(FRAME_HEADER);
@@ -117,6 +123,14 @@ final class TesterTraceFiles {
         }
         frames.flush();
         if (event != null) event.flush();
+    }
+    // Steprant 2.1.1: the slow_interval column (24th), not the last one. Since
+    // game_paused (2.0) and profiling (2.1.1) were appended, the old test of
+    // the line's end caught paused intervals and missed every slow one.
+    static boolean slowInterval(String line) {
+        String[] fields = line.split(",", -1);
+        if (fields.length < 24 || !fields[23].equals("1")) return false;
+        return fields.length < 25 || !fields[24].equals("1");
     }
     private void appendEvent(String line) throws IOException {
         byte[] bytes = line.getBytes(StandardCharsets.UTF_8);
@@ -128,10 +142,11 @@ final class TesterTraceFiles {
     void appendThreads(String lines) throws IOException { if (!lines.isEmpty()) { threads.append(lines); threads.flush(); } }
     void appendFrequencies(String lines) throws IOException { if (!lines.isEmpty()) { frequencies.append(lines); frequencies.flush(); } }
     void appendMemory(String line) throws IOException { memory.append(line); memory.flush(); }
+    void appendSystem(String line) throws IOException { system.append(line); system.flush(); }
     void close() throws IOException {
         IOException failure = null;
         if (event != null) { try { event.close(); } catch (IOException error) { failure = error; } event = null; }
-        for (Rolling stream : new Rolling[]{frames, cpu, thermal, threads, frequencies, memory}) {
+        for (Rolling stream : new Rolling[]{frames, cpu, thermal, threads, frequencies, memory, system}) {
             try { stream.close(); } catch (IOException error) {
                 if (failure == null) failure = error; else failure.addSuppressed(error);
             }
@@ -262,6 +277,7 @@ final class TesterTraceFiles {
         zipSegments(zip, dir, "threads", "threads.csv", THREAD_HEADER);
         zipSegments(zip, dir, "frequencies", "cpu_frequencies.csv", FREQUENCY_HEADER);
         zipSegments(zip, dir, "memory", "memory.csv", MEMORY_HEADER);
+        zipSegments(zip, dir, "system", "system.csv", SYSTEM_HEADER);
         for (File f : files(dir, "event")) { zip.putNextEntry(new ZipEntry("events/" + f.getName())); copy(zip, f); zip.closeEntry(); }
         // Steprant 2.0 WP0.1: bit-exact frame samples from the developer page
         // (android-diagnostics/frame-samples, beside the sessions). 2.0.2: only
@@ -282,8 +298,9 @@ final class TesterTraceFiles {
             }
         }
         List<Long> intervals = new ArrayList<>();
-        long totalInterval = 0;
-        int spikes = 0, pausedIntervals = 0;
+        List<Long> lightIntervals = new ArrayList<>();
+        long totalInterval = 0, lightTotal = 0, firstFrame = 0, lastFrame = 0, firstEmpty = -1, lastEmpty = -1;
+        int spikes = 0, pausedIntervals = 0, profiledIntervals = 0, over50 = 0;
         StringBuilder spikeTimes = new StringBuilder();
         for (File file : files(dir, "frames")) {
             try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
@@ -291,11 +308,21 @@ final class TesterTraceFiles {
                     String[] fields = line.split(",", -1);
                     if (fields.length < 24) continue;
                     try {
+                        long time = Long.parseLong(fields[0]);
+                        if (firstFrame == 0) firstFrame = time;
+                        lastFrame = time;
+                        long empty = Long.parseLong(fields[8]);
+                        if (firstEmpty < 0) firstEmpty = empty;
+                        lastEmpty = empty;
                         // Steprant 2.0: an interval that spans a pause of the
                         // game (overlay, background) is not a frame.
                         if (fields.length > 24 && fields[24].equals("1")) { ++pausedIntervals; continue; }
                         long value = Long.parseLong(fields[1]);
                         if (value > 0) { intervals.add(value); totalInterval += value; }
+                        if (value > 50_000_000L) ++over50;
+                        // Steprant 2.1.1: frames under the heavy profiling burst.
+                        if (fields.length > 25 && fields[25].equals("1")) ++profiledIntervals;
+                        else if (value > 0) { lightIntervals.add(value); lightTotal += value; }
                         if (fields[23].equals("1")) {
                             ++spikes;
                             if (spikes <= 1000) {
@@ -315,11 +342,25 @@ final class TesterTraceFiles {
         for (int i = intervals.size() - slowestOnePercent; i < intervals.size(); ++i)
             slowestTime += intervals.get(i);
         String onePercentLow = slowestTime > 0 ? String.format(java.util.Locale.US, "%.3f", slowestOnePercent * 1_000_000_000.0 / slowestTime) : "null";
+        Collections.sort(lightIntervals);
+        long lightP95 = percentile(lightIntervals, 95), lightP99 = percentile(lightIntervals, 99);
+        String lightFps = lightTotal > 0 ? String.format(java.util.Locale.US, "%.3f", lightIntervals.size() * 1_000_000_000.0 / lightTotal) : "null";
+        double minutes = lastFrame > firstFrame ? (lastFrame - firstFrame) / 60e9 : 0;
         zipText(zip, "summary.json", "{\"retained_intervals\":" + intervals.size() + ",\"p95_interval_ns\":" + (p95 == 0 ? "null" : p95) +
             ",\"p99_interval_ns\":" + (p99 == 0 ? "null" : p99) + ",\"accepted_presents_per_second\":" + fps +
             ",\"estimated_1pct_low_accepted_present_fps\":" + onePercentLow + ",\"slow_intervals\":" + spikes + ",\"paused_intervals\":" + pausedIntervals +
             ",\"frame_samples_included\":" + samplesIncluded + ",\"frame_samples_skipped_older_run\":" + samplesSkipped +
-            ",\"scope\":\"retained accepted-present intervals; not display latency or whole-frame GPU time\"}\n");
+            ",\"intervals_over_50ms\":" + over50 +
+            ",\"intervals_over_50ms_per_minute\":" + (minutes > 0 ? String.format(java.util.Locale.US, "%.2f", over50 / minutes) : "null") +
+            ",\"slow_intervals_per_minute\":" + (minutes > 0 ? String.format(java.util.Locale.US, "%.2f", spikes / minutes) : "null") +
+            ",\"audio_queue_empty_during_recording\":" + (firstEmpty >= 0 && lastEmpty >= firstEmpty ? lastEmpty - firstEmpty : 0) +
+            ",\"profiled_intervals\":" + profiledIntervals +
+            ",\"outside_profiling\":{\"p95_interval_ns\":" + (lightP95 == 0 ? "null" : lightP95) +
+            ",\"p99_interval_ns\":" + (lightP99 == 0 ? "null" : lightP99) + ",\"accepted_presents_per_second\":" + lightFps + "}" +
+            ",\"power\":" + powerSummary(dir) +
+            ",\"scope\":\"retained accepted-present intervals; not display latency or whole-frame GPU time. "
+            + "power: battery current x voltage while unplugged, screen included; outside_profiling and power leave out the "
+            + "heavy-profiling bursts (last 12 s of each minute of a recording)\"}\n");
         zipText(zip, "events.json", "{\"slow_intervals_in_retained_trace\":" + spikes +
             ",\"saved_windows\":" + files(dir, "event").length +
             ",\"slow_interval_timestamps_ns\":[" + spikeTimes + "]" +
@@ -349,6 +390,92 @@ final class TesterTraceFiles {
             catch (IOException | RuntimeException error) { zipText(zip, "exit-reasons.json", "{\"available\":false,\"reason\":\"export failed\"}\n"); }
         }
         zip.finish(); zip.flush();
+    }
+    // Steprant 2.1.1: the recording's start (session.json started_ns), for the
+    // profiling bursts; 0 when unknown.
+    static long startedNs(File dir) {
+        File session = new File(dir, "session.json");
+        if (!session.isFile()) return 0;
+        try {
+            String text = new String(java.nio.file.Files.readAllBytes(session.toPath()), StandardCharsets.UTF_8);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"started_ns\"\\s*:\\s*([0-9]+)").matcher(text);
+            return m.find() ? Long.parseLong(m.group(1)) : 0;
+        } catch (IOException | NumberFormatException unreadable) { return 0; }
+    }
+    // The last 12 s of each minute of a recording (android_tester.h).
+    static boolean inProfilingBurst(long time, long started) {
+        if (started <= 0 || time < started) return false;
+        return (time - started) % 60_000_000_000L >= 48_000_000_000L;
+    }
+    private static String json(double value, String format) {
+        return Double.isNaN(value) ? "null" : String.format(java.util.Locale.US, format, value);
+    }
+    // Power, temperature, process CPU and CPU frequency over the recording.
+    static String powerSummary(File dir) throws IOException {
+        long started = startedNs(dir);
+        double wattSum = 0, wattAll = 0; int watts = 0, wattsAll = 0, plugged = 0;
+        double firstTemp = Double.NaN, lastTemp = Double.NaN, maxTemp = Double.NaN;
+        long firstTempTime = 0, lastTempTime = 0; int maxStatus = -1;
+        for (File file : files(dir, "thermal")) {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                for (String line; (line = in.readLine()) != null;) {
+                    String[] f = line.split(",", -1);
+                    if (f.length < 4) continue;
+                    try {
+                        long time = Long.parseLong(f[0]);
+                        if (!f[1].isEmpty()) maxStatus = Math.max(maxStatus, Integer.parseInt(f[1]));
+                        if (!f[3].isEmpty()) {
+                            double temp = Double.parseDouble(f[3]);
+                            if (Double.isNaN(firstTemp)) { firstTemp = temp; firstTempTime = time; }
+                            lastTemp = temp; lastTempTime = time;
+                            maxTemp = Double.isNaN(maxTemp) ? temp : Math.max(maxTemp, temp);
+                        }
+                        if (f.length >= 7 && !f[6].isEmpty() && !f[6].equals("0")) { ++plugged; continue; }
+                        if (f.length >= 6 && !f[4].isEmpty() && !f[5].isEmpty()) {
+                            double w = Math.abs(Double.parseDouble(f[4])) * Double.parseDouble(f[5]) / 1e9;
+                            wattAll += w; ++wattsAll;
+                            if (!inProfilingBurst(time, started)) { wattSum += w; ++watts; }
+                        }
+                    } catch (NumberFormatException ignored) { }
+                }
+            }
+        }
+        double cpuSum = 0; int cpus = 0;
+        for (File file : files(dir, "cpu")) {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                for (String line; (line = in.readLine()) != null;) {
+                    String[] f = line.split(",", -1);
+                    if (f.length < 3 || f[2].isEmpty()) continue;
+                    try {
+                        if (inProfilingBurst(Long.parseLong(f[0]), started)) continue;
+                        cpuSum += Double.parseDouble(f[2]); ++cpus;
+                    } catch (NumberFormatException ignored) { }
+                }
+            }
+        }
+        // Per sample time, the fastest core; the lowest of those shows a cap.
+        java.util.TreeMap<Long, Long> fastest = new java.util.TreeMap<>();
+        for (File file : files(dir, "frequencies")) {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                for (String line; (line = in.readLine()) != null;) {
+                    String[] f = line.split(",", -1);
+                    if (f.length < 3) continue;
+                    try { fastest.merge(Long.parseLong(f[0]), Long.parseLong(f[2]), Math::max); }
+                    catch (NumberFormatException ignored) { }
+                }
+            }
+        }
+        long lowestFastest = fastest.isEmpty() ? 0 : Collections.min(fastest.values());
+        double minutes = lastTempTime > firstTempTime ? (lastTempTime - firstTempTime) / 60e9 : 0;
+        return "{\"mean_w_outside_profiling\":" + json(watts > 0 ? wattSum / watts : Double.NaN, "%.2f")
+            + ",\"mean_w_all_samples\":" + json(wattsAll > 0 ? wattAll / wattsAll : Double.NaN, "%.2f")
+            + ",\"samples_on_charger\":" + plugged
+            + ",\"battery_c_start\":" + json(firstTemp, "%.1f") + ",\"battery_c_end\":" + json(lastTemp, "%.1f")
+            + ",\"battery_c_max\":" + json(maxTemp, "%.1f")
+            + ",\"battery_c_per_minute\":" + json(minutes > 0 ? (lastTemp - firstTemp) / minutes : Double.NaN, "%.3f")
+            + ",\"android_thermal_status_max\":" + (maxStatus < 0 ? "null" : Integer.toString(maxStatus))
+            + ",\"process_cpu_percent_one_core_mean_outside_profiling\":" + json(cpus > 0 ? cpuSum / cpus : Double.NaN, "%.1f")
+            + ",\"fastest_core_khz_lowest_sample\":" + (lowestFastest > 0 ? Long.toString(lowestFastest) : "null") + "}";
     }
     private static long percentile(List<Long> values, int percent) {
         if (values.isEmpty()) return 0; // 0 means unavailable, never a measured zero interval.

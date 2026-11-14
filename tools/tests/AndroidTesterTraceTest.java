@@ -18,16 +18,38 @@ public final class AndroidTesterTraceTest {
         TesterThreadStats parsed = TesterThreadStats.parse("123 (Render (main)) R 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20");
         check(parsed != null && parsed.name.equals("Render (main)") && parsed.ticks == 23 && parsed.startTicks == 19, "thread stat parser");
         check(TesterThreadStats.parse("123 malformed") == null, "unavailable thread stat");
+        long[] sched = TesterThreadStats.parseSchedstat("5000000 2500000 42\n");
+        check(sched != null && sched[0] == 5000000 && sched[1] == 2500000 && sched[2] == 42, "schedstat parser");
+        check(TesterThreadStats.parseSchedstat("12 x") == null && TesterThreadStats.parseSchedstat(null) == null, "unreadable schedstat");
+        // Steprant 2.1.1: a slow interval is the 24th column, whatever follows it.
+        check(TesterTraceFiles.slowInterval("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,1,1"), "old 24-column line");
+        check(TesterTraceFiles.slowInterval("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,1,1,0,0"), "slow, not paused");
+        check(!TesterTraceFiles.slowInterval("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,1,0,1,0"), "a paused interval is not a slow one");
+        check(!TesterTraceFiles.slowInterval("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,1,0,0,1"), "nor is a profiled frame");
+        check(!TesterTraceFiles.slowInterval("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,1,1,1,0"), "slow but paused: left out");
+        check(TesterTraceFiles.inProfilingBurst(1000L + 48_000_000_000L, 1000L) && !TesterTraceFiles.inProfilingBurst(1000L + 47_000_000_000L, 1000L)
+            && !TesterTraceFiles.inProfilingBurst(5, 0), "profiling bursts: last 12 s of each minute, none without a start");
         File dir = Files.createTempDirectory("lo-tester").toFile();
         TesterTraceFiles writer = new TesterTraceFiles(dir);
         TesterTraceFiles.writeText(new File(dir, "device.json"), "{}\n");
-        TesterTraceFiles.writeText(new File(dir, "session.json"), "{}\n");
+        TesterTraceFiles.writeText(new File(dir, "session.json"), "{\n  \"started_ns\": 1000000000,\n  \"x\": 1\n}\n");
         for (int i = 1; i <= 50; ++i) {
             long time = i * 1_000_000_000L;
-            writer.appendFrames(time + ",1000000000,1,1,1,2,3,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1," + (i == 35 ? 1 : 0) + "\n", true);
+            // 2.1.1 format: ...,slow_interval,game_paused,profiling; frames 49-50 are in the burst.
+            writer.appendFrames(time + ",1000000000,1,1,1,2,3,4," + (i >= 40 ? 3 : 0) + ",0,0,0,0,0,0,0,0,0,0,0,0,0,1," + (i == 35 ? 1 : 0)
+                + ",0," + (i >= 49 ? 1 : 0) + "\n", true);
         }
-        writer.appendCpu("1,2,3,4\n");
+        writer.appendCpu("1,2,,4\n"); // the first sample has no percentage
+        writer.appendCpu("2000000000,10,150.00,8\n");
+        writer.appendCpu("50000000000,10,400.00,8\n");
         writer.appendThermal("1,2,,35.0\n");
+        // Unplugged: 1 A at 4000 mV = 4 W; the burst sample (8 W) and the
+        // charger sample stay out of the profiling-free mean.
+        writer.appendThermal("2000000000,0,,36.0,1000000,4000,0\n");
+        writer.appendThermal("50000000000,0,,37.0,-2000000,4000,0\n");
+        writer.appendThermal("51000000000,1,,38.0,1500000,4000,2\n");
+        writer.appendFrequencies("2000000000,0,1200000\n2000000000,7,2100000\n3000000000,7,600000\n3000000000,0,500000\n");
+        writer.appendSystem("2000000000,60.00,60.00,512,0,0,1,80\n");
         writer.close();
         File log = new File(dir, "runtime-123.log");
         Files.writeString(log.toPath(), "path /storage/emulated/0/private/file.txt\n");
@@ -46,6 +68,15 @@ public final class AndroidTesterTraceTest {
         check(!window.contains("\n4000000000,") && !window.contains("\n46000000000,"), "bounded event window");
         check(!files.get("runtime.log").contains("/storage/emulated/0/"), "redact shared path");
         check(files.get("thermal.csv").contains("1,2,,35.0"), "unavailable thermal data remains empty");
+        check(files.get("system.csv").startsWith(TesterTraceFiles.SYSTEM_HEADER) && files.get("system.csv").contains("60.00,60.00,512"), "system.csv");
+        String summary = files.get("summary.json");
+        check(summary.contains("\"profiled_intervals\":2"), "profiled frames counted: " + summary);
+        check(summary.contains("\"audio_queue_empty_during_recording\":3"), "audio empties during the recording");
+        check(summary.contains("\"mean_w_outside_profiling\":4.00") && summary.contains("\"mean_w_all_samples\":6.00"), "power outside bursts");
+        check(summary.contains("\"samples_on_charger\":1") && summary.contains("\"battery_c_max\":38.0"), "charger samples and temperature");
+        check(summary.contains("\"android_thermal_status_max\":2"), "thermal status");
+        check(summary.contains("\"process_cpu_percent_one_core_mean_outside_profiling\":150.0"), "CPU outside bursts");
+        check(summary.contains("\"fastest_core_khz_lowest_sample\":600000"), "lowest fastest-core frequency");
         check(!files.containsKey("previous-runtime.log"), "no previous run with one log");
 
         // SR4 S-2: after a restart the run before the newest one is the one

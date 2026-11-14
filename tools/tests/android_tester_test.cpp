@@ -33,12 +33,30 @@ int main() {
     r.collectorIdle = true;
     r.profile = uint32_t(Profile::Intensive);
     assert(r.Start(1, 60));
+    // Steprant 2.1.1: heavy profiling only in the last 12 s of each minute;
+    // the light measurements for the whole recording.
+    assert(!r.CollectGpu() && r.CollectLight());
+    r.Add(1 + 30'000'000'000ull, 0, 0, true, 0, 0);
+    assert(!r.CollectGpu());
+    r.Add(1 + 48'000'000'000ull, 0, 0, true, 0, 0);
     assert(r.CollectGpu());
+    r.Add(1 + 59'999'999'999ull, 0, 0, true, 0, 0);
+    assert(r.CollectGpu());
+    r.Add(1 + 60'000'000'000ull, 0, 0, true, 0, 0);
+    assert(!r.CollectGpu());
+    {
+        auto burstFrames = r.Drain();
+        assert(burstFrames.size() == 4);
+        // Each frame carries the state it was produced under.
+        assert(!burstFrames[0].profiling && !burstFrames[1].profiling && burstFrames[2].profiling && burstFrames[3].profiling);
+    }
+    assert(ProfilingBurst(48'000'000'000ull) && !ProfilingBurst(47'999'999'999ull) && ProfilingBurst(108'000'000'000ull));
     constexpr uint64_t longSession = 3ull * 60 * 60 * 1000000000ull;
     r.Add(longSession, 1, 1, true, 0, 0);
     assert(r.recording && r.Duration(longSession + 100) == longSession + 99);
     r.Stop(longSession + 100);
     assert(!r.recording && r.Duration(longSession + 200) == longSession + 99);
+    assert(!r.CollectGpu() && !r.CollectLight());
     r.collectorIdle = true; r.profile = 0; assert(r.Start(1, 30));
     for (size_t i=0; i<Recorder::Capacity+5; ++i) r.Add(1000+i, 0, 0, true, 0, 0);
     assert(r.Dropped() == 5 && r.Drain().size() == Recorder::Capacity);

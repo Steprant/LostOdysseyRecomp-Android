@@ -322,7 +322,7 @@ class Reporter
 {
     std::mutex mutex;
     Summary summary;
-    std::chrono::steady_clock::time_point windowStart{};
+    std::chrono::steady_clock::time_point windowStart{}, lastAdd{};
 
 public:
     // Returns the finished window's line, or empty while it is still open.
@@ -330,6 +330,16 @@ public:
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now())
     {
         std::lock_guard lock(mutex);
+        // Steprant 2.1.1: profiling runs in bursts (android_tester.h). A gap
+        // since the previous profile starts a new window, so a line never
+        // mixes two bursts or reports the first frame of a burst alone.
+        if (lastAdd != std::chrono::steady_clock::time_point{} && now - lastAdd > std::chrono::seconds(2)) {
+            summary = Summary();
+            windowStart = {};
+            TakeFormatDraws(1.0);
+            TakeFormatCmdproc();
+        }
+        lastAdd = now;
         if (windowStart == std::chrono::steady_clock::time_point{}) windowStart = now;
         summary.Add(profile, presentation);
         if (now - windowStart < std::chrono::seconds(10) || summary.frames == 0) return {};

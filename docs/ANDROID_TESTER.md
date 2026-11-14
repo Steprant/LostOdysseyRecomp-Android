@@ -1,4 +1,4 @@
-# Android tester diagnostics — Steprant 2.1
+# Android tester diagnostics — Steprant 2.1.1
 
 On Android, open **Settings → System → Android diagnostics** with the ordinary
 settings controls (LB/RB change category). The separate LB+RB debug-overlay
@@ -29,6 +29,39 @@ are bounded as described below.
 threads at most once per second and CPU frequencies and thermal headroom at
 most once every ten seconds. It also records GPU queue timings, render-pass
 profiles and slow-frame windows. The recording can affect performance.
+
+### 2.1.1: light measurements always, heavy profiling in bursts
+
+The heavy profiling (per-render-pass GPU timestamps, the GPU command thread's
+per-draw timers and the sampled draw-by-draw frames) runs only in the last
+12 seconds of every minute of a recording. `frame_timing.csv` marks those
+frames in its last column, `profiling`. `summary.json` reports frame figures
+both for all frames and `outside_profiling`, and its `power` block (mean
+watts, battery temperature and its rate, thermal status, process CPU, the
+lowest fastest-core frequency) leaves the bursts out, so power and CPU are
+the game's rather than the Tester's. `LO_TESTER_CONTINUOUS_PROFILE=1` keeps
+the profiling on for the whole recording.
+
+New measurements, for the whole recording:
+
+- `threads.csv`: per thread, time on a CPU, time runnable but waiting for a
+  CPU (`sched_runqueue_wait_ns`, `runqueue_wait_ms_per_s`) and times
+  scheduled in (`timeslices_per_s`, roughly its wakeups), from
+  `/proc/self/task/*/schedstat`.
+- `memory.csv`: PSS by category (graphics, native heap, Java heap, code,
+  stack, other, system).
+- `system.csv`, every ten seconds: display refresh rate (current and mode),
+  screen brightness and its mode, power-saving mode, Android game mode and
+  battery level.
+- `runtime.log`: `io reads:` every ten seconds (count, KiB, transfer and
+  lock-wait milliseconds, slowest read, reads over 20 ms); `guest samples:
+  kind=periodic` once a minute (where the running guest threads are, sampled
+  every 100 ms); and with each long audio callback, `stall samples:
+  kind=audio_others`, every guest thread and the kernel wait it is in.
+
+Slow-interval windows (`events/`) are again saved for slow intervals. Since
+2.0 they were triggered by the line's last column, which had become
+`game_paused`.
 
 Per-core scaling frequencies are attempted from public, readable sysfs files;
 Android may deny access. Missing values are blank or `null`. Battery temperature

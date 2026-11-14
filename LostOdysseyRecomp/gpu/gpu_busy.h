@@ -19,7 +19,8 @@ inline std::atomic<uint64_t> g_batches{0};
 inline bool Requested() {
     return g_requested.load(std::memory_order_relaxed)
 #if defined(__ANDROID__)
-        || ::diagnostics::android_tester::g_recorder.CollectGpu()
+        // Steprant 2.1.1: for the whole recording, not only the profiling bursts.
+        || ::diagnostics::android_tester::g_recorder.CollectLight()
 #endif
         ;
 }

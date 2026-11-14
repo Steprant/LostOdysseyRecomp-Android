@@ -2,6 +2,7 @@
 #include "file_system.h"
 #include "disc_set.h"
 #include "io_diagnostics.h"
+#include "io_read_stats.h"
 #include "file_system_test.h"
 #include <cerrno>
 #include <cstdlib>
@@ -33,6 +34,13 @@ void file_system_test::SetHook(Hook hook) { g_ioTestHook.store(hook); }
 #endif
 
 static uint32_t IoGuestPcr() { return g_ppcContext ? g_ppcContext->r13.u32 : 0; }
+
+// Steprant 2.1.1 (io_read_stats.h): read timing while the Tester records.
+static uint64_t IoNowNs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 // Use the existing blocking mutex. Diagnostics never replace it with polling
 // and never take this mutex to read a snapshot.
@@ -923,8 +931,12 @@ uint32_t NtReadFile(uint32_t handleValue, uint32_t Event, uint32_t ApcRoutine, u
     uint64_t offset;
     size_t read = 0;
     uint32_t status = STATUS_SUCCESS;
+    const bool measureIo = io_read_stats::Active();
+    const uint64_t ioRequested = measureIo ? IoNowNs() : 0;
+    uint64_t ioLocked = 0, ioDone = 0;
     {
         FileIoLock ioLock(handle->ioMutex, trace, handleValue);
+        if (measureIo) ioLocked = IoNowNs();
         IO_TEST_STAGE(IoLockAcquired, handleValue);
         offset = handle->position;
         if (ByteOffset)
@@ -963,7 +975,9 @@ uint32_t NtReadFile(uint32_t handleValue, uint32_t Event, uint32_t ApcRoutine, u
         trace.SetResult(status, uint32_t(read));
         trace.SetStage(io_diagnostics::Stage::TransferDone);
         IO_TEST_STAGE(TransferDone, handleValue);
+        if (measureIo) ioDone = IoNowNs();
     }
+    if (measureIo) io_read_stats::Add(read, ioLocked - ioRequested, ioDone - ioLocked);
 
     // Texture data can arrive this way: tell the renderer before the guest
     // can see the read complete.
@@ -1479,8 +1493,12 @@ uint32_t NtReadFileScatter(uint32_t handleValue, uint32_t Event, uint32_t ApcRou
     trace.Acquired(handle->diagnostic, &handle->ioMutex, handle->path, handle.get());
     uint32_t total = 0;
     uint32_t status = STATUS_SUCCESS;
+    const bool measureIo = io_read_stats::Active();
+    const uint64_t ioRequested = measureIo ? IoNowNs() : 0;
+    uint64_t ioLocked = 0, ioDone = 0;
     {
         FileIoLock ioLock(handle->ioMutex, trace);
+        if (measureIo) ioLocked = IoNowNs();
         uint64_t offset = handle->position;
         if (ByteOffset && uint64_t(*ByteOffset) != 0xFFFFFFFFFFFFFFFEull)
             offset = *ByteOffset;
@@ -1552,7 +1570,9 @@ uint32_t NtReadFileScatter(uint32_t handleValue, uint32_t Event, uint32_t ApcRou
         }
         trace.SetResult(status, total);
         trace.SetStage(io_diagnostics::Stage::TransferDone);
+        if (measureIo) ioDone = IoNowNs();
     }
+    if (measureIo) io_read_stats::Add(total, ioLocked - ioRequested, ioDone - ioLocked);
     IO_TEST_STAGE(BeforeCompletion, handleValue);
     if (IoStatusBlock) { IoStatusBlock->Status = status; IoStatusBlock->Information = total; }
     QueueIoApc(ApcRoutine, ApcContext, IoStatusBlock, status);

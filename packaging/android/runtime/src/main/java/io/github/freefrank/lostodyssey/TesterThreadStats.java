@@ -19,4 +19,17 @@ final class TesterThreadStats {
                 Long.parseLong(fields[19]));
         } catch (NumberFormatException invalid) { return null; }
     }
+    /**
+     * Steprant 2.1.1: /proc/self/task/<tid>/schedstat, "run_ns wait_ns timeslices":
+     * time on a CPU, time runnable but waiting for one, and times scheduled in.
+     */
+    static long[] parseSchedstat(String line) {
+        if (line == null) return null;
+        String[] fields = line.trim().split("\\s+");
+        if (fields.length < 3) return null;
+        try {
+            long[] values = {Long.parseLong(fields[0]), Long.parseLong(fields[1]), Long.parseLong(fields[2])};
+            return values[0] >= 0 && values[1] >= 0 && values[2] >= 0 ? values : null;
+        } catch (NumberFormatException invalid) { return null; }
+    }
 }

@@ -29,6 +29,10 @@
 #include <host_ui/host_ui.h>
 #include <achievements/achievements.h>
 #include <diagnostics/stall_sampler.h>
+#include "io/io_read_stats.h"
+#if defined(__ANDROID__)
+#include <diagnostics/android_tester.h>
+#endif
 #include <thread>
 #include <unordered_map>
 #include <algorithm>
@@ -181,15 +185,17 @@ struct Tally
     std::unordered_map<uint64_t, uint32_t> counts; // (lr << 32 | caller) -> samples
     std::unordered_map<uint64_t, uint32_t> second; // same key -> caller2
     std::unordered_map<uint64_t, uint32_t> thread; // same key -> guest thread id
+    std::unordered_map<uint64_t, const char*> wait; // same key -> kernel wait (2.1.1; waiting threads only)
     uint32_t samples = 0;
-    void Add(uint32_t threadId, const Place& place)
+    void Add(uint32_t threadId, const Place& place, const char* waitingIn = nullptr)
     {
         const uint64_t key = (uint64_t(place.lr) << 32) | place.caller;
         ++counts[key];
         second[key] = place.caller2;
         thread[key] = threadId;
+        if (waitingIn) wait[key] = waitingIn;
     }
-    void Clear() { counts.clear(); second.clear(); thread.clear(); samples = 0; }
+    void Clear() { counts.clear(); second.clear(); thread.clear(); wait.clear(); samples = 0; }
     std::string Top(size_t limit) const
     {
         std::vector<std::pair<uint64_t, uint32_t>> sorted(counts.begin(), counts.end());
@@ -197,8 +203,10 @@ struct Tally
         std::string out;
         for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
             const uint64_t key = sorted[i].first;
-            out += fmt::format(" tid={:#x} {:#x}<-{:#x}<-{:#x} x{};", thread.at(key), uint32_t(key >> 32), uint32_t(key),
-                second.at(key), sorted[i].second);
+            const auto waiting = wait.find(key);
+            out += fmt::format(" tid={:#x} {}{:#x}<-{:#x}<-{:#x} x{};", thread.at(key),
+                waiting != wait.end() ? fmt::format("[{}] ", waiting->second) : std::string{},
+                uint32_t(key >> 32), uint32_t(key), second.at(key), sorted[i].second);
         }
         return out;
     }
@@ -224,14 +232,67 @@ void SampleRunning(Tally& tally, PPCContext* only)
     ++tally.samples;
 }
 
+// Steprant 2.1.1: every guest thread except the idle pool, waiting ones
+// included (where they wait and in which kernel call), during an audio
+// callback stall: the callback waits for the game's audio worker, and this
+// shows what that worker and the others wait for meanwhile.
+void SampleAll(Tally& tally, PPCContext* except)
+{
+    {
+        std::lock_guard lock(g_waitStatesMutex);
+        for (auto* st : g_waitStates) {
+            if (!st->ctx || st->ctx == except) continue;
+            const char* what = st->what;
+            const bool running = what[0] == 'r';
+            const uint32_t liveLr = uint32_t(st->ctx->lr);
+            if (running && (liveLr == 0x82BECACC || liveLr == 0)) continue; // idle pool / unknown
+            if (running) tally.Add(st->threadId, Read(liveLr, st->ctx->r1.u32));
+            else tally.Add(st->threadId, Read(st->lr, st->r1), what);
+        }
+    }
+    ++tally.samples;
+}
+
+bool TesterRecording()
+{
+#if defined(__ANDROID__)
+    return ::diagnostics::android_tester::g_recorder.recording.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
+}
+
 void Run()
 {
-    Tally frame, audio;
+    Tally frame, audio, audioOthers, periodic;
     uint64_t frameStallStart = 0, frameEpoch = 0, audioStart = 0;
-    uint32_t frameLines = 0, audioLines = 0;
+    uint32_t frameLines = 0, audioLines = 0, periodicLines = 0;
+    // Steprant 2.1.1: while the Tester records, every running guest thread
+    // is also sampled every 100 ms outside stalls (where the game spends its
+    // CPU, spin waits included), one line a minute; and file reads are
+    // timed (io_read_stats.h), one line every ten seconds.
+    uint64_t nextPeriodic = 0, periodicStart = 0, nextIoLine = 0;
+    bool sampling = true;
     for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // 5 ms while the Tester records or a stall is being sampled; 20 ms
+        // otherwise (200 wakeups a second for diagnostics nobody reads).
+        std::this_thread::sleep_for(std::chrono::milliseconds(sampling ? 5 : 20));
         const uint64_t now = NowNs();
+        const bool recording = TesterRecording();
+        if (recording != io_read_stats::Active()) {
+            io_read_stats::SetActive(recording);
+            io_read_stats::Take();
+            nextIoLine = now + 10'000'000'000ull;
+            periodic.Clear(); periodicStart = now; nextPeriodic = now;
+        }
+        if (recording && now >= nextIoLine) {
+            nextIoLine = now + 10'000'000'000ull;
+            const auto io = io_read_stats::Take();
+            if (io.reads)
+                LOG_INFO("io reads: n={} kib={} transfer_ms={:.1f} lock_wait_ms={:.1f} max_transfer_ms={:.1f} max_lock_wait_ms={:.1f} slow_over_20ms={}",
+                    io.reads, io.bytes / 1024, io.transferNs / 1e6, io.lockWaitNs / 1e6, io.maxTransferNs / 1e6,
+                    io.maxLockWaitNs / 1e6, io.slowReads);
+        }
         const uint64_t lastSwap = g_lastSwapNs.load(std::memory_order_relaxed);
         const bool paused = host_ui::IsGamePaused() || host_ui::IsBackgrounded();
         // Frame stalls: no swap for 60 ms.
@@ -254,18 +315,37 @@ void Run()
         PPCContext* audioCtx = g_audioCtx.load(std::memory_order_acquire);
         const uint64_t started = g_audioStartNs.load(std::memory_order_acquire);
         if (audioCtx && started && now > started + 30'000'000ull) {
-            if (audioStart != started) { audioStart = started; audio.Clear(); }
+            if (audioStart != started) { audioStart = started; audio.Clear(); audioOthers.Clear(); }
             SampleRunning(audio, audioCtx);
+            SampleAll(audioOthers, audioCtx);
         } else if (audioStart && (started != audioStart || !audioCtx)) {
             // The sampled callback ended; its length is up to now.
             const uint64_t lengthMs = (now - audioStart) / 1'000'000ull;
             if (lengthMs >= 50 && audio.samples && !paused && audioLines < 32) {
                 ++audioLines;
                 LOG_INFO("stall samples: kind=audio_callback ms~{} samples={} top:{}", lengthMs, audio.samples, audio.Top(4));
+                if (audioOthers.samples)
+                    LOG_INFO("stall samples: kind=audio_others ms~{} samples={} top:{}", lengthMs, audioOthers.samples, audioOthers.Top(8));
             }
             audioStart = 0;
             audio.Clear();
+            audioOthers.Clear();
         }
+        // Periodic samples of the running guest threads while recording.
+        if (recording && !paused && now >= nextPeriodic) {
+            nextPeriodic = now + 100'000'000ull;
+            SampleRunning(periodic, nullptr);
+            if (now - periodicStart >= 60'000'000'000ull) {
+                if (periodic.samples && periodicLines < 120) {
+                    ++periodicLines;
+                    LOG_INFO("guest samples: kind=periodic seconds={} samples={} top:{}", (now - periodicStart) / 1'000'000'000ull,
+                        periodic.samples, periodic.Top(12));
+                }
+                periodic.Clear();
+                periodicStart = now;
+            }
+        }
+        sampling = recording || frameStallStart != 0 || audioStart != 0;
     }
 }
 

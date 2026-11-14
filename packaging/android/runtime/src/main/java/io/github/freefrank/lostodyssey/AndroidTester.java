@@ -3,6 +3,7 @@ package io.github.freefrank.lostodyssey;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.hardware.display.DisplayManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Debug;
@@ -11,7 +12,9 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.system.Os;
+import android.view.Display;
 import android.system.OsConstants;
 import android.widget.Toast;
 import java.io.BufferedReader;
@@ -51,13 +54,17 @@ final class AndroidTester {
     private TesterTraceFiles trace;
     private File directory;
     private ScheduledFuture<?> timer;
-    private long previousTime, previousCpu, lastHeadroom, lastSessionWrite, lastThreads, lastFrequencies, lastMemory, ticksPerSecond;
+    private long previousTime, previousCpu, lastHeadroom, lastSessionWrite, lastThreads, lastFrequencies, lastMemory, lastSystem, ticksPerSecond;
     private final Map<String, Tick> previousThreads = new HashMap<>();
     private double headroom = Double.NaN;
     private long[] status;
     private static final class Tick {
         final long value, time;
-        Tick(long value, long time) { this.value = value; this.time = time; }
+        // Steprant 2.1.1: /proc/self/task/<tid>/schedstat, -1 when unreadable.
+        final long runNs, waitNs, slices;
+        Tick(long value, long time, long runNs, long waitNs, long slices) {
+            this.value = value; this.time = time; this.runNs = runNs; this.waitNs = waitNs; this.slices = slices;
+        }
     }
 
     private AndroidTester(Context context) {
@@ -76,7 +83,7 @@ final class AndroidTester {
             directory = new File(root, "session-" + status[4]);
             trace = new TesterTraceFiles(directory);
             TesterTraceFiles.writeText(new File(directory, "device.json"), deviceJson());
-            previousTime = previousCpu = lastHeadroom = lastSessionWrite = lastThreads = lastFrequencies = lastMemory = 0;
+            previousTime = previousCpu = lastHeadroom = lastSessionWrite = lastThreads = lastFrequencies = lastMemory = lastSystem = 0;
             previousThreads.clear();
             try { ticksPerSecond = Os.sysconf(OsConstants._SC_CLK_TCK); }
             catch (RuntimeException unavailable) { ticksPerSecond = 0; }
@@ -116,8 +123,21 @@ final class AndroidTester {
             if (lastMemory == 0 || now - lastMemory >= 10_000_000_000L) {
                 Debug.MemoryInfo memory = new Debug.MemoryInfo();
                 Debug.getMemoryInfo(memory);
-                trace.appendMemory(now + "," + memory.getTotalPss() + "," + Debug.getNativeHeapAllocatedSize() + "\n");
+                // Steprant 2.1.1: the same PSS by category (graphics is the
+                // GPU memory Android charges to the process).
+                StringBuilder line = new StringBuilder().append(now).append(',').append(memory.getTotalPss()).append(',')
+                    .append(Debug.getNativeHeapAllocatedSize());
+                for (String key : new String[]{"summary.graphics", "summary.native-heap", "summary.java-heap", "summary.code",
+                        "summary.stack", "summary.private-other", "summary.system"}) {
+                    String value = null;
+                    try { value = memory.getMemoryStat(key); } catch (RuntimeException unavailable) { }
+                    line.append(',').append(value != null && value.matches("[0-9]+") ? value : "");
+                }
+                trace.appendMemory(line.append('\n').toString());
                 lastMemory = now;
+            }
+            if (lastSystem == 0 || now - lastSystem >= 10_000_000_000L) {
+                sampleSystem(now); lastSystem = now;
             }
             if (status[0] == 0 || lastSessionWrite == 0 || now - lastSessionWrite >= 5_000_000_000L) {
                 if (directory.getUsableSpace() < 32L * 1024 * 1024)
@@ -168,6 +188,50 @@ final class AndroidTester {
         } catch (RuntimeException unavailable) { }
         trace.appendThermal(now + "," + thermalStatus + "," + thermalHeadroom + "," + battery + "," + current + "," + voltage + "," + plugged + "\n");
     }
+    // Steprant 2.1.1: display refresh rate, brightness, power saving, game
+    // mode and battery level: they change power use as much as the game does.
+    private void sampleSystem(long now) throws IOException {
+        String refresh = "", modeRefresh = "", brightness = "", brightnessMode = "", powerSave = "", gameMode = "", level = "";
+        try {
+            DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+            if (display != null) {
+                refresh = String.format(Locale.US, "%.2f", display.getRefreshRate());
+                Display.Mode mode = display.getMode();
+                if (mode != null) modeRefresh = String.format(Locale.US, "%.2f", mode.getRefreshRate());
+            }
+        } catch (RuntimeException unavailable) { }
+        try {
+            brightness = Integer.toString(Settings.System.getInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS));
+            brightnessMode = Integer.toString(Settings.System.getInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE));
+        } catch (Settings.SettingNotFoundException | RuntimeException unavailable) { }
+        try {
+            PowerManager power = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (power != null) powerSave = power.isPowerSaveMode() ? "1" : "0";
+        } catch (RuntimeException unavailable) { }
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                android.app.GameManager games = context.getSystemService(android.app.GameManager.class);
+                if (games != null) gameMode = Integer.toString(games.getGameMode());
+            }
+        } catch (RuntimeException unavailable) { }
+        try {
+            BatteryManager manager = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
+            if (manager != null) {
+                int value = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                if (value != Integer.MIN_VALUE && value >= 0) level = Integer.toString(value);
+            }
+        } catch (RuntimeException unavailable) { }
+        trace.appendSystem(now + "," + refresh + "," + modeRefresh + "," + brightness + "," + brightnessMode + ","
+            + powerSave + "," + gameMode + "," + level + "\n");
+    }
+    // Run time, run-queue wait and timeslices of one thread; null when unreadable.
+    private static long[] schedstat(File task) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                new FileInputStream(new File(task, "schedstat")), StandardCharsets.US_ASCII))) {
+            return TesterThreadStats.parseSchedstat(in.readLine());
+        } catch (IOException | SecurityException unavailable) { return null; }
+    }
     private void sampleThreads(long now) throws IOException {
         File[] tasks = new File("/proc/self/task").listFiles();
         if (tasks == null) return;
@@ -187,8 +251,20 @@ final class AndroidTester {
                 lines.append(now).append(',').append(task.getName()).append(',').append(stat.name).append(',')
                     .append(stat.state).append(',').append(stat.ticks).append(',');
                 if (ticksPerSecond > 0) lines.append(ticksPerSecond);
-                lines.append(',').append(percent).append('\n');
-                next.put(key, new Tick(stat.ticks, now));
+                lines.append(',').append(percent);
+                // Steprant 2.1.1: time spent waiting for a CPU (a hot phone
+                // starving a thread) and how often the thread runs (wakeups).
+                long[] sched = schedstat(task);
+                if (sched != null) {
+                    lines.append(',').append(sched[0]).append(',').append(sched[1]).append(',').append(sched[2]).append(',');
+                    if (prior != null && prior.runNs >= 0 && now > prior.time && sched[1] >= prior.waitNs && sched[2] >= prior.slices) {
+                        double seconds = (now - prior.time) / 1e9;
+                        lines.append(String.format(Locale.US, "%.2f", (sched[1] - prior.waitNs) / 1e6 / seconds)).append(',')
+                            .append(String.format(Locale.US, "%.1f", (sched[2] - prior.slices) / seconds));
+                    } else lines.append(',');
+                } else lines.append(",,,,,"); // five empty columns
+                lines.append('\n');
+                next.put(key, sched != null ? new Tick(stat.ticks, now, sched[0], sched[1], sched[2]) : new Tick(stat.ticks, now, -1, -1, -1));
             } catch (IOException | SecurityException unavailable) { /* A thread may exit during the scan. */ }
         }
         previousThreads.clear(); previousThreads.putAll(next);
