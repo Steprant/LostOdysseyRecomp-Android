@@ -128,6 +128,16 @@ def parse_blocks(lines):
 
 
 KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",)]
+SHAPES = {}
+
+
+def Shape(line):
+    """The construct of a flagged line with registers, numbers and names
+    masked, so the CI log says which instruction form reads (no game code)."""
+    line = re.sub(r"\b(sub|loc)_[0-9A-Fa-f]+", r"\1_X", line)
+    line = re.sub(r"\bctx\.(r|f|v)[0-9]+", r"ctx.\1N", line)
+    line = re.sub(r"0x[0-9A-Fa-f]+|\b[0-9]+\b", "K", line)
+    return line[:120]
 
 
 def analyse(lines):
@@ -147,6 +157,8 @@ def analyse(lines):
                 if kind == "read":
                     if state.get(key):
                         found.setdefault(key, set()).update(state[key])
+                        SHAPES.setdefault(Shape(line), 0)
+                        SHAPES[Shape(line)] += 1
                 else:
                     state.pop(key, None)
             if CALL.search(line):
@@ -213,6 +225,8 @@ def main(argv=None):
         print(f"promotion check: {group}: {total} functions can read an outside value" + (f" ({detail})" if detail else ""))
     per_field = sorted(((label, len({n for n, _ in entries})) for label, entries in flagged.items()), key=lambda x: -x[1])
     print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
+    for shape, count in sorted(SHAPES.items(), key=lambda x: -x[1])[:12]:
+        print(f"promotion check: shape {count}x: {shape}")
     shown = 0
     for label, entries in sorted(flagged.items()):
         for name, sources in sorted(set(entries)):
