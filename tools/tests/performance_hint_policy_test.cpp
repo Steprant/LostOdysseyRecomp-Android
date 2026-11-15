@@ -1,4 +1,5 @@
 #include <os/performance_hint_policy.h>
+#include <gpu/cinematic_power.h>
 #include <cassert>
 #include <cstdio>
 
@@ -19,5 +20,21 @@ int main()
     assert(policy.WorkNs(-5, 0) == 0);
     assert(policy.WorkNs(2'000'000'000, 0) == int64_t(policy.Period() * 4e6));
     assert(Policy(5).Percent() == 20 && Policy(99).Percent() == 90);
+    assert(policy.Percent(true) == 65 && policy.TargetNs(true) > policy.TargetNs());
+    assert(Policy(80).Percent(true) == 80);
+
+    gpu::cinematic_power::Policy cinema;
+    using namespace std::chrono;
+    const auto start = steady_clock::time_point{seconds(30)};
+    assert(!cinema.Update(414, true, start));
+    assert(!cinema.Update(446, false, start + seconds(1)));
+    assert(cinema.Update(415, true, start + seconds(2)));
+    assert(cinema.Update(410, false, start + seconds(4)));
+    assert(!cinema.Update(410, false, start + seconds(5)));
+    assert(cinema.Update(410, true, start + seconds(6)));
+    assert(!cinema.Update(405, true, start + seconds(7)));
+    assert(!cinema.Update(410, true, start + seconds(8)));
+    assert(cinema.Update(415, true, start + seconds(9)));
+    assert(!cinema.Update(0, true, start + seconds(10)));
     std::printf("PASS performance hint policy: frame class, target, work and caps\n");
 }

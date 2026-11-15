@@ -4,6 +4,7 @@
 #include <mutex>
 #include "gpu/android_tv.h"
 #include "gpu/cinematic_bars.h"
+#include "gpu/cinematic_power.h"
 #include "gpu/guest_writes.h"
 #include "gpu/dlss_status_log.h"
 #include "gpu/video.h"
@@ -18,6 +19,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_io_github_freefrank_lostodyssey_RuntimeActivity_nativeSetTvOutput(JNIEnv*, jclass, jboolean external, jint height)
 {
     gpu::android_tv::SetOutput(external == JNI_TRUE, height);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_io_github_freefrank_lostodyssey_RuntimeActivity_nativeSetBatteryTemperature(JNIEnv*, jclass, jint tenths)
+{
+    gpu::cinematic_power::batteryTenths.store(tenths > 0 && tenths < 1000 ? tenths : 0, std::memory_order_relaxed);
 }
 #endif
 
@@ -177,6 +183,22 @@ namespace gpu::frame_plan
             config.fsrQuality = upscaling::FsrQuality::NativeAA;
             if (config.internalResolution == int(kSgsr2LowInputHeight)) config.internalResolution = 720;
         }
+#if LO_PLATFORM_ANDROID
+        static cinematic_power::Policy cinemaPower;
+        const int batteryTenths = cinematic_power::batteryTenths.load(std::memory_order_relaxed);
+        const bool limited = cinemaPower.Update(batteryTenths, cinematic_bars::RealTimeSceneActive(),
+            std::chrono::steady_clock::now());
+        if (cinematic_power::Active() != limited) {
+            cinematic_power::limited.store(limited, std::memory_order_relaxed);
+            LOG_INFO("cinematic power: {} at battery {:.1f} C", limited ? "limited" : "normal", batteryTenths / 10.0);
+        }
+        // Plan only the 3D input at a lower size. Output and its aspect were
+        // selected above, so the display receives the same surface dimensions.
+        if (limited && !readback && config.upscaler == upscaling::Upscaler::Sgsr2 &&
+            config.fsrQuality != upscaling::FsrQuality::NativeAA &&
+            config.internalResolution > int(cinematic_power::kSceneHeight))
+            config.internalResolution = int(cinematic_power::kSceneHeight);
+#endif
         narrowTallView.store(aspect_ratio::NarrowsView(config.aspectRatio), std::memory_order_relaxed);
         const auto device = video::BackendDeviceState();
         std::optional<upscaling::OutputSizing> sizing;

@@ -20,6 +20,7 @@
 #include <cmath>
 #include <dlfcn.h>
 #include <android/thermal.h>
+#include <gpu/cinematic_power.h>
 #include "performance_hint_policy.h"
 #include <sched.h>
 #include <sys/resource.h>
@@ -188,6 +189,7 @@ struct PerformanceHints
     APerformanceHintManager* manager = nullptr;
     APerformanceHintSession* session = nullptr;
     bool unavailable = false;
+    const bool autoTarget = getenv("LO_ADPF_TARGET_PERCENT") == nullptr;
     os::performance_hint::Policy policy{[] {
         const char* env = getenv("LO_ADPF_TARGET_PERCENT");
         return env ? uint32_t(atoi(env)) : 50u;
@@ -234,20 +236,21 @@ struct PerformanceHints
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
         const int64_t renderCpu = int64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
         const int64_t mainCpu = ThreadCpuNs(mainTid);
+        const bool warmScene = autoTarget && gpu::cinematic_power::Active();
         if (!session) {
             const int32_t tids[2] = {int32_t(mainTid), int32_t(gettid())};
-            target = policy.TargetNs();
+            target = policy.TargetNs(warmScene);
             session = create(manager, tids, 2, target);
             if (!session) { unavailable = true; LOG_WARNING("performance hints: session creation failed"); return; }
             const bool efficient = preferEfficiency && preferEfficiency(session, true) == 0;
             LOG_INFO("performance hints: session for guest main {} and render {} target_ms={:.2f} ({}% of the frame) prefer_efficiency={}",
-                mainTid, gettid(), target / 1e6, policy.Percent(), efficient);
+                mainTid, gettid(), target / 1e6, policy.Percent(warmScene), efficient);
             lastFrame = now; lastMain = mainCpu; lastRender = renderCpu;
             nextLog = now + std::chrono::seconds(10);
             return;
         }
         policy.ObserveInterval(std::chrono::duration<double, std::milli>(now - lastFrame).count());
-        if (const int64_t wanted = policy.TargetNs(); wanted != target && update(session, wanted) == 0) target = wanted;
+        if (const int64_t wanted = policy.TargetNs(warmScene); wanted != target && update(session, wanted) == 0) target = wanted;
         const int64_t work = policy.WorkNs(lastMain && mainCpu ? mainCpu - lastMain : 0, renderCpu - lastRender);
         if (work > 0 && report(session, work) == 0) { workMs += work / 1e6; ++reports; }
         lastFrame = now; lastMain = mainCpu; lastRender = renderCpu;

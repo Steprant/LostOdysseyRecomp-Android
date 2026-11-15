@@ -2,8 +2,11 @@ package io.github.freefrank.lostodyssey;
 
 import android.content.Intent;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -47,6 +50,13 @@ public final class RuntimeActivity extends SDLActivity {
     private TouchControlsView touchControls;
     private TvDisplayDiagnostics tvDiagnostics;
     private TvOutputController tvOutput;
+    private boolean watchingBattery;
+    private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (watchingBattery && Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction()))
+                nativeSetBatteryTemperature(intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0));
+        }
+    };
     /** Why the renderer could not start with the selected driver; set from native code. */
     private volatile String graphicsFailure;
     private final Handler bootHandler = new Handler(Looper.getMainLooper());
@@ -59,6 +69,7 @@ public final class RuntimeActivity extends SDLActivity {
                                            int leftX, int leftY, int rightX, int rightY);
     static native boolean nativeHasConnectedController();
     static native void nativeSetTvOutput(boolean external, int height);
+    static native void nativeSetBatteryTemperature(int tenthsCelsius);
     static native long[] nativeTesterStatus();
     static native String nativeTesterGpu();
     static native String nativeTesterGpuDriver();
@@ -262,6 +273,10 @@ public final class RuntimeActivity extends SDLActivity {
 
     @Override
     protected void onPause() {
+        if (watchingBattery) {
+            watchingBattery = false;
+            unregisterReceiver(batteryReceiver);
+        }
         if (tvOutput != null) tvOutput.pause();
         if (tvDiagnostics != null) tvDiagnostics.event("runtime pause");
         if (touchControls != null) touchControls.onHostPause();
@@ -318,6 +333,17 @@ public final class RuntimeActivity extends SDLActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!watchingBattery && !mBrokenLibraries && !getIntent().getBooleanExtra(EXTRA_IMPORT, false)) {
+            // Protected sticky system broadcast. Subscribe only while playing
+            // so the renderer gets updates even with diagnostics switched off.
+            int temperature = 0;
+            try {
+                Intent battery = registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                watchingBattery = true;
+                if (battery != null) temperature = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0);
+            } catch (SecurityException ignored) { }
+            nativeSetBatteryTemperature(temperature);
+        }
         if (tvOutput != null) tvOutput.resume();
         if (tvDiagnostics != null) tvDiagnostics.snapshot("runtime-resume");
         hideSystemBars();

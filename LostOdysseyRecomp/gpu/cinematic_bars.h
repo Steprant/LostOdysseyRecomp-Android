@@ -7,4 +7,5 @@ namespace gpu::cinematic_bars
 void UpdatePause(uint8_t* base);
 // Presentation consumes host atomics, never follows guest objects.
 bool Active();
+bool RealTimeSceneActive();
 }

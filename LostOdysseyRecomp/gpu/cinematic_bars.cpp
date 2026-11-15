@@ -95,7 +95,12 @@ bool gpu::cinematic_bars::Active()
 #if !defined(__ANDROID__) && !defined(__SWITCH__) && !defined(__NX__)
     movie = movie::GuestPlaying();
 #endif
-    return rtActive.load(std::memory_order_relaxed) || pauseActive.load(std::memory_order_relaxed) || movie;
+    return RealTimeSceneActive() || pauseActive.load(std::memory_order_relaxed) || movie;
+}
+
+bool gpu::cinematic_bars::RealTimeSceneActive()
+{
+    return rtActive.load(std::memory_order_relaxed);
 }
 
 // The scenario request starts its fade BEFORE it starts Matinee. Inspect only

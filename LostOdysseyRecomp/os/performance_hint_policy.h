@@ -30,8 +30,8 @@ public:
         return Period();
     }
     double Period() const { return emaIntervalMs != 0 && emaIntervalMs < 25.0 ? kPeriod60Ms : kPeriod30Ms; }
-    int64_t TargetNs() const { return int64_t(Period() * 1e6 * targetPercent / 100.0); }
-    uint32_t Percent() const { return targetPercent; }
+    int64_t TargetNs(bool warmScene = false) const { return int64_t(Period() * 1e6 * Percent(warmScene) / 100.0); }
+    uint32_t Percent(bool warmScene = false) const { return warmScene ? std::max(targetPercent, 65u) : targetPercent; }
 
     // CPU nanoseconds the two threads used in this frame. A negative or missing
     // reading counts as zero; a value above four periods (a stall) is capped so
