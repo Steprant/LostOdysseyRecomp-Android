@@ -206,8 +206,7 @@ jobs:
           out/build/tools/xexdump LostOdysseyRecompLib/private/disc1/default.xex LostOdysseyRecompLib/private/image_disc1.bin
           python tools/ppc_codegen.py generate --executable out/build/tools/XenonRecomp/XenonRecomp/XenonRecomp
       - name: Check register promotion safety (names and offsets only)
-        continue-on-error: true
-        run: python tools/ppc_promotion_check.py LostOdysseyRecompLib/ppc --limit 80
+        run: python tools/ppc_promotion_check.py LostOdysseyRecompLib/ppc --limit 80 --shared 0 --strict
       - name: Select the Steprant build identity
         id: steprant
         env:

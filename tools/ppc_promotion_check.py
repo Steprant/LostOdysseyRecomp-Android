@@ -36,15 +36,25 @@ from collections import defaultdict
 FUNCTION = re.compile(r"^PPC_FUNC_IMPL\(__imp__(\w+)\) \{")
 LABEL = re.compile(r"^(loc_[0-9A-Fa-f]+):")
 GOTO = re.compile(r"goto (loc_[0-9A-Fa-f]+);")
-CR = re.compile(r"ctx\.cr([0-7])(?:\.(lt|gt|eq|so))?")
-MFCR = re.compile(r"\.u64 \|?= ctx\.cr[0-7]\.(?:lt|gt|eq|so) \? 0x")
+# Both forms: ctx.crN (shared) and crN (a local under cr_as_local), so the
+# check also runs on promoted output.
+P = r"(?:\bctx\.|(?<![\w.]))"
+CR = re.compile(P + r"cr([0-7])\b(?:\.(lt|gt|eq|so))?")
+MFCR = re.compile(r"\.u64 \|?= (?:ctx\.)?cr[0-7]\.(?:lt|gt|eq|so) \? 0x")
+DECLARATION = re.compile(r"^(?:PPCCRRegister|PPCXERRegister|PPCRegister|PPCVRegister|PPCContext) \w+\{\};$")
+SETJMP_RESTORE = "ctx = env;"
 # mfocrf, which XenonRecomp emits as a read of cr6 whatever field the
 # instruction names (recompiler.cpp: "TODO: don't hardcode to cr6"). Compiled
 # code uses it to save a non-volatile field in a prologue; XenonRecomp has no
 # mtcrf, so the saved value is never written back to CR. Benign.
-MFOCRF = re.compile(r"\.u64 = \(ctx\.cr6\.lt << 7\) \| \(ctx\.cr6\.gt << 6\) \| \(ctx\.cr6\.eq << 5\) \| \(ctx\.cr6\.so << 4\);")
-XER_CA = re.compile(r"ctx\.xer\.ca")
-RESERVED = re.compile(r"ctx\.reserved(?:\.\w+)?")
+MFOCRF = re.compile(r"\.u64 = \((?:ctx\.)?cr6\.lt << 7\) \| \((?:ctx\.)?cr6\.gt << 6\) \| \((?:ctx\.)?cr6\.eq << 5\) \| \((?:ctx\.)?cr6\.so << 4\);")
+XER_CA = re.compile(P + r"xer\.ca")
+# xer.so/ov: written only by mtxer; compares copy so into CR. Counted globally.
+XER_SO_WRITE = re.compile(P + r"xer\.(so|ov) =(?!=)")
+# mtcr: every CR bit written from a GPR, possibly a value an mfcr saved.
+MTCR = re.compile(r"^(?:ctx\.)?cr([0-7])\.(lt|gt|eq|so) = \(ctx\.r[0-9]+\.u32 & 0x[0-9A-F]+\) != 0;")
+MF_DEST = re.compile(r"^(ctx\.r[0-9]+)\.u64 \|?= ")
+RESERVED = re.compile(P + r"reserved(?:\.\w+)?")
 CALLEE = re.compile(r"sub_[0-9A-Fa-f]{8}")
 CALL = re.compile(r"(?:\bsub_[0-9A-Fa-f]{8}|__imp__\w+|PPC_CALL_INDIRECT_FUNC)\s*\(")
 BITS = ("lt", "gt", "eq", "so")
@@ -56,9 +66,18 @@ def is_assignment(line, end):
     return rest.startswith("=") and not rest.startswith("==")
 
 
+def mf_reads(line):
+    """CR keys an mfcr/mfocrf line reads (as XenonRecomp emits them)."""
+    if MFOCRF.search(line):
+        return [("cr", 6, b) for b in BITS]
+    match = MFCR.search(line) and CR.search(line)
+    return [("cr", int(match.group(1)), match.group(2))] if match else []
+
+
 def statement_events(line):
     """Return ('read'|'write', key) events of one line, reads of an assignment's
-    right-hand side before its write. Keys: ('cr', field, bit), ('ca',), ('res',)."""
+    right-hand side before its write. Keys: ('cr', field, bit), ('ca',), ('res',).
+    mfcr/mfocrf reads are left to the caller (analyse classifies them)."""
     reads, writes = [], []
     if not MFCR.search(line) and not MFOCRF.search(line):
         for match in CR.finditer(line):
@@ -133,6 +152,34 @@ def parse_blocks(lines):
 KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",)]
 SHAPES = {}
 RETURNS_LAST = {}
+MF_LAST = []      # (kind, sources) of mfcr/mfocrf reads seeing an outside value
+MTCR_LAST = []    # reads of a value mtcr restored
+SHARED = set()    # CR fields kept in ctx (cr_in_context_fields)
+STORE_OF = re.compile(r"^PPC_STORE_U(?:32|64)\(ctx\.r1\.u32 \+ -?[0-9]+, (ctx\.r[0-9]+)\.u(?:32|64)\);$")
+
+
+def mf_use(body, start, dest):
+    """How the GPR an mfcr/mfocrf filled is used after line start of its block:
+    'save' when its only use is a store to the stack frame and the register is
+    then overwritten or the block ends in a call or return; else 'use'."""
+    mention = re.compile(re.escape(dest) + r"\b")
+    stored = False
+    for line in body[start + 1:]:
+        if MF_DEST.match(line) and line.startswith(dest + ".u64 |="):
+            continue
+        if not mention.search(line):
+            if stored and (CALL.search(line) or line.startswith("return")):
+                return "save"
+            continue
+        store = STORE_OF.match(line)
+        if store and store.group(1) == dest and line.count(dest) == 1:
+            stored = True
+            continue
+        if re.match(re.escape(dest) + r"\.u64 = ", line) and line.count(dest) == 1:
+            return "save" if stored else "unused"
+        return "use"
+    return "save-open" if stored else "unused"
+
 TRACE = set()
 TRACED = {}
 
@@ -159,14 +206,39 @@ def analyse(lines):
         queued.discard(index)
         body, successors = graph[index]
         state = dict(state_in[index])
-        for line in body:
+        for position, line in enumerate(body):
             if line.startswith("return") or (line.startswith("if (") and "return" in line):
                 for key, sources in state.items():
                     returns.setdefault(key, set()).update(sources)
+            for key in mf_reads(line):
+                outside = state.get(key, frozenset()) - {"mtcr"}
+                if outside and key[1] not in SHARED:
+                    dest = MF_DEST.match(line)
+                    MF_LAST.append((mf_use(body, position, dest.group(1)) if dest else "use", frozenset(outside)))
+            if DECLARATION.match(line):
+                continue
+            restored = MTCR.match(line)
+            if restored:
+                state[("cr", int(restored.group(1)), restored.group(2))] = frozenset({"mtcr"})
+                continue
+            if SETJMP_RESTORE in line:
+                # A longjmp returns here. ctx comes back from env, a local CR
+                # or XER field does not: what it holds then is the latest
+                # host value, not the guest value at setjmp (which the real
+                # setjmp/longjmp restore). Any read that follows unwritten
+                # depends on that.
+                for key in KEYS:
+                    if not (key[0] == "cr" and key[1] in SHARED):
+                        state[key] = state.get(key, frozenset()) | {"setjmp"}
+                continue
             for kind, key in statement_events(line):
                 if kind == "read":
-                    if state.get(key):
-                        found.setdefault(key, set()).update(state[key])
+                    sources = state.get(key, frozenset())
+                    if "mtcr" in sources:
+                        MTCR_LAST.append(Shape(line))
+                        sources = sources - {"mtcr"}
+                    if sources:
+                        found.setdefault(key, set()).update(sources)
                         SHAPES.setdefault(Shape(line), 0)
                         SHAPES[Shape(line)] += 1
                 else:
@@ -197,12 +269,22 @@ def analyse(lines):
     return found
 
 
+MF_BY = defaultdict(set)     # use kind -> functions
+MTCR_BY = set()
+XER_SO_WRITES = [0]
+
+
 def scan(files):
     functions = 0
     flagged = defaultdict(list)  # key label -> [(name, sources)]
+    MF_BY.clear()
+    MTCR_BY.clear()
+    XER_SO_WRITES[0] = 0
     for path in files:
         name, body = None, []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if XER_SO_WRITE.search(line):
+                XER_SO_WRITES[0] += 1
             started = FUNCTION.match(line)
             if started:
                 name, body = started.group(1), []
@@ -211,7 +293,13 @@ def scan(files):
             if name is None:
                 continue
             if line.startswith("}"):
+                MF_LAST.clear()
+                MTCR_LAST.clear()
                 result = analyse(body)
+                for kind, _ in MF_LAST:
+                    MF_BY[kind].add(name)
+                if MTCR_LAST:
+                    MTCR_BY.add(name)
                 if name in TRACE:
                     TRACED[name] = {k: set(v) for k, v in RETURNS_LAST.items()}
                 for key, sources in result.items():
@@ -229,14 +317,27 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, default=40)
     parser.add_argument("--trace", action="append", default=[],
                         help="function whose outside CR/XER sources at its returns are printed")
+    parser.add_argument("--shared", action="append", default=[], type=int,
+                        help="CR field kept in ctx under cr_as_local (cr_in_context_fields)")
+    parser.add_argument("--strict", action="store_true",
+                        help="exit 2 when any read can see a value the promoted build would not keep")
     args = parser.parse_args(argv)
     TRACE.update(args.trace)
+    SHARED.update(args.shared)
     files = sorted(args.directory.glob("ppc_recomp.*.cpp"))
     if not files:
         print(f"promotion check: no generated sources in {args.directory}")
         return 1
     functions, flagged = scan(files)
     print(f"promotion check: {functions} functions in {len(files)} files")
+    mf = {kind: set(names) for kind, names in MF_BY.items()}
+    mtcr = set(MTCR_BY)
+    xer_so = XER_SO_WRITES[0]
+    shared = {label: entries for label, entries in flagged.items() if label.startswith("cr") and int(label[2]) in SHARED}
+    for label in shared:
+        flagged.pop(label)
+    for label, entries in sorted(shared.items()):
+        print(f"promotion check: {label} kept in ctx: {len({n for n, _ in entries})} functions read it across a call or entry (covered)")
     # Follow call-sourced reads into their callees: which value does the
     # callee return in that field, its own or one of its callees' (up to
     # five levels). Names the functions that must keep CR in ctx together.
@@ -277,6 +378,14 @@ def main(argv=None):
         total = len(set().union(*names.values())) if names else 0
         detail = ", ".join(f"{len(v)} from {k}" for k, v in sorted(names.items()))
         print(f"promotion check: {group}: {total} functions can read an outside value" + (f" ({detail})" if detail else ""))
+    print("promotion check: mfcr/mfocrf seeing an outside value: " +
+          (", ".join(f"{len(v)} functions {k}" for k, v in sorted(mf.items())) or "none"))
+    for name in sorted(mf.get("use", set()))[:args.limit]:
+        print(f"  mf use {name}")
+    print(f"promotion check: reads of a value mtcr restored: {len(mtcr)} functions")
+    for name in sorted(mtcr)[:args.limit]:
+        print(f"  mtcr read {name}")
+    print(f"promotion check: xer.so/ov writes in generated code: {xer_so}")
     per_field = sorted(((label, len({n for n, _ in entries})) for label, entries in flagged.items()), key=lambda x: -x[1])
     print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
     for shape, count in sorted(SHAPES.items(), key=lambda x: -x[1])[:12]:
@@ -289,6 +398,8 @@ def main(argv=None):
         outside = {(f"cr{k[1]}.{k[2]}" if k[0] == "cr" else k[0]): "+".join(sorted(v)) for k, v in state.items() if v}
         print(f"promotion check: trace {name}: values at its returns from outside: " +
               (", ".join(f"{k}<-{v}" for k, v in sorted(outside.items())) or "none"))
+    problems = sum(len(entries) for entries in flagged.values()) + len(mf.get("use", ())) + len(mtcr) + xer_so
+    print(f"promotion check: verdict: {'clean' if not problems else f'{problems} open reads'}")
     shown = 0
     for label, entries in sorted(flagged.items()):
         for name, sources in sorted(set(entries)):
@@ -296,7 +407,7 @@ def main(argv=None):
                 break
             print(f"  {name} {label} from {sources}")
             shown += 1
-    return 0
+    return 2 if (args.strict and problems) else 0
 
 
 if __name__ == "__main__":

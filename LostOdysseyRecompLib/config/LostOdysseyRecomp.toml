@@ -10,9 +10,14 @@ switch_table_file_path = "switch_tables.toml"
 skip_lr = false
 skip_msr = false
 ctr_as_local = false
-xer_as_local = false
-reserved_as_local = false
-cr_as_local = false
+# Steprant 2.1.1: register promotion, checked on every build by
+# tools/ppc_promotion_check.py --strict. cr0 stays in ctx: one cr0.eq value
+# crosses a call (sub_8302E960 <- sub_82F99F48 <- sub_82F99D98 <- indirect).
+# skip_msr stays off: its gain is nil and mfmsr results would go stale.
+xer_as_local = true
+reserved_as_local = true
+cr_as_local = true
+cr_in_context_fields = [0]
 non_argument_as_local = false
 non_volatile_as_local = false
 
