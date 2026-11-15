@@ -47,8 +47,7 @@ namespace apu
         SDL_AudioStream* g_stream = nullptr;
         uint32_t g_channels = 2; // interleaved channels queued to g_device
         bool g_paused = false;
-        // Counts pause and resume calls: a guest callback that spans one ran
-        // while the game was suspended (Android background, host menu).
+        // Counts pauses, resumes and invalidations of the queued audio.
         std::atomic<uint32_t> g_pauseChanges{ 0 };
         bool g_audioReady = false;
         std::atomic<bool> g_surroundRequested{ false };
@@ -120,6 +119,22 @@ namespace apu
         // callback, and SDL then never takes audio again (#491).
         std::atomic<std::chrono::steady_clock::rep> g_resumedAt{ 0 };
         constexpr auto kResumeDrainTimeout = std::chrono::milliseconds(300);
+        // Count gaps requested by SDL's mixer after the stream has started.
+        // This clock advances only when a device read needs samples we lack.
+        std::atomic<bool> g_mixerFed{ false };
+        std::atomic<uint64_t> g_mixerMissingSamples{ 0 };
+
+        void SDLCALL NoteMixerShortage(void*, SDL_AudioStream* stream, int missingBytes, int)
+        {
+            if (missingBytes <= 0 || !g_mixerFed.load(std::memory_order_relaxed)) return;
+
+            SDL_AudioSpec source{};
+            if (SDL_GetAudioStreamFormat(stream, &source, nullptr) && source.channels)
+            {
+                const uint32_t missingSamples = uint32_t(missingBytes) / (source.channels * sizeof(float));
+                g_mixerMissingSamples.fetch_add(missingSamples, std::memory_order_relaxed);
+            }
+        }
 #endif
 
         uint32_t FrameBytes() { return XAUDIO_NUM_SAMPLES * g_channels * sizeof(float); }
@@ -142,6 +157,9 @@ namespace apu
             g_deviceOpens.fetch_add(1, std::memory_order_relaxed);
             if (g_stream) SDL_DestroyAudioStream(g_stream);
             g_stream = nullptr;
+#if LO_PLATFORM_ANDROID
+            g_mixerFed.store(false, std::memory_order_relaxed);
+#endif
             if (g_device) SDL_CloseAudioDevice(g_device);
             g_device = 0;
             g_channels = 2;
@@ -155,6 +173,7 @@ namespace apu
             if (surround && (wasapi || listedChannels >= 6))
                 desired.channels = 6;
             g_device = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired);
+            int deviceRate = 0, deviceSamples = 0;
             if (g_device)
             {
                 SDL_AudioSpec obtained{};
@@ -177,8 +196,14 @@ namespace apu
             if (g_device)
             {
                 SDL_AudioSpec obtained{};
-                if (SDL_GetAudioDeviceFormat(g_device, &obtained, nullptr))
+                if (SDL_GetAudioDeviceFormat(g_device, &obtained, &deviceSamples))
+                {
+                    deviceRate = obtained.freq;
                     g_stream = SDL_CreateAudioStream(&desired, &obtained);
+                }
+#if LO_PLATFORM_ANDROID
+                if (g_stream) SDL_SetAudioStreamGetCallback(g_stream, NoteMixerShortage, nullptr);
+#endif
                 if (!g_stream || !SDL_BindAudioStream(g_device, g_stream))
                 {
                     if (g_stream) SDL_DestroyAudioStream(g_stream);
@@ -194,8 +219,9 @@ namespace apu
                 else SDL_ResumeAudioDevice(g_device);
             }
             if (!g_device) LOG_WARNING("audio device unavailable: {}", SDL_GetError());
-            else LOG_INFO("audio output: 48000 Hz {} float, device channels listed {} mix {}, SDL driver {}",
-                g_channels == 6 ? "5.1" : "stereo", listedChannels, mixChannels, driver ? driver : "none");
+            else LOG_INFO("audio output: 48000 Hz {} float, device channels listed {} mix {}, SDL driver {} ({} Hz, {} sample frames)",
+                g_channels == 6 ? "5.1" : "stereo", listedChannels, mixChannels, driver ? driver : "none",
+                deviceRate, deviceSamples);
             g_outputChannels = g_device ? g_channels : 0;
         }
 
@@ -429,21 +455,26 @@ namespace apu
             GuestThreadContext ctx(3);
             constexpr auto framePeriod = std::chrono::microseconds(1000000ull * XAUDIO_NUM_SAMPLES / XAUDIO_SAMPLES_HZ);
             auto next = std::chrono::steady_clock::now();
-            // Steprant 2.0.6: the wall clock and the game's audio position as
-            // heard, for the lag measure (audio_lag_recovery.h).
-            const auto origin = next;
-            int64_t guestFramesRun = 0;
             uint32_t pauseChangesSeen = g_pauseChanges.load(std::memory_order_relaxed);
             uint32_t deviceOpensSeen = g_deviceOpens.load(std::memory_order_relaxed);
-            uint32_t reserveSeen = g_reserveFrames.load(std::memory_order_relaxed);
 #if LO_PLATFORM_ANDROID
             detail::ReserveBoost reserveBoost;
             uint32_t reserveLines = 0;
-#endif
-            const auto wallFrames = [&] {
+            // AudioFlinger can pace reads differently from the host timer.
+            // Repay only sample deficits reported by the SDL mixer.
+            const auto lagClockFrames = [] {
+                return double(g_mixerMissingSamples.load(std::memory_order_relaxed)) / XAUDIO_NUM_SAMPLES;
+            };
+            const auto audioProgressFrames = [] { return int64_t(g_lagRecovery.RepaidFrames()); };
+#else
+            const auto origin = next;
+            int64_t guestFramesRun = 0;
+            uint32_t reserveSeen = g_reserveFrames.load(std::memory_order_relaxed);
+            const auto lagClockFrames = [&] {
                 return std::chrono::duration<double>(std::chrono::steady_clock::now() - origin) / framePeriod;
             };
-            const auto heardFrames = [&] { return guestFramesRun - int64_t(QueuedFrames()); };
+            const auto audioProgressFrames = [&] { return guestFramesRun - int64_t(QueuedFrames()); };
+#endif
             while (g_running)
             {
                 // Steprant 2.0.8: the picture is frozen (a load, a shader
@@ -478,15 +509,16 @@ namespace apu
                 }
 #endif
                 g_effectiveReserve.store(reserve, std::memory_order_relaxed);
-                // A pause or a trip to the background, a reopened device or a
-                // new reserve since the previous period: start measuring again.
+                // Discard the old lag on a pause, reopen or loading screen.
                 const uint32_t pauseChanges = g_pauseChanges.load(std::memory_order_relaxed);
                 const uint32_t deviceOpens = g_deviceOpens.load(std::memory_order_relaxed);
-                bool rebase = pauseChanges != pauseChangesSeen || deviceOpens != deviceOpensSeen || reserve != reserveSeen;
-                if (pictureFrozen) rebase = true;
+                bool rebase = pictureFrozen || pauseChanges != pauseChangesSeen || deviceOpens != deviceOpensSeen;
                 pauseChangesSeen = pauseChanges;
                 deviceOpensSeen = deviceOpens;
+#if !LO_PLATFORM_ANDROID
+                rebase = rebase || reserve != reserveSeen;
                 reserveSeen = reserve;
+#endif
                 next += framePeriod;
                 // Precise wakeups: a late one drains the few frames SDL has queued.
                 os::scheduling::PreciseSleepUntil(next);
@@ -531,7 +563,9 @@ namespace apu
                     g_guestFramesPerOutput.store(frames, std::memory_order_relaxed);
                     for (uint32_t i = 0; i < frames; ++i)
                     {
+#if !LO_PLATFORM_ANDROID
                         ++guestFramesRun;
+#endif
                         const auto callbackStart = std::chrono::steady_clock::now();
                         struct RecordCallback
                         {
@@ -609,7 +643,7 @@ namespace apu
                 {
                     const auto callbackStart = std::chrono::steady_clock::now();
                     dispatch(1);
-                    const bool quick = std::chrono::steady_clock::now() - callbackStart < framePeriod / 2;
+                    bool canRepay = std::chrono::steady_clock::now() - callbackStart < framePeriod / 2;
 #if LO_PLATFORM_ANDROID
                     // Keep the intended eight-frame reserve even when a host
                     // stall reset `next`. One timed callback per period cannot
@@ -623,19 +657,24 @@ namespace apu
                         // overdue wall-clock deadlines for these same frames.
                         next = std::chrono::steady_clock::now();
                     }
+                    // A callback or refill can span a load, pause or device
+                    // change. Check again before using the collected samples.
+                    rebase = rebase || !g_mixerFed.load(std::memory_order_relaxed)
+                        || g_pauseChanges.load(std::memory_order_relaxed) != pauseChanges
+                        || g_deviceOpens.load(std::memory_order_relaxed) != deviceOpens
+                        || gpu::present_clock::PictureFrozen(gpu::present_clock::NowNs())
+                        || debug_menu::fast_forward::AudioRate() > 1;
 #endif
-                    // Steprant 2.0.6: measure how far the game's audio is
-                    // behind the wall clock and repay it, one dropped guest
-                    // frame every few periods.
+                    // Repay the audio lag one guest frame at a time.
                     if (!rebase)
                     {
                         const auto stallsBefore = g_lagRecovery.Stalls();
-                        const bool caughtUp = g_lagRecovery.Observe(wallFrames(), heardFrames());
+                        const bool caughtUp = g_lagRecovery.Observe(lagClockFrames(), audioProgressFrames());
                         static uint32_t reported = 0;
                         if (g_lagRecovery.Stalls() != stallsBefore && reported < 32)
                         {
                             ++reported;
-                            LOG_INFO("audio resync: game audio {:.1f} ms behind the picture, repaying (starved={})",
+                            LOG_INFO("audio resync: repaying {:.1f} ms of audio lag (starved={})",
                                 FrameMs(g_lagRecovery.PendingFrames()), g_starved.load(std::memory_order_relaxed));
                         }
                         if (caughtUp && reported < 32)
@@ -644,7 +683,11 @@ namespace apu
                             LOG_INFO("audio resync: caught up, {:.1f} ms repaid so far (largest lag {:.1f} ms)",
                                 FrameMs(g_lagRecovery.RepaidFrames()), FrameMs(g_lagRecovery.MaxLagFrames()));
                         }
-                        if (g_lagRecovery.SkipThisPeriod(quick))
+#if LO_PLATFORM_ANDROID
+                        if (canRepay && g_lagRecovery.Repaying())
+                            canRepay = QueuedFrames() >= reserve;
+#endif
+                        if (g_lagRecovery.SkipThisPeriod(canRepay))
                         {
                             g_dropFrame.store(true, std::memory_order_relaxed);
                             dispatch(1);
@@ -656,7 +699,7 @@ namespace apu
                 }
                 if (rebase && g_lagRecovery.Enabled())
                 {
-                    g_lagRecovery.Rebase(wallFrames(), heardFrames());
+                    g_lagRecovery.Rebase(lagClockFrames(), audioProgressFrames());
                     PublishLag();
                 }
             }
@@ -674,17 +717,13 @@ namespace apu
         const uint32_t sampleFrames = detail::DeviceSampleFrames(deviceFrames ? uint32_t(atoi(deviceFrames)) : 0, 512);
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, std::to_string(sampleFrames).c_str());
 #ifdef __ANDROID__
-        // Steprant 2.1.1-F: AAudio without the low-latency mode. SDL asks for
-        // AAUDIO_PERFORMANCE_MODE_LOW_LATENCY by default, which keeps the
-        // system's fast mixer and audio DSP path waking every few milliseconds
-        // for the whole session (outside this process, so not in its thread
-        // stats). The normal path mixes in larger periods. The game's own
-        // callback period stays 512 frames. LO_AUDIO_LOW_LATENCY=1 restores it.
+        // Use AAudio's low-latency path by default. With the normal path,
+        // 2.1.1-F logged gaps even during steady gameplay on the Xiaomi 14.
         {
             const char* lowLatency = getenv("LO_AUDIO_LOW_LATENCY");
-            const bool keep = lowLatency && std::string_view(lowLatency) == "1";
-            SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, keep ? "1" : "0");
-            LOG_INFO("audio output: AAudio {} mode", keep ? "low-latency" : "normal (power-saving)");
+            const bool useLowLatency = !lowLatency || std::string_view(lowLatency) != "0";
+            SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, useLowLatency ? "1" : "0");
+            LOG_INFO("audio output: AAudio {} mode", useLowLatency ? "low-latency" : "normal (power-saving)");
         }
 #endif
         // Steprant 2.0.6: LO_AUDIO_RESYNC=0 leaves the lag after a stall, as before.
@@ -788,6 +827,10 @@ namespace apu
         g_client.Unregister();
         g_resetFastForwardAudio.store(true, std::memory_order_relaxed);
         std::lock_guard lock(g_deviceMutex);
+#if LO_PLATFORM_ANDROID
+        g_mixerFed.store(false, std::memory_order_relaxed);
+        g_pauseChanges.fetch_add(1, std::memory_order_relaxed);
+#endif
         if (g_stream) SDL_ClearAudioStream(g_stream);
     }
 
@@ -942,6 +985,9 @@ namespace apu
                 if (before < int(FrameBytes() * (g_effectiveReserve.load(std::memory_order_relaxed) + 8)))
                 {
                     if (!SDL_PutAudioStreamData(g_stream, data, int(FrameBytes()))) ++queueErrors;
+#if LO_PLATFORM_ANDROID
+                    else g_mixerFed.store(true, std::memory_order_relaxed);
+#endif
                 }
                 else ++queueDrops;
                 if (report) queued = std::max(0, SDL_GetAudioStreamQueued(g_stream));
@@ -962,6 +1008,10 @@ namespace apu
                 g_lagStalls.load(std::memory_order_relaxed), FrameMs(g_lagPending.load(std::memory_order_relaxed)),
                 FrameMs(g_lagRepaid.load(std::memory_order_relaxed)), FrameMs(g_lagMax.load(std::memory_order_relaxed)),
                 g_lagAbandoned.load(std::memory_order_relaxed));
+#if LO_PLATFORM_ANDROID
+            LOG_INFO("audio mixer: missing_ms={:.1f}",
+                double(g_mixerMissingSamples.load(std::memory_order_relaxed)) * 1000.0 / XAUDIO_SAMPLES_HZ);
+#endif
         }
 #if defined(__ANDROID__)
         if (::diagnostics::android_tester::g_recorder.recording.load(std::memory_order_relaxed))

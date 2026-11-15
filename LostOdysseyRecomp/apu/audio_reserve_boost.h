@@ -16,8 +16,7 @@
 // reserve one frame every kStepNs: each step leaves out a single 5.3 ms guest
 // period instead of pausing the game's audio for the whole 64 ms at once.
 // A larger reserve set by the player or LO_AUDIO_RESERVE_FRAMES is never
-// lowered. The driver rebases the lag measure whenever the reserve changes
-// (audio.cpp), so no change is read as a stall to repay.
+// lowered. Reserve changes do not add to the mixer's missing-sample count.
 #include <algorithm>
 #include <cstdint>
 

@@ -83,6 +83,35 @@ int main()
         Check(d.skips == 0 && d.lag.Stalls() == 0, "chunked playback is not a lag");
     }
     {
+        AudioLagRecovery lag;
+        constexpr uint32_t samplesPerFrame = 256;
+        uint64_t missingSamples = 0;
+        const auto observeMixer = [&] {
+            return lag.Observe(double(missingSamples) / samplesPerFrame, lag.RepaidFrames());
+        };
+        observeMixer();
+        uint32_t skips = 0;
+        for (uint32_t period = 0; period < 4000; ++period)
+        {
+            // SDL's read cadence varies while every mixer request is satisfied.
+            if (period % 3 == 0) observeMixer();
+            skips += lag.SkipThisPeriod(true);
+        }
+        Check(lag.Stalls() == 0 && skips == 0, "a change in mixer cadence is not a stall");
+
+        missingSamples += 2400; // 50 ms of unsatisfied 48 kHz sample demand.
+        observeMixer();
+        Check(lag.Repaying() && lag.PendingFrames() == 9, "actual mixer shortage starts recovery");
+        for (uint32_t period = 0; period < 32 && lag.Repaying(); ++period)
+        {
+            if (lag.SkipThisPeriod(true)) lag.Repaid();
+            observeMixer();
+        }
+        Check(lag.RepaidFrames() == 7 && !lag.Repaying(), "mixer shortage is repaid once");
+        for (uint32_t period = 0; period < 4000; ++period) observeMixer();
+        Check(lag.Stalls() == 1 && lag.RepaidFrames() == 7, "no new recovery without new shortages");
+    }
+    {
         // Ahead of the wall clock (start-up fill, a fast device clock): the
         // anchor moves, so a later silence counts in full.
         Driver d;

@@ -14,11 +14,10 @@
 // ("starved"): most silences never reset the clock, so the voices drifted
 // behind again a little after the flowers/Jansen scene.
 //
-// Now the lag is measured, not guessed: once per period the driver compares
-// the wall clock with the game's audio position as heard (guest frames run,
-// dropped ones included, minus the frames still queued). Both start equal
-// at an anchor; a timeline that gets ahead (start-up fill, a device clock a
-// little fast) moves the anchor, so only falling behind counts.
+// On desktop the driver compares wall time with the game's audio position
+// (guest frames run, including drops, minus the frames still queued).
+// On Android it compares the missing samples reported by SDL's mixer with
+// the guest frames skipped to catch up. Mixer cadence alone creates no lag.
 //
 // Recovery: from kStartFrames of lag (32 ms) until kStopFrames, and only
 // after a quick callback, one period in four runs a second guest frame whose
@@ -27,7 +26,8 @@
 //
 // Not recovered, on purpose: the app paused or in the background (the game
 // stops with the audio), fast-forward (it moves the game ahead by itself), a
-// device reopened, a reserve change, and a lag over two seconds (abandoned).
+// device reopened, and a lag over two seconds (abandoned). The desktop
+// wall-clock calculation also starts over when the reserve changes.
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -56,15 +56,12 @@ public:
     }
     bool Enabled() const { return enabled_; }
 
-    // The wall clock and the game's audio agree here (start, pause, resume,
-    // fast-forward, device reopen, reserve change). `wallFrames`: wall time
-    // in periods since any fixed origin; `heardFrames`: guest frames run
-    // (dropped ones included) minus frames still queued for the device.
-    void Rebase(double wallFrames, int64_t heardFrames)
+    // Establish an anchor for the two counters, in guest-frame units.
+    void Rebase(double clockFrames, int64_t progressFrames)
     {
         if (repaying_) ++abandoned_;
-        baseWall_ = wallFrames;
-        baseHeard_ = heardFrames;
+        baseClock_ = clockFrames;
+        baseProgress_ = progressFrames;
         anchored_ = true;
         lag_ = 0;
         repaying_ = false;
@@ -73,22 +70,22 @@ public:
 
     // Once per driver period at normal speed. Returns true when a repayment
     // has just finished (for the log).
-    bool Observe(double wallFrames, int64_t heardFrames)
+    bool Observe(double clockFrames, int64_t progressFrames)
     {
         if (!enabled_) return false;
-        if (!anchored_) { Rebase(wallFrames, heardFrames); return false; }
-        const double lag = (wallFrames - baseWall_) - double(heardFrames - baseHeard_);
+        if (!anchored_) { Rebase(clockFrames, progressFrames); return false; }
+        const double lag = (clockFrames - baseClock_) - double(progressFrames - baseProgress_);
         if (lag < 0)
         {
-            // Ahead of the wall clock: move the anchor, nothing to repay.
-            baseWall_ = wallFrames;
-            baseHeard_ = heardFrames;
+            // Progress moved ahead of the clock. Start measuring here.
+            baseClock_ = clockFrames;
+            baseProgress_ = progressFrames;
             lag_ = 0;
         }
         else if (lag > kMaxLagFrames)
         {
             repaying_ = false;
-            Rebase(wallFrames, heardFrames);
+            Rebase(clockFrames, progressFrames);
             ++abandoned_;
             return false;
         }
@@ -123,8 +120,8 @@ public:
 
 private:
     bool enabled_ = true, anchored_ = false, repaying_ = false;
-    double baseWall_ = 0;
-    int64_t baseHeard_ = 0;
+    double baseClock_ = 0;
+    int64_t baseProgress_ = 0;
     uint32_t lag_ = 0, phase_ = 0, repaid_ = 0, maxLag_ = 0, stalls_ = 0, abandoned_ = 0;
 };
 
