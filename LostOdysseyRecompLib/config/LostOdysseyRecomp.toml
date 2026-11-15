@@ -172,6 +172,15 @@ address = 0x82301DA0
 registers = ["r1", "r31"]
 after_instruction = false
 
+# sub_825F9928 expects an animation object from its virtual call at
+# 0x825FA50C. If it is absent, use the function's own restore-and-return path.
+[[midasm_hook]]
+name = "SkipMissingAnimationObject"
+address = 0x825FA510
+registers = ["r3", "r29"]
+jump_address_on_true = 0x825FA640
+after_instruction = false
+
 [[midasm_hook]]
 name = "FramePlanBeforeExecute"
 address = 0x824857C8
