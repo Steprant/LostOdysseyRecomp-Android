@@ -711,11 +711,15 @@ static uint32_t KeWaitForMultipleObjects(uint32_t Count, xpointer<XDISPATCHER_HE
 }
 static uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
 {
-    WaitScope scope("NtWaitForSingleObjectEx", Handle);
     if (Alertable && DeliverUserApcs()) return STATUS_USER_APC;
     if (Handle == CURRENT_THREAD_HANDLE) return STATUS_TIMEOUT;
     auto object = GetKernelObject(Handle);
-    return object ? object->Wait(GuestTimeoutToMilliseconds(Timeout)) : STATUS_INVALID_HANDLE;
+    if (!object) return STATUS_INVALID_HANDLE;
+    const auto timeout = GuestTimeoutToMilliseconds(Timeout);
+    // A poll cannot wait for the object to become signaled.
+    if (timeout == 0) return object->Wait(0);
+    WaitScope scope("NtWaitForSingleObjectEx", Handle);
+    return object->Wait(timeout);
 }
 static uint32_t NtWaitForMultipleObjectsEx(uint32_t Count, be<uint32_t>* Handles, uint32_t WaitType, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
 {
@@ -804,8 +808,13 @@ static void RtlInitializeCriticalSectionAndSpinCount(XRTL_CRITICAL_SECTION* cs, 
 
 static void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    const uint32_t thread = g_ppcContext->r13.u32;
+    // Timestamp the slow path only. Uncontended and recursive entries
+    // complete without registering a blocked thread.
+    if (GuestCriticalSection::TryEnter(cs->RecursionCount, cs->OwningThread, thread))
+        return;
     WaitScope scope("RtlEnterCriticalSection", g_memory.MapVirtual(cs));
-    GuestCriticalSection::Enter(cs->RecursionCount, cs->OwningThread, g_ppcContext->r13.u32);
+    GuestCriticalSection::Enter(cs->RecursionCount, cs->OwningThread, thread);
 }
 
 static bool RtlTryEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
