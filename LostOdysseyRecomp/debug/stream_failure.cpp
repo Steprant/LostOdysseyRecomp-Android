@@ -1,7 +1,9 @@
 #include <stdafx.h>
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <os/logger.h>
 
@@ -23,6 +25,7 @@ constexpr uint32_t StreamSlots = 3580;
 constexpr uint32_t SlotSize = 20;
 constexpr uint32_t SlotCount = 6;
 constexpr uint32_t ChannelPath = 127; // channel objects are 320 bytes
+constexpr uint64_t AutoRelease = 2;
 
 bool GuestPointer(uint32_t p) { return p >= 0x10000 && p < 0xF0000000u; }
 
@@ -36,6 +39,17 @@ std::string GuestString(uint8_t* base, uint32_t p, size_t max)
         s.push_back(c >= 32 && c < 127 ? c : '?');
     }
     return s;
+}
+
+bool DreamSegment(std::string_view path)
+{
+    if (const auto slash = path.find_last_of("\\/"); slash != std::string_view::npos)
+        path.remove_prefix(slash + 1);
+    if (path.size() != 17 || !path.starts_with("dream_") || path[8] != '-' || !path.ends_with(".xwv"))
+        return false;
+    const auto digit = [](char value) { return value >= '0' && value <= '9'; };
+    return std::all_of(path.begin() + 6, path.begin() + 8, digit) &&
+        std::all_of(path.begin() + 9, path.begin() + 13, digit);
 }
 
 // Occupied slots as state/substate (sub_82B62610: substate 5 starting, 10/11
@@ -67,6 +81,14 @@ std::string DescribeSlots(uint8_t* base, uint32_t system)
 PPC_FUNC(sub_82B5F610)
 {
     const uint32_t system = ctx.r3.u32, type = ctx.r4.u32, path = ctx.r5.u32;
+    std::string name;
+    if (GuestPointer(system) && system == PPC_LOAD_U32(SoundSystem) && !(ctx.r6.u64 & AutoRelease))
+    {
+        name = GuestString(base, path, 200);
+        // Numbered dream clips otherwise remain in state 6/substate 12.
+        // Use the game's end-of-stream release, including its worker queue.
+        if (DreamSegment(name)) ctx.r6.u64 |= AutoRelease;
+    }
     __imp__sub_82B5F610(ctx, base);
     const uint32_t handle = ctx.r3.u32;
     if (!GuestPointer(system))
@@ -80,7 +102,7 @@ PPC_FUNC(sub_82B5F610)
         return;
     // A caller may retry a failed start every frame: report each reason and
     // path again only after 10 s, so later failures still reach the log.
-    const std::string name = GuestString(base, path, 200);
+    if (name.empty()) name = GuestString(base, path, 200);
     const auto now = std::chrono::steady_clock::now();
     {
         static std::mutex mutex;
