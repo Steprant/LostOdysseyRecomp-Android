@@ -12,6 +12,7 @@
 namespace debug_menu::fast_forward {
 inline constexpr unsigned Rates[] = {2, 3, 4, 6, 8};
 inline constexpr uint64_t InputLeaseNs = 250000000;
+inline constexpr uint64_t AudioRecoveryNs = 750000000;
 // Outside free field walking (battles, events, the intro), one game frame
 // may advance at most this much game time. The game was written for 33 ms
 // frames; a steady 133 ms (4x) to 267 ms (8x) per frame stalled battle
@@ -72,8 +73,17 @@ struct Control {
     // Frame limit (see LimitedFrameNs): on outside free field walking.
     bool limited = false;
     unsigned rateCap = ~0u;
-    uint64_t frameStart = 0;
-    unsigned Boost() const { return std::max(1u, std::min(multiplier, rateCap)); }
+    uint64_t frameStart = 0, audioRecoveryUntil = 0;
+    unsigned Boost(uint64_t now) const {
+        return now < audioRecoveryUntil ? 1 : std::max(1u, std::min(multiplier, rateCap));
+    }
+    // Audio and game time return to 1x together. Keep the Hold or Toggle
+    // input so normal controller sampling can resume the requested rate.
+    void RecoverAudio(uint64_t now) {
+        clock.Read(now);
+        clock.rate = 1;
+        audioRecoveryUntil = now + std::min(AudioRecoveryNs, std::numeric_limits<uint64_t>::max() - now);
+    }
     // Engine tick, guest game thread: the previous frame's real length sets
     // the cap for this one.
     void BeginFrame(uint64_t now, bool limit) {
@@ -82,7 +92,7 @@ struct Control {
         frameStart = now;
         limited = limit;
         rateCap = limit ? LimitedRate(multiplier, frame) : ~0u;
-        if (clock.rate > 1) clock.rate = Boost();
+        if (clock.rate > 1) clock.rate = Boost(now);
     }
     void Stop(uint64_t now) {
         clock.Read(now); clock.rate = 1; clock.lease = now;
@@ -96,7 +106,7 @@ struct Control {
     void SetRate(unsigned value, uint64_t now) {
         if (std::find(std::begin(Rates), std::end(Rates), value) == std::end(Rates)) return;
         clock.Read(now); multiplier = value;
-        if (clock.rate > 1) clock.rate = Boost();
+        if (clock.rate > 1) clock.rate = Boost(now);
     }
     void Pause(bool value, uint64_t now) {
         Stop(now); clock.paused = value;
@@ -114,7 +124,7 @@ struct Control {
             else if (pair <= 32) held = !held;
             armed = false;
         }
-        clock.rate = held && pair <= 32 ? Boost() : 1;
+        clock.rate = held && pair <= 32 ? Boost(now) : 1;
         clock.lease = now > std::numeric_limits<uint64_t>::max() - InputLeaseNs
             ? std::numeric_limits<uint64_t>::max() : now + InputLeaseNs;
     }
@@ -140,6 +150,11 @@ inline void PublishRate() {
 }
 inline unsigned AudioRate() { return audioRate.load(std::memory_order_relaxed); }
 inline bool KeepAudioPitch() { return audioKeepPitch.load(std::memory_order_relaxed); }
+inline void RecoverAudio() {
+    std::lock_guard lock(mutex);
+    control.RecoverAudio(NowNs());
+    PublishRate();
+}
 inline uint64_t GameTimeNs() {
     std::lock_guard lock(mutex);
     const uint64_t value = control.clock.Read(NowNs());

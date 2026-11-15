@@ -181,11 +181,43 @@ void CheckFastForwardBattleLimit()
     Check(control.OwnsButton(0) && !control.OwnsButton(255), "fast-forward on: the button is the speed control; the pair chord passes");
 }
 
+void CheckFastForwardAudioRecovery()
+{
+    using namespace debug_menu::fast_forward;
+    constexpr uint64_t t = 1000;
+    for (const auto mode : {Mode::Hold, Mode::Toggle})
+    {
+        Control control;
+        control.Enable(true, 0);
+        control.SetRate(4, 0);
+        control.SetMode(mode, 0);
+        control.Sample(0, 0, true, 0);
+        control.Sample(255, 0, true, 0);
+        Check(control.ActiveRate() == 4, "boost before audio recovery");
+        const uint64_t start = control.clock.Read(t);
+        control.RecoverAudio(t);
+        control.Sample(255, 0, true, t + AudioRecoveryNs / 2);
+        Check(control.ActiveRate() == 1 && control.clock.Read(t + AudioRecoveryNs) - start == AudioRecoveryNs,
+            "audio recovery runs the guest clock at 1x without advancing or pausing it");
+        control.Sample(255, 0, true, t + AudioRecoveryNs);
+        Check(control.ActiveRate() == 4, "the requested boost resumes after audio recovery");
+    }
+    Control control;
+    control.Enable(true, 0);
+    control.Sample(0, 0, true, 0);
+    control.Sample(255, 0, true, 0);
+    control.RecoverAudio(t);
+    control.Sample(0, 0, true, t + AudioRecoveryNs / 2);
+    control.Sample(0, 0, true, t + AudioRecoveryNs);
+    Check(control.ActiveRate() == 1, "releasing Hold during recovery leaves the game at normal speed");
+}
+
 int main()
 {
     CheckFastForwardButtons();
     CheckFastForwardTriggerHysteresis();
     CheckFastForwardBattleLimit();
+    CheckFastForwardAudioRecovery();
     CheckFastForwardBindingChange();
     using namespace debug_menu::soft_reset;
     Snapshot ready;

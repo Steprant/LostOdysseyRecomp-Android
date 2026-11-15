@@ -631,9 +631,24 @@ namespace apu
                     // three quarters of it, so the output never runs dry.
                     const uint32_t frames = std::min(rate, g_boostFrames);
                     rebase = true; // fast-forward moves the game ahead by itself
+#if LO_PLATFORM_ANDROID
+                    const auto missingBefore = g_mixerMissingSamples.load(std::memory_order_relaxed);
+#endif
                     const auto start = std::chrono::steady_clock::now();
                     dispatch(frames);
                     const auto spent = std::chrono::steady_clock::now() - start;
+#if LO_PLATFORM_ANDROID
+                    // A long guest callback can empty the queue even with
+                    // the larger reserve during a sped-up scene transition.
+                    // At 1x the normal refill path gets time to rebuild it.
+                    if (g_pauseChanges.load(std::memory_order_relaxed) == pauseChanges &&
+                        (spent >= std::chrono::milliseconds(detail::ReserveBoost::kStallMs) ||
+                         g_mixerMissingSamples.load(std::memory_order_relaxed) != missingBefore))
+                    {
+                        debug_menu::fast_forward::RecoverAudio();
+                        next = std::chrono::steady_clock::now();
+                    }
+#endif
                     if (spent > framePeriod * 3 / 4)
                         g_boostFrames = std::max(2u, frames - 1);
                     else if (spent < framePeriod / 2 && frames == g_boostFrames)
