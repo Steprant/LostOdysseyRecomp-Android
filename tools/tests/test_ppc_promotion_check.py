@@ -12,6 +12,7 @@ PPC_FUNC_IMPL(__imp__sub_82000000) {
 \tPPC_FUNC_PROLOGUE();
 \tctx.r12.u64 = ctx.cr0.lt ? 0x80000000 : 0;
 \tctx.r12.u64 |= ctx.cr2.eq ? 0x200000 : 0;
+\tctx.r12.u64 = (ctx.cr6.lt << 7) | (ctx.cr6.gt << 6) | (ctx.cr6.eq << 5) | (ctx.cr6.so << 4);
 \tctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 \tif (ctx.cr6.eq) goto loc_82000010;
 \tctx.xer.ca = ctx.r3.u32 < 4;

@@ -22,6 +22,8 @@ reservation. It prints function names, the field and the kind of source
 Benign reads, not reported:
 - mfcr in a prologue saving the CR fields: with locals it saves and later
   restores the function's own copy, and the caller's copy is untouched;
+- mfocrf, emitted as a read of cr6 whatever field it names, to save a field
+  that is never restored (XenonRecomp has no mtcrf);
 - XER summary overflow, copied by every compare and by stwcx./stdcx.: it is
   0 everywhere unless an mtxer sets it, the same with a local.
 """
@@ -36,6 +38,11 @@ LABEL = re.compile(r"^(loc_[0-9A-Fa-f]+):")
 GOTO = re.compile(r"goto (loc_[0-9A-Fa-f]+);")
 CR = re.compile(r"ctx\.cr([0-7])(?:\.(lt|gt|eq|so))?")
 MFCR = re.compile(r"\.u64 \|?= ctx\.cr[0-7]\.(?:lt|gt|eq|so) \? 0x")
+# mfocrf, which XenonRecomp emits as a read of cr6 whatever field the
+# instruction names (recompiler.cpp: "TODO: don't hardcode to cr6"). Compiled
+# code uses it to save a non-volatile field in a prologue; XenonRecomp has no
+# mtcrf, so the saved value is never written back to CR. Benign.
+MFOCRF = re.compile(r"\.u64 = \(ctx\.cr6\.lt << 7\) \| \(ctx\.cr6\.gt << 6\) \| \(ctx\.cr6\.eq << 5\) \| \(ctx\.cr6\.so << 4\);")
 XER_CA = re.compile(r"ctx\.xer\.ca")
 RESERVED = re.compile(r"ctx\.reserved(?:\.\w+)?")
 CALL = re.compile(r"(?:\bsub_[0-9A-Fa-f]{8}|__imp__\w+|PPC_CALL_INDIRECT_FUNC)\s*\(")
@@ -52,7 +59,7 @@ def statement_events(line):
     """Return ('read'|'write', key) events of one line, reads of an assignment's
     right-hand side before its write. Keys: ('cr', field, bit), ('ca',), ('res',)."""
     reads, writes = [], []
-    if not MFCR.search(line):
+    if not MFCR.search(line) and not MFOCRF.search(line):
         for match in CR.finditer(line):
             field, bit = int(match.group(1)), match.group(2)
             tail = line[match.end():]
