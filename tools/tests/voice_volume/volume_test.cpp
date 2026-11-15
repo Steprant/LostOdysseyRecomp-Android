@@ -1,4 +1,5 @@
 #include <stdafx.h>
+#include <apu/audio.h>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <unordered_map>
 
 PPC_FUNC(sub_82B6C650);
+PPC_FUNC(sub_82B6D400);
 PPC_FUNC(sub_82B71E68);
 PPC_FUNC(sub_82B6EA80);
 PPC_FUNC(sub_82B6F708);
@@ -71,6 +73,7 @@ void Source(uint32_t voice, std::initializer_list<uint8_t> speakers)
 }
 void Reset()
 {
+    apu::SetFieldDialogueMix(false);
     guest.fill(0); highGuest.clear();
     Store32(SoundSystemPointer, System);
     Store32(StreamVoicesPointer, Voices); Store32(Voices + 8, VoiceTable);
@@ -117,6 +120,7 @@ uint32_t fixture::Load32(uint32_t address)
     for (unsigned i = 0; i != 4; ++i) value = (value << 8) | Load8(address + i);
     return value;
 }
+void fixture::Write8(uint32_t address, uint8_t value) { Store8(address, value); }
 namespace apu { uint32_t VoiceVolume() { return voicePercent; } }
 
 // These are the only retail stubs. The type/category mapping follows
@@ -156,14 +160,21 @@ extern "C" PPC_FUNC(__imp__sub_82B6C650)
     sub_82B71E68(ctx, base); // exercise the real category hook inside the real update hook
     captured = {voice, argument, ctx.f1.f64, ctx.f1.f64 * sceneGain};
 }
+extern "C" PPC_FUNC(__imp__sub_82B6D400)
+{
+    const uint32_t channel = ctx.r3.u32;
+    if (!fixture::Load8(channel + 20)) return;
+    Store8(channel + 20, 0);
+    sub_82B6C650(ctx, base);
+}
 
 int main()
 {
     Reset();
     Options(128, 0, 128, 100);
-    Volume(Primary, 1, "Music 0 retains the localized mono-FC dialogue");
-    Volume(0, 1, "Music 0 retains dialogue through the retail primary lookup");
-    Volume(Secondary, 1, "Music 0 retains the retail effects-category RT base");
+    Volume(Primary, 1.25, "Music 0 retains the localized mono-FC dialogue with added gain");
+    Volume(0, 1.25, "Music 0 retains dialogue through the retail primary lookup");
+    Volume(Secondary, .60, "the companion mix is lowered under a recognized voice");
 
     Options(128, 128, 128, 0);
     Volume(Primary, 0, "Voice 0 mutes only the actual mono-FC source");
@@ -171,20 +182,19 @@ int main()
     Volume(Secondary, 1, "Voice 0 retains the five-channel companion base");
 
     Options(128, 128, 0, 65);
-    Volume(Primary, .65, "Effects 0 retains the independent Voice gain");
-    Volume(0, .65, "Effects 0 retains Voice through the retail primary lookup");
+    Volume(Primary, .8125, "Effects 0 retains the independent Voice gain");
+    Volume(0, .8125, "Effects 0 retains Voice through the retail primary lookup");
     Volume(Secondary, 0, "Effects 0 retains the retail base mute");
     Options(64, 0, 32, 37);
-    Volume(Primary, .185, "Voice uses master without multiplying the retail effects gain", .4);
-    Volume(Secondary, .125, "base retains master times retail effects gain and event curve", .4);
+    Volume(Primary, .23125, "Voice uses master without multiplying the retail effects gain", .4);
+    Volume(Secondary, .075, "companion retains master, effects and event curve under the dialogue", .4);
 
-    // Every default slider matches the retail category, including master
-    // attenuation and a nontrivial existing scene curve.
+    // Master and event curves still scale both parts of the pair.
     for (uint8_t master : std::array<uint8_t, 3>{128, 64, 31})
     {
         Reset(); Options(master, 128, 128, 100);
-        Volume(Primary, double(master) / 128, "default Voice matches retail gain", .625);
-        Volume(Secondary, double(master) / 128, "default base matches retail gain", .625);
+        Volume(Primary, 1.25 * master / 128, "default Voice has added gain", .625);
+        Volume(Secondary, .60 * master / 128, "companion mix is lowered", .625);
     }
 
     // The actual full-surround sidecars found for RT035/RT115 and others are
@@ -200,8 +210,8 @@ int main()
     // Steprant 2.1.1-E: an unpaired mono-FC source is dialogue too (the 15/11
     // dialogues that stayed quiet never reached the paired-only rule).
     Reset(); Store16(Channel + 124, 0); Options(128, 0, 96, 50);
-    Volume(Primary, .5, "unpaired mono-FC source follows master x Voice");
-    Volume(0, .5, "unpaired mono-FC primary lookup follows Voice");
+    Volume(Primary, .625, "unpaired mono-FC source follows master x Voice");
+    Volume(0, .625, "unpaired mono-FC primary lookup follows Voice");
     Reset(); Store16(Channel + 124, 0); Source(Primary, {0, 1}); Options(128, 0, 96, 50);
     Volume(Primary, .75, "unpaired stereo source retains retail category");
     Reset(); Source(Primary, {0}); Options(128, 0, 32, 0);
@@ -251,8 +261,34 @@ int main()
     Store8(Channel + 11, 17); Options(128, 128, 128, 100);
     Volume(Primary, .5, "type-17 BGM follows the BGM balance too");
 
+    Reset(); Store16(Channel + 124, 0); Store8(Channel + 11, 19);
+    Source(Primary, {0, 1}); Options(128, 128, 128, 100);
+    const auto updateLiveBgm = [] {
+        PPCContext ctx;
+        ctx.r3.u32 = Channel;
+        ctx.r4.u32 = Primary;
+        sub_82B6D400(ctx, guest.data());
+    };
+    sceneGain = 1;
+    updateLiveBgm();
+    Close(captured.category, .5, "live music has the normal gain");
+    apu::SetFieldDialogueMix(true);
+    updateLiveBgm();
+    Close(captured.category, .25, "field dialogue lowers music already playing");
+    const unsigned updatesBefore = retailUpdates;
+    updateLiveBgm();
+    Check(retailUpdates == updatesBefore, "steady field state does not force gain updates");
+    apu::SetFieldDialogueMix(false);
+    updateLiveBgm();
+    Close(captured.category, .5, "music regains its normal gain when field dialogue ends");
+    apu::SetFieldDialogueMix(true);
+    Options(128, 0, 128, 100);
+    updateLiveBgm();
+    Close(captured.category, 0, "field dialogue respects Music 0");
+
     // Bank voices (field dialogue): the retail category gain, untouched.
     Reset(); Options(128, 128, 56, 100);
+    apu::SetFieldDialogueMix(true);
     for (int caller = 0; caller < 2; ++caller)
     {
         PPCContext ctx;

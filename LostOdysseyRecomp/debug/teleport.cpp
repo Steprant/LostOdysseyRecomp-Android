@@ -4,6 +4,7 @@
 #include <kernel/heap.h>
 #include <kernel/memory.h>
 #include <os/logger.h>
+#include <apu/audio.h>
 #include <utility>
 #include <cmath>
 #include "teleport.h"
@@ -11,6 +12,7 @@
 #include "map_poi.h"
 #include "save_anywhere.h"
 #include "map_info.h"
+#include "menu_animations.h"
 #include <host_ui/host_ui.h>
 #include "cheats.h"
 #include "battle_tour.h"
@@ -67,6 +69,33 @@ bool Finite(Position p)
 bool ObjectAddress(uint32_t p)
 {
     return p >= 0x100000 && p < 0x7C000000 && (p & 3) == 0;
+}
+
+uint32_t LocalPlayerController(uint8_t* base, uint32_t engine)
+{
+    if (!ObjectAddress(engine)) return 0;
+    // Native LocalPlayerControllers (8250E158): GamePlayers -> Player.Actor.
+    const uint32_t players = PPC_LOAD_U32(engine + 0x2B8);
+    const uint32_t count = PPC_LOAD_U32(engine + 0x2BC);
+    if (!ObjectAddress(players) || count == 0 || count > 4) return 0;
+    const uint32_t player = PPC_LOAD_U32(players);
+    if (!ObjectAddress(player)) return 0;
+    const uint32_t controller = PPC_LOAD_U32(player + 0x40);
+    return ObjectAddress(controller) ? controller : 0;
+}
+
+bool FieldEventOwnsPlayer(uint8_t* base, uint32_t engine)
+{
+    // Script DD takes this bit while it owns field controls. Exclude title,
+    // camp, battle (including transitions), and native controller suspension.
+    const uint32_t world = PPC_LOAD_U32(0x83318744);
+    if (!ObjectAddress(world) || PPC_LOAD_U32(world + 472) == 3 || PPC_LOAD_U32(world + 476) == 3 ||
+        PPC_LOAD_U32(0x832644EC) || PPC_LOAD_U32(debug_menu::menu_animations::CampMenu) > 1)
+        return false;
+
+    const uint32_t controller = LocalPlayerController(base, engine);
+    return controller && !PPC_LOAD_U8(controller + 0x639) &&
+        !(PPC_LOAD_U32(controller + 0x5C8) & 0x08000020u);
 }
 
 Position ReadPosition(uint8_t* base, uint32_t pawn)
@@ -127,14 +156,9 @@ Identity FindPlayer(uint8_t* base)
     const auto engine = PPC_LOAD_U32(0x83315FB4);
     if (!ObjectAddress(world) || !ObjectAddress(engine)) return unavailable("world/engine");
     const auto level = PPC_LOAD_U32(world + 0x50);
-    // Native LocalPlayerControllers (8250E158): GamePlayers -> Player.Actor.
-    const auto players = PPC_LOAD_U32(engine + 0x2B8);
-    const auto count = PPC_LOAD_U32(engine + 0x2BC);
-    if (!ObjectAddress(level) || !ObjectAddress(players) || count == 0 || count > 4) return unavailable("level/players");
-    const auto player = PPC_LOAD_U32(players);
-    if (!ObjectAddress(player)) return unavailable("local player");
-    const auto controller = PPC_LOAD_U32(player + 0x40);
-    if (!ObjectAddress(controller) || !PlayerControllable(base, controller)) return unavailable("controller control state");
+    if (!ObjectAddress(level)) return unavailable("level");
+    const uint32_t controller = LocalPlayerController(base, engine);
+    if (!controller || !PlayerControllable(base, controller)) return unavailable("controller control state");
     // 82A18080 suspends pawn physics and sets these fields for the game menu;
     // 82A151D8 / 8235FCA0 consume them as control gates.
     if ((PPC_LOAD_U32(controller + 0x5C8) & 0x20) || PPC_LOAD_U8(controller + 0x639))
@@ -525,7 +549,8 @@ PPC_FUNC(sub_82290B60)
     static const bool teleportCommandFile = getenv("LO_TELEPORT_COMMAND_FILE") != nullptr;
     if (teleportCommandFile && !observed.exchange(true))
         LOG_INFO("teleport scene hook this={:#x} caller={:#x}", ctx.r3.u32, uint32_t(ctx.lr));
-    const bool engine = ctx.r3.u32 == PPC_LOAD_U32(0x83315FB4);
+    const uint32_t engineAddress = PPC_LOAD_U32(EngineAddress);
+    const bool engine = ctx.r3.u32 == engineAddress;
     // Fast-forward keeps its chosen rate only while the player walks freely
     // in the field (last tick's snapshot); battles, events and the intro run
     // under the per-frame limit (debug/fast_forward.h).
@@ -536,6 +561,7 @@ PPC_FUNC(sub_82290B60)
     {
         debug_menu::UpdateMapInfo(base); debug_menu::PartySwitchTick(base); Tick(ctx, base); MapJumpTick(ctx, base); debug_menu::PollSceneLoads(base); debug_menu::battle_tour::Poll(base);
         gpu::cinematic_bars::UpdatePause(base);
+        apu::SetFieldDialogueMix(FieldEventOwnsPlayer(base, PPC_LOAD_U32(EngineAddress)));
         discord_rpc::Tick(base);
         bool playerInField;
         {
