@@ -64,7 +64,9 @@ def statement_events(line):
             field, bit = int(match.group(1)), match.group(2)
             tail = line[match.end():]
             keys = [("cr", field, b) for b in BITS] if bit is None else [("cr", field, bit)]
-            if bit is None and (tail.startswith(".compare<") or tail.startswith(".setFromMask(")):
+            # .compare<T>(a, b, xer) for integer compares, .compare(a, b) for
+            # fcmpu/fcmpo: both write the whole field.
+            if bit is None and (tail.startswith(".compare<") or tail.startswith(".compare(") or tail.startswith(".setFromMask(")):
                 writes.extend(keys)
             elif is_assignment(line, match.end()):
                 writes.extend(keys)

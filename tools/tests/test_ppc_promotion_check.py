@@ -67,7 +67,7 @@ loc_82000420:
 \treturn;
 }
 PPC_FUNC_IMPL(__imp__sub_82000500) {
-\tctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
+\tctx.cr6.compare(ctx.f1.f64, ctx.f2.f64);
 loc_82000504:
 \tif (ctx.cr6.eq) goto loc_82000510;
 \tctx.cr6.compare<int32_t>(ctx.r4.s32, 0, ctx.xer);
