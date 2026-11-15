@@ -60,10 +60,8 @@ lo_review_test(LoOverlayUploadTest overlay_upload_test.cpp)
 lo_review_test(LoSgsr2ContinuationTest sgsr2_continuation_test.cpp)
 lo_review_test(LoAudioWorkerPriorityTest audio_worker_priority_test.cpp)
 lo_review_test(LoAudioReserveBoostTest audio_reserve_boost_test.cpp)
-lo_review_test(LoCsPollWaitTest cs_poll_wait_test.cpp)
 lo_review_test(LoPollWaitTest poll_wait_test.cpp) # 2.1.1-D: GPU waits sleep on command processor progress
 lo_review_test(LoDispatcherWaitTest dispatcher_wait_test.cpp) # 2.1.1-D: multi-object waits wake only their own waiters
-target_compile_features(LoCsPollWaitTest PRIVATE cxx_std_23) # std::byteswap in critical_section.h
 lo_review_test(LoAudioLagRecoveryTest audio_lag_recovery_test.cpp)
 lo_review_test(LoGpuSyncStatsTest gpu_sync_stats_test.cpp)
 lo_review_test(LoDrawClassProfileTest draw_class_profile_test.cpp)

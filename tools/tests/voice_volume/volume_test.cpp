@@ -190,8 +190,13 @@ int main()
     Options(128, 128, 0, 100);
     Volume(Primary, 0, "full-six-channel language source still follows Effects 0");
 
-    Reset(); Store16(Channel + 124, 0); Options(128, 0, 96, 0);
-    Volume(Primary, .75, "unpaired mono-FC source retains retail category");
+    // Steprant 2.1.1-E: an unpaired mono-FC source is dialogue too (the 15/11
+    // dialogues that stayed quiet never reached the paired-only rule).
+    Reset(); Store16(Channel + 124, 0); Options(128, 0, 96, 50);
+    Volume(Primary, .5, "unpaired mono-FC source follows master x Voice");
+    Volume(0, .5, "unpaired mono-FC primary lookup follows Voice");
+    Reset(); Store16(Channel + 124, 0); Source(Primary, {0, 1}); Options(128, 0, 96, 50);
+    Volume(Primary, .75, "unpaired stereo source retains retail category");
     Reset(); Source(Primary, {0}); Options(128, 0, 32, 0);
     Volume(Primary, .25, "paired mono-FL source retains retail category");
 

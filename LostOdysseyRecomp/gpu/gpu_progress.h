@@ -41,7 +41,7 @@
 namespace gpu_progress
 {
 inline constexpr uint32_t kFreePolls = 2;       // polls before the first sleep of a wait
-inline constexpr uint32_t kWaitUs = 2000;       // the longest sleep between two polls
+inline constexpr uint32_t kWaitUs = 4000;       // the longest sleep between two polls (2.1.1-E: 2 -> 4 ms)
 inline constexpr uint32_t kUnannouncedLimit = 8;
 
 inline std::atomic<uint32_t> g_generation{0};

@@ -1,5 +1,8 @@
 #include <stdafx.h>
 #include <array>
+#include <cstdlib>
+#include <vector>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -41,6 +44,33 @@ constexpr size_t PathCapacity = 320 - ChannelPath; // the channel object is 320 
 
 thread_local bool languageTrack = false;
 
+// Steprant 2.1.1-E: what sub_82B6C650 is updating, for the log of every
+// stream (below) and the dialogue rule.
+struct StreamInfo
+{
+    bool active = false;
+    uint32_t voice = 0;
+    bool paired = false;
+    uint8_t sources = 0, speakers = 0, type = 0;
+};
+thread_local StreamInfo current;
+
+// Steprant 2.1.1-E: one line per stream path, layout and outcome, so a run
+// log shows how every stream the game played was routed (the 15/11 session
+// heard quiet voices in dialogues that never reached the mono FC rule).
+void LogStream(std::string_view path, const StreamInfo& info, double retail, double applied, bool dialogue)
+{
+    static std::mutex mutex;
+    static std::vector<std::string> seen;
+    std::string key = std::string(path) + (dialogue ? "|d" : "|r") + std::to_string(info.sources) + ":" + std::to_string(info.speakers);
+    std::lock_guard lock(mutex);
+    if (seen.size() >= 512 || std::find(seen.begin(), seen.end(), key) != seen.end()) return;
+    seen.push_back(std::move(key));
+    LOG_INFO("sound stream: {} sources={} speakers={:#x} paired={} type={} gain={:.2f}{}",
+        path, info.sources, info.speakers, info.paired, info.type, applied,
+        dialogue ? fmt::format(" (voice; retail {:.2f})", retail) : std::string(" (retail)"));
+}
+
 // A null voice argument selects the primary, as sub_82B6C650 does itself.
 uint32_t PrimaryVoice(uint8_t* base, uint32_t channel)
 {
@@ -65,27 +95,52 @@ void Log(std::string_view path, float gain, double retail)
 }
 }
 
+// Steprant 2.1.1-E: an actual mono FC source is dialogue whether or not the
+// stream is paired with a base mix. Until 2.1.1-D only paired streams were
+// recognized, and the 15/11 session (Cooke and Mack's house, the ghost town)
+// had quiet dialogue that never reached the rule. LO_VOICE_PAIRED_ONLY=1
+// keeps the paired-only rule.
 PPC_FUNC(sub_82B6C650)
 {
+    static const bool pairedOnly = [] {
+        const char* value = std::getenv("LO_VOICE_PAIRED_ONLY");
+        return value && std::strcmp(value, "1") == 0;
+    }();
     const uint32_t channel = ctx.r3.u32;
     const uint32_t voice = ctx.r4.u32 ? ctx.r4.u32 : PrimaryVoice(base, channel);
-    languageTrack = voice && PPC_LOAD_U16(channel + 124) &&
-        PPC_LOAD_U8(voice + 28) == 1 && PPC_LOAD_U8(voice + 46) == 2;
+    current = {};
+    current.active = true;
+    current.voice = voice;
+    current.paired = PPC_LOAD_U16(channel + 124) != 0;
+    current.type = PPC_LOAD_U8(channel + 11);
+    if (voice)
+    {
+        current.sources = PPC_LOAD_U8(voice + 28);
+        current.speakers = PPC_LOAD_U8(voice + 46);
+    }
+    languageTrack = voice && (current.paired || !pairedOnly) && current.sources == 1 && current.speakers == 2;
     __imp__sub_82B6C650(ctx, base);
     languageTrack = false;
+    current.active = false;
 }
 
 PPC_FUNC(sub_82B71E68)
 {
     const uint32_t channel = ctx.r3.u32;
     __imp__sub_82B71E68(ctx, base);
-    if (!languageTrack)
+    if (!current.active)
         return;
-    const uint32_t system = PPC_LOAD_U32(SoundSystem);
     const char* path = reinterpret_cast<const char*>(base + channel + ChannelPath);
     const std::string_view name(path, strnlen(path, PathCapacity));
+    if (!languageTrack)
+    {
+        LogStream(name, current, ctx.f1.f64, ctx.f1.f64, false);
+        return;
+    }
+    const uint32_t system = PPC_LOAD_U32(SoundSystem);
     const float master = system ? float(PPC_LOAD_U8(system + 616)) / 128.0f : 1.0f;
     const float gain = master * float(apu::VoiceVolume()) / 100.0f;
     Log(name, gain, ctx.f1.f64);
+    LogStream(name, current, ctx.f1.f64, gain, true);
     ctx.f1.f64 = double(gain);
 }

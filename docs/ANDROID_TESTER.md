@@ -64,9 +64,7 @@ New measurements, for the whole recording:
   GPU command thread's per-draw "record" time goes, per frame) and `guest
   imports:` (kernel import calls per second, the most called imports and the
   threads calling them, with their last import). From 2.1.1-C the `guest
-  imports:` line ends with `cs_poll_waits`, `woken`, `at_limit` and
-  `wait_ms`: how often a thread that kept polling an unchanged critical
-  section slept until another thread released it (see below).
+  imports:` line also reports the 2.1.1-D waits (see below).
 - `runtime.log`, with each pass profile during a burst (2.1.1-C): `frame graph
   replay:`, where the command thread's replay of the captured scene goes, per
   frame: the look-ahead analysis, then for each kind of command (draw,
@@ -75,19 +73,23 @@ New measurements, for the whole recording:
   the driver's draw calls and render pass begins and ends, which are part of
   the kinds before them.
 
-### 2.1.1-C: polling of a critical section waits
+### 2.1.1-C/E: polling of a critical section
 
-A guest thread that keeps calling `RtlTryEnterCriticalSection` on a critical
-section it released itself, while no other thread has released it since,
-cannot see anything new under that lock. After 32 such polls in a row the
-thread sleeps until another thread releases that critical section, at most
-0.5 ms, so changes made outside the lock are still seen within that time.
-A lock the thread already owns never waits.
+The 2.1.1-C lock poll wait was removed in 2.1.1-E: the first C build did not
+start, because a thread doing real work under a lock that only it uses
+(take, pop an item, release, again) matched the same rule and slept 0.5 ms
+per item.
 
-It is **off by default** (`LO_CS_POLL_WAIT=1` turns it on, for experiments
-only). The first 2.1.1-C build had it on and the game did not start: a
-thread doing real work under a lock that only it uses (take, pop an item,
-release, again) matches the same rule and slept 0.5 ms per item.
+### 2.1.1-D/E: waits that sleep, and the sound stream log
+
+- `guest imports:` ends with `multi_waits_per_s`/`multi_wakes_per_s`
+  (multi-object waits wake only on their own objects) and
+  `gpu_wait_sleeps_per_s`, `woken`, `at_limit`, `publishes_per_s`,
+  `wake_calls_per_s`, `unannounced` (GPU timestamp waits sleep until the
+  command processor publishes a sync point, at most 4 ms).
+- `sound stream:` once per stream path and layout: source count, speaker
+  map, paired base mix, channel type and the gain used, marked `voice` when
+  the mono FC dialogue rule applied.
 
 Slow-interval windows (`events/`) are again saved for slow intervals. Since
 2.0 they were triggered by the line's last column, which had become

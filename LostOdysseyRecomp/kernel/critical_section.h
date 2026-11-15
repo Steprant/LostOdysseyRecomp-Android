@@ -4,7 +4,6 @@
 #include <os/atomic_ref.h>
 #include <bit>
 #include <cstdint>
-#include "cs_poll_wait.h"
 
 namespace GuestCriticalSection
 {
@@ -26,11 +25,6 @@ inline bool TryEnter(int32_t& recursion, uint32_t& owner, uint32_t thread)
 {
     os::AtomicRef<uint32_t> owningThread(owner);
     const uint32_t encodedThread = Encode(thread);
-    // Steprant 2.1.1-C: a thread polling a lock nobody else released waits
-    // for a release instead of spinning (cs_poll_wait.h). Never while it
-    // already owns the lock.
-    if (owningThread.load(std::memory_order_relaxed) != encodedThread)
-        cs_poll_wait::NoteTryEnter(&owner);
     uint32_t previousOwner = 0;
     if (owningThread.compare_exchange_strong(previousOwner, encodedThread) || previousOwner == encodedThread)
     {
@@ -65,7 +59,5 @@ inline void Leave(int32_t& recursion, uint32_t& owner)
     os::AtomicRef<uint32_t> owningThread(owner);
     owningThread.store(0);
     owningThread.notify_one();
-    // Steprant 2.1.1-C: a new release generation; wakes pollers (cs_poll_wait.h).
-    cs_poll_wait::NoteRelease(&owner);
 }
 }

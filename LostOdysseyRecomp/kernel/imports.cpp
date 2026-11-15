@@ -316,6 +316,9 @@ bool TesterBurst()
 // Steprant 2.1.1: the import counts of one burst: the most called imports
 // and the threads that call the kernel most, with their host id, last import
 // and where they are.
+// Steprant 2.1.1-E: the first rate line counts from the process start.
+static const auto g_importStatsStart = std::chrono::steady_clock::now();
+
 std::string TakeImportLine(double seconds)
 {
     std::vector<std::pair<uint64_t, const char*>> imports;
@@ -342,20 +345,10 @@ std::string TakeImportLine(double seconds)
     std::string out = fmt::format("guest imports: seconds={:.1f} calls_per_s={:.0f} top:", seconds, total / seconds);
     for (size_t i = 0; i < imports.size() && i < 14; ++i)
         out += fmt::format(" {}={:.0f}", imports[i].second, imports[i].first / seconds);
-    // Steprant 2.1.1-C: lock polls turned into waits since the previous line.
-    {
-        auto& st = cs_poll_wait::g_stats;
-        const uint64_t waits = st.waits.exchange(0, std::memory_order_relaxed);
-        const uint64_t woken = st.woken.exchange(0, std::memory_order_relaxed);
-        const uint64_t timeouts = st.timeouts.exchange(0, std::memory_order_relaxed);
-        const uint64_t waitNs = st.waitNs.exchange(0, std::memory_order_relaxed);
-        out += fmt::format(" | cs_poll_waits={} woken={} at_limit={} wait_ms={:.1f}{}", waits, woken, timeouts, waitNs / 1e6,
-            cs_poll_wait::Enabled() ? "" : " (off)");
-    }
     // Steprant 2.1.1-D: multi-object waits (each wakes only on its own
     // objects now) and their wakeups, per second since the previous line.
     {
-        static auto last = std::chrono::steady_clock::now();
+        static auto last = g_importStatsStart;
         const auto now = std::chrono::steady_clock::now();
         const double span = std::max(1e-3, std::chrono::duration<double>(now - last).count());
         last = now;
