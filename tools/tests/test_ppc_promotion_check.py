@@ -75,6 +75,35 @@ loc_82000504:
 loc_82000510:
 \treturn;
 }
+PPC_FUNC_IMPL(__imp__sub_82000600) {
+\tctx.r12.u64 = ctx.cr2.lt ? 0x80000000 : 0;
+\tctx.r12.u64 |= ctx.cr2.eq ? 0x200000 : 0;
+\tPPC_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);
+\tsub_82000000(ctx, base);
+\tctx.r12.u64 = PPC_LOAD_U32(ctx.r1.u32 + -8);
+\tctx.cr2.lt = (ctx.r12.u32 & 0x80000000) != 0;
+\tctx.cr2.eq = (ctx.r12.u32 & 0x200000) != 0;
+\treturn;
+}
+PPC_FUNC_IMPL(__imp__sub_82000700) {
+\tctx.r11.u64 = (ctx.cr6.lt << 7) | (ctx.cr6.gt << 6) | (ctx.cr6.eq << 5) | (ctx.cr6.so << 4);
+\tctx.r3.u64 = ctx.r11.u32 & 0x20;
+\tctx.cr3.eq = (ctx.r3.u32 & 0x200000) != 0;
+\tif (ctx.cr3.eq) return;
+\treturn;
+}
+PPC_FUNC_IMPL(__imp__sub_82000800) {
+\tPPCXERRegister xer{};
+\tPPCCRRegister cr6{};
+\tcr6.compare<int32_t>(ctx.r3.s32, 0, xer);
+\tenv = ctx;
+\ttemp.s64 = setjmp(*reinterpret_cast<jmp_buf*>(base + ctx.r3.u32));
+\tif (temp.s64 != 0) ctx = env;
+\tif (cr6.eq) return;
+\tcr6.compare<int32_t>(ctx.r3.s32, 0, xer);
+\tif (cr6.lt) return;
+\treturn;
+}
 """
 
 
@@ -95,7 +124,7 @@ class PromotionCheckTest(unittest.TestCase):
         self.names = flagged_names(flagged)
 
     def test_counts_every_function(self):
-        self.assertEqual(self.functions, 6)
+        self.assertEqual(self.functions, 9)
 
     def test_write_first_code_is_clean(self):
         # Compare before branch, carry set before use, mfcr saves, the SO
@@ -111,6 +140,22 @@ class PromotionCheckTest(unittest.TestCase):
     def test_volatile_read_after_call(self):
         # cr6 is volatile: reading it after a call reads what the callee left.
         self.assertEqual(self.names["sub_82000300"], {("cr6.lt", "call:sub_82000000")})
+
+    def test_mfcr_save_and_use(self):
+        # A prologue save to the frame is benign; a value used in arithmetic
+        # depends on fields this function never wrote.
+        self.assertIn("sub_82000600", check.MF_BY["save"])
+        self.assertIn("sub_82000700", check.MF_BY["use"])
+        self.assertNotIn("sub_82000600", check.MF_BY["use"])
+        self.assertNotIn("sub_82000600", self.names)
+
+    def test_mtcr_restored_read(self):
+        self.assertEqual(check.MTCR_BY, {"sub_82000700"})
+
+    def test_promoted_locals_and_setjmp(self):
+        # Locals are tracked like ctx fields; a read after the setjmp return
+        # before any write depends on what longjmp leaves in the local.
+        self.assertEqual(self.names["sub_82000800"], {("cr6.eq", "setjmp")})
 
     def test_switch_cases_are_followed(self):
         self.assertEqual(self.names["sub_82000400"], {("cr7.eq", "entry")})
