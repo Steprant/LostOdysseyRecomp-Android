@@ -132,6 +132,9 @@ def parse_blocks(lines):
 
 KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",)]
 SHAPES = {}
+RETURNS_LAST = {}
+TRACE = set()
+TRACED = {}
 
 
 def Shape(line):
@@ -150,12 +153,16 @@ def analyse(lines):
     state_in[0] = {k: frozenset({"entry"}) for k in KEYS}
     work, queued, reached = [0], {0}, {0}
     found = {}
+    returns = {}
     while work:
         index = work.pop()
         queued.discard(index)
         body, successors = graph[index]
         state = dict(state_in[index])
         for line in body:
+            if line.startswith("return") or (line.startswith("if (") and "return" in line):
+                for key, sources in state.items():
+                    returns.setdefault(key, set()).update(sources)
             for kind, key in statement_events(line):
                 if kind == "read":
                     if state.get(key):
@@ -182,6 +189,11 @@ def analyse(lines):
             if changed and successor not in queued:
                 work.append(successor)
                 queued.add(successor)
+        if not successors and body and not body[-1].startswith("goto"):
+            for key, sources in state.items():
+                returns.setdefault(key, set()).update(sources)
+    RETURNS_LAST.clear()
+    RETURNS_LAST.update(returns)
     return found
 
 
@@ -199,7 +211,10 @@ def scan(files):
             if name is None:
                 continue
             if line.startswith("}"):
-                for key, sources in analyse(body).items():
+                result = analyse(body)
+                if name in TRACE:
+                    TRACED[name] = {k: set(v) for k, v in RETURNS_LAST.items()}
+                for key, sources in result.items():
                     label = f"cr{key[1]}.{key[2]}" if key[0] == "cr" else ("xer.ca" if key[0] == "ca" else "reserved")
                     flagged[label].append((name, "+".join(sorted(sources))))
                 name = None
@@ -212,13 +227,46 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("directory", type=pathlib.Path)
     parser.add_argument("--limit", type=int, default=40)
+    parser.add_argument("--trace", action="append", default=[],
+                        help="function whose outside CR/XER sources at its returns are printed")
     args = parser.parse_args(argv)
+    TRACE.update(args.trace)
     files = sorted(args.directory.glob("ppc_recomp.*.cpp"))
     if not files:
         print(f"promotion check: no generated sources in {args.directory}")
         return 1
     functions, flagged = scan(files)
     print(f"promotion check: {functions} functions in {len(files)} files")
+    # Follow call-sourced reads into their callees: which value does the
+    # callee return in that field, its own or one of its callees' (up to
+    # five levels). Names the functions that must keep CR in ctx together.
+    chain = []
+    wanted = {}
+    for label, entries in flagged.items():
+        for name, sources in entries:
+            for source in sources.split("+"):
+                if source.startswith("call:sub_"):
+                    wanted.setdefault(source[5:], set()).add(label)
+                    chain.append((name, label, source[5:]))
+    for depth in range(5):
+        if not wanted:
+            break
+        TRACE.clear()
+        TRACE.update(wanted)
+        TRACED.clear()
+        scan(files)
+        following = {}
+        for callee, labels in wanted.items():
+            state = TRACED.get(callee, {})
+            for label in sorted(labels):
+                key = ("cr", int(label[2]), label[4:]) if label.startswith("cr") else (("ca",) if label == "xer.ca" else ("res",))
+                sources = sorted(state.get(key, set()))
+                print(f"promotion check: chain depth {depth}: {callee} returns {label} from " + (", ".join(sources) or "itself"))
+                for source in sources:
+                    if source.startswith("call:sub_"):
+                        following.setdefault(source[5:], set()).add(label)
+        wanted = following
+    TRACE.clear()
     for group, prefix in (("CR", "cr"), ("XER carry", "xer"), ("reservation", "reserved")):
         names = defaultdict(set)
         for label, entries in flagged.items():
@@ -233,6 +281,14 @@ def main(argv=None):
     print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
     for shape, count in sorted(SHAPES.items(), key=lambda x: -x[1])[:12]:
         print(f"promotion check: shape {count}x: {shape}")
+    for name in sorted(TRACE):
+        state = TRACED.get(name)
+        if state is None:
+            print(f"promotion check: trace {name}: not found")
+            continue
+        outside = {(f"cr{k[1]}.{k[2]}" if k[0] == "cr" else k[0]): "+".join(sorted(v)) for k, v in state.items() if v}
+        print(f"promotion check: trace {name}: values at its returns from outside: " +
+              (", ".join(f"{k}<-{v}" for k, v in sorted(outside.items())) or "none"))
     shown = 0
     for label, entries in sorted(flagged.items()):
         for name, sources in sorted(set(entries)):
