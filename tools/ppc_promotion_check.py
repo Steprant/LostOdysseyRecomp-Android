@@ -45,6 +45,7 @@ MFCR = re.compile(r"\.u64 \|?= ctx\.cr[0-7]\.(?:lt|gt|eq|so) \? 0x")
 MFOCRF = re.compile(r"\.u64 = \(ctx\.cr6\.lt << 7\) \| \(ctx\.cr6\.gt << 6\) \| \(ctx\.cr6\.eq << 5\) \| \(ctx\.cr6\.so << 4\);")
 XER_CA = re.compile(r"ctx\.xer\.ca")
 RESERVED = re.compile(r"ctx\.reserved(?:\.\w+)?")
+CALLEE = re.compile(r"sub_[0-9A-Fa-f]{8}")
 CALL = re.compile(r"(?:\bsub_[0-9A-Fa-f]{8}|__imp__\w+|PPC_CALL_INDIRECT_FUNC)\s*\(")
 BITS = ("lt", "gt", "eq", "so")
 VOLATILE_FIELDS = {0, 1, 5, 6, 7}
@@ -164,9 +165,11 @@ def analyse(lines):
                 else:
                     state.pop(key, None)
             if CALL.search(line):
+                callee = CALLEE.search(line)
+                source = "call:" + (callee.group(0) if callee else "indirect")
                 for key in KEYS:
                     if (key[0] == "cr" and key[1] in VOLATILE_FIELDS) or key[0] in ("ca", "res"):
-                        state[key] = state.get(key, frozenset()) | {"call"}
+                        state[key] = state.get(key, frozenset()) | {source}
         for successor in successors:
             target = state_in[successor]
             changed = successor not in reached
@@ -221,7 +224,8 @@ def main(argv=None):
         for label, entries in flagged.items():
             if label.startswith(prefix):
                 for name, sources in entries:
-                    names[sources].add(name)
+                    kinds = "+".join(sorted({s.split(":")[0] for s in sources.split("+")}))
+                    names[kinds].add(name)
         total = len(set().union(*names.values())) if names else 0
         detail = ", ".join(f"{len(v)} from {k}" for k, v in sorted(names.items()))
         print(f"promotion check: {group}: {total} functions can read an outside value" + (f" ({detail})" if detail else ""))

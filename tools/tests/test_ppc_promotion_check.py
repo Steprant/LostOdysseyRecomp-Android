@@ -110,7 +110,7 @@ class PromotionCheckTest(unittest.TestCase):
 
     def test_volatile_read_after_call(self):
         # cr6 is volatile: reading it after a call reads what the callee left.
-        self.assertEqual(self.names["sub_82000300"], {("cr6.lt", "call")})
+        self.assertEqual(self.names["sub_82000300"], {("cr6.lt", "call:sub_82000000")})
 
     def test_switch_cases_are_followed(self):
         self.assertEqual(self.names["sub_82000400"], {("cr7.eq", "entry")})
