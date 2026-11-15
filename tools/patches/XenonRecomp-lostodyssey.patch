@@ -24,7 +24,7 @@ index 34add408f6905c4ef6a3ab8588d1f62c36ea9a08..ea3672ef98973135cb3f76cc9d8fc8c4
                          {
                              blocks.emplace_back(lBase, 0);
 diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
-index fa915279059d564632327ddf6ad67b3bcefa8835..ae90f5210cade476200783b5f934a28af4f83e46 100644
+index fa915279059d564632327ddf6ad67b3bcefa8835..a348d9a4cdd57097280af295f298e8227dfa1f2b 100644
 --- a/XenonRecomp/recompiler.cpp
 +++ b/XenonRecomp/recompiler.cpp
 @@ -301,7 +301,7 @@ bool Recompiler::Recompile(
@@ -32,7 +32,7 @@ index fa915279059d564632327ddf6ad67b3bcefa8835..ae90f5210cade476200783b5f934a28a
      auto cr = [&](size_t index)
          {
 -            if (config.crRegistersAsLocalVariables)
-+            if (config.crRegistersAsLocalVariables && !config.crInContextFields.contains(uint32_t(index)))
++            if (config.crRegistersAsLocalVariables && !(config.crInContextFields.count(uint32_t(index)) != 0))
              {
                  localVariables.cr[index] = true;
                  return fmt::format("cr{}", index);
@@ -633,7 +633,7 @@ index fa915279059d564632327ddf6ad67b3bcefa8835..ae90f5210cade476200783b5f934a28a
              println("#define PPC_CONFIG_SKIP_MSR");      
          if (config.crRegistersAsLocalVariables)
              println("#define PPC_CONFIG_CR_AS_LOCAL");      
-+        if (config.crRegistersAsLocalVariables && config.crInContextFields.contains(0))
++        if (config.crRegistersAsLocalVariables && (config.crInContextFields.count(0) != 0))
 +            println("#define PPC_CONFIG_CR0_IN_CONTEXT");
          if (config.nonArgumentRegistersAsLocalVariables)
              println("#define PPC_CONFIG_NON_ARGUMENT_AS_LOCAL");   
