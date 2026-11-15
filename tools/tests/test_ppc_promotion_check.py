@@ -95,7 +95,9 @@ PPC_FUNC_IMPL(__imp__sub_82000700) {
 PPC_FUNC_IMPL(__imp__sub_82000800) {
 \tPPCXERRegister xer{};
 \tPPCCRRegister cr6{};
+\t// cmpwi cr6,r3,0
 \tcr6.compare<int32_t>(ctx.r3.s32, 0, xer);
+\t// bl 0x82000000 (cr1 in a comment is not a read)
 \tenv = ctx;
 \ttemp.s64 = setjmp(*reinterpret_cast<jmp_buf*>(base + ctx.r3.u32));
 \tif (temp.s64 != 0) ctx = env;

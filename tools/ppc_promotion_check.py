@@ -106,7 +106,9 @@ def parse_blocks(lines):
     return, and after a whole switch (whose case gotos are its successors)."""
     blocks = [{"body": [], "targets": [], "falls": True}]
     labels = {}
-    stripped = [raw.strip() for raw in lines]
+    # XenonRecomp writes each guest instruction as a // comment: drop them
+    # (their register names would read as CR fields under cr_as_local).
+    stripped = [raw.split("//", 1)[0].strip() for raw in lines]
     i = 0
     while i < len(stripped):
         line = stripped[i]
@@ -272,6 +274,7 @@ def analyse(lines):
 MF_BY = defaultdict(set)     # use kind -> functions
 MTCR_BY = set()
 XER_SO_WRITES = [0]
+XER_SO_BY = set()
 
 
 def scan(files):
@@ -280,11 +283,13 @@ def scan(files):
     MF_BY.clear()
     MTCR_BY.clear()
     XER_SO_WRITES[0] = 0
+    XER_SO_BY.clear()
     for path in files:
         name, body = None, []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if XER_SO_WRITE.search(line):
+            if XER_SO_WRITE.search(line.split("//", 1)[0]):
                 XER_SO_WRITES[0] += 1
+                XER_SO_BY.add(name)
             started = FUNCTION.match(line)
             if started:
                 name, body = started.group(1), []
@@ -350,7 +355,9 @@ def main(argv=None):
                     wanted.setdefault(source[5:], set()).add(label)
                     chain.append((name, label, source[5:]))
     for depth in range(5):
-        if not wanted:
+        if not wanted or len(wanted) > 40:
+            if wanted:
+                print(f"promotion check: chain not followed ({len(wanted)} callees)")
             break
         TRACE.clear()
         TRACE.update(wanted)
@@ -385,7 +392,8 @@ def main(argv=None):
     print(f"promotion check: reads of a value mtcr restored: {len(mtcr)} functions")
     for name in sorted(mtcr)[:args.limit]:
         print(f"  mtcr read {name}")
-    print(f"promotion check: xer.so/ov writes in generated code: {xer_so}")
+    print(f"promotion check: xer.so/ov writes in generated code: {xer_so}" +
+          (" in " + ", ".join(sorted(str(n) for n in XER_SO_BY)) if XER_SO_BY else ""))
     per_field = sorted(((label, len({n for n, _ in entries})) for label, entries in flagged.items()), key=lambda x: -x[1])
     print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
     for shape, count in sorted(SHAPES.items(), key=lambda x: -x[1])[:12]:
