@@ -91,6 +91,19 @@ per item.
   map, paired base mix, channel type and the gain used, marked `voice` when
   the mono FC dialogue rule applied.
 
+### 2.1.1-F: sound balance, bank voices, power paths
+
+- Stream BGM (types 17 and 19, the Music category) plays at half its retail
+  gain by default (`LO_BGM_BALANCE`, 0.05-1): field dialogue comes from sound
+  banks in the Sound effects category, which the BGM covered by about 7 dB.
+- `sound bank voice:` once per bank path (82B6EA80 or 82B6F708), channel type
+  and retail gain; `sound categories:` master and the four cached category
+  gains (of 128) whenever they change.
+- ADPF performance hints are on, preferring power efficiency (`LO_ADPF=0`
+  off); AAudio uses the normal path instead of low latency
+  (`LO_AUDIO_LOW_LATENCY=1` restores it); SDL no longer listens to the
+  accelerometer.
+
 Slow-interval windows (`events/`) are again saved for slow intervals. Since
 2.0 they were triggered by the line's last column, which had become
 `game_paused`.

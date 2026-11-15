@@ -1,5 +1,7 @@
 #include <stdafx.h>
 #include <array>
+#include <cmath>
+#include <atomic>
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
@@ -34,6 +36,10 @@
 
 extern "C" PPC_FUNC(__imp__sub_82B6C650);
 extern "C" PPC_FUNC(__imp__sub_82B71E68);
+// Steprant 2.1.1-F: the two other callers of sub_82B71E68 (found in the
+// built library on 15/11), the per-voice updates of bank sounds.
+extern "C" PPC_FUNC(__imp__sub_82B6EA80);
+extern "C" PPC_FUNC(__imp__sub_82B6F708);
 
 namespace
 {
@@ -124,17 +130,88 @@ PPC_FUNC(sub_82B6C650)
     current.active = false;
 }
 
+// Steprant 2.1.1-F: the game's own stream BGM (types 17 and 19, the Music
+// category) plays at this share of its retail gain. The 15/11 08:59 session
+// played no dialogue stream at all: dialogue in the field comes from sound
+// banks (sub_82B6EA80, sub_82B6F708), whose category gain was 0.44 while the
+// BGM streams ran at 1.00 (both before the Voice and Music settings). The BGM
+// covered the voices by about 7 dB. 0.5 (-6 dB) brings them level, and the
+// dialogue-forward fold-down puts voices on top. LO_BGM_BALANCE=<0.05-1>.
+float BgmBalance()
+{
+    static const float balance = [] {
+        const char* value = std::getenv("LO_BGM_BALANCE");
+        const float parsed = value ? float(std::atof(value)) : 0.5f;
+        return parsed >= 0.05f && parsed <= 1.0f ? parsed : 0.5f;
+    }();
+    return balance;
+}
+
+// Steprant 2.1.1-F: which bank path asks for a category gain (1: 82B6EA80,
+// 2: 82B6F708), for the log of how field dialogue is routed.
+thread_local int bankCaller = 0;
+
+void LogBank(int caller, uint8_t type, double gain)
+{
+    static std::mutex mutex;
+    static std::vector<uint32_t> seen;
+    const uint32_t key = (uint32_t(caller) << 24) | (uint32_t(type) << 16) | uint32_t(std::lround(gain * 1000.0));
+    std::lock_guard lock(mutex);
+    if (seen.size() >= 256 || std::find(seen.begin(), seen.end(), key) != seen.end()) return;
+    seen.push_back(key);
+    LOG_INFO("sound bank voice: path={} type={} gain={:.3f} (retail)", caller == 1 ? "82B6EA80" : "82B6F708", type, gain);
+}
+
+// Steprant 2.1.1-F: master and the four category gains the game caches
+// (system +616, +620..+623), logged when they change.
+void LogCategories(uint8_t* base)
+{
+    const uint32_t system = PPC_LOAD_U32(SoundSystem);
+    if (!system) return;
+    const uint32_t packed = (uint32_t(PPC_LOAD_U8(system + 620)) << 24) | (uint32_t(PPC_LOAD_U8(system + 621)) << 16) |
+        (uint32_t(PPC_LOAD_U8(system + 622)) << 8) | uint32_t(PPC_LOAD_U8(system + 623));
+    const uint32_t master = PPC_LOAD_U8(system + 616);
+    static std::atomic<uint64_t> last{~0ull};
+    const uint64_t now = (uint64_t(master) << 32) | packed;
+    if (last.load(std::memory_order_relaxed) == now || last.exchange(now, std::memory_order_relaxed) == now) return;
+    LOG_INFO("sound categories: master={} cat0={} cat1={} cat2={} cat3(music)={} (of 128); BGM balance {:.2f}",
+        master, packed >> 24, (packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF, BgmBalance());
+}
+
+PPC_FUNC(sub_82B6EA80)
+{
+    const int previous = bankCaller;
+    bankCaller = 1;
+    __imp__sub_82B6EA80(ctx, base);
+    bankCaller = previous;
+}
+
+PPC_FUNC(sub_82B6F708)
+{
+    const int previous = bankCaller;
+    bankCaller = 2;
+    __imp__sub_82B6F708(ctx, base);
+    bankCaller = previous;
+}
+
 PPC_FUNC(sub_82B71E68)
 {
     const uint32_t channel = ctx.r3.u32;
+    const uint8_t type = PPC_LOAD_U8(channel + 11);
     __imp__sub_82B71E68(ctx, base);
+    LogCategories(base);
     if (!current.active)
+    {
+        if (bankCaller) LogBank(bankCaller, type, ctx.f1.f64);
         return;
+    }
     const char* path = reinterpret_cast<const char*>(base + channel + ChannelPath);
     const std::string_view name(path, strnlen(path, PathCapacity));
     if (!languageTrack)
     {
-        LogStream(name, current, ctx.f1.f64, ctx.f1.f64, false);
+        const double retail = ctx.f1.f64;
+        if (type == 17 || type == 19) ctx.f1.f64 = retail * BgmBalance();
+        LogStream(name, current, retail, ctx.f1.f64, false);
         return;
     }
     const uint32_t system = PPC_LOAD_U32(SoundSystem);

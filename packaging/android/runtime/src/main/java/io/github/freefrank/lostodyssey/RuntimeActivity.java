@@ -84,6 +84,16 @@ public final class RuntimeActivity extends SDLActivity {
             if (tvDiagnostics != null) tvDiagnostics.surface("destroyed", holder, 0, 0, getDisplay());
             super.surfaceDestroyed(holder);
         }
+        /**
+         * Steprant 2.1.1-F: the game has no motion controls, but SDL listens to
+         * the accelerometer from start-up at SENSOR_DELAY_GAME (about 50 events
+         * a second, delivered on the main thread), which keeps the sensor hub
+         * awake and wakes the app all session long. Never register it.
+         */
+        @Override protected void enableSensor(int sensortype, boolean enabled) {
+            if (sensortype == android.hardware.Sensor.TYPE_ACCELEROMETER) return;
+            super.enableSensor(sensortype, enabled);
+        }
     }
 
     @Override protected SDLSurface createSDLSurface(Context context) { return new RuntimeSurface(context); }

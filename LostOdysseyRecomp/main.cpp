@@ -431,9 +431,13 @@ int main(int argc, char* argv[])
     // WP0.1 frame samples go beside the Android Tester sessions.
     diagnostics::frame_samples::SetDirectory(
         os::user_paths::SettingsPath().parent_path().parent_path() / "android-diagnostics" / "frame-samples");
-    // ADPF performance hints: off (they did not help the city stutter on the
-    // Xiaomi 14); LO_ADPF=1 turns them on for development runs.
-    os::scheduling::SetPerformanceHints(false);
+    // ADPF performance hints. Off since 8/11 because they did not help the city
+    // stutter on the Xiaomi 14; their effect on power was never measured.
+    // Steprant 2.1.1-F: on, with the session's preference for power
+    // efficiency (API 35), so the system can pick lower clocks for guest main
+    // and the command thread while each frame keeps half its period spare.
+    // LO_ADPF=0 turns them off for A/B runs.
+    os::scheduling::SetPerformanceHints(true);
 #if defined(_WIN32) && (defined(LO_ENABLE_STREAMLINE_FG) || defined(LO_ENABLE_D3D12_FG))
     LOG_INFO("FG: process physical-pixel awareness set={} error={}", fgDpiSet, fgDpiError);
 #endif

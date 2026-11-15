@@ -673,6 +673,20 @@ namespace apu
         const char* deviceFrames = getenv("LO_AUDIO_DEVICE_FRAMES");
         const uint32_t sampleFrames = detail::DeviceSampleFrames(deviceFrames ? uint32_t(atoi(deviceFrames)) : 0, 512);
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, std::to_string(sampleFrames).c_str());
+#ifdef __ANDROID__
+        // Steprant 2.1.1-F: AAudio without the low-latency mode. SDL asks for
+        // AAUDIO_PERFORMANCE_MODE_LOW_LATENCY by default, which keeps the
+        // system's fast mixer and audio DSP path waking every few milliseconds
+        // for the whole session (outside this process, so not in its thread
+        // stats). The normal path mixes in larger periods. The game's own
+        // callback period stays 512 frames. LO_AUDIO_LOW_LATENCY=1 restores it.
+        {
+            const char* lowLatency = getenv("LO_AUDIO_LOW_LATENCY");
+            const bool keep = lowLatency && std::string_view(lowLatency) == "1";
+            SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, keep ? "1" : "0");
+            LOG_INFO("audio output: AAudio {} mode", keep ? "low-latency" : "normal (power-saving)");
+        }
+#endif
         // Steprant 2.0.6: LO_AUDIO_RESYNC=0 leaves the lag after a stall, as before.
         if (const char* resync = getenv("LO_AUDIO_RESYNC"); resync && std::string_view(resync) == "0")
             g_lagRecovery.SetEnabled(false);

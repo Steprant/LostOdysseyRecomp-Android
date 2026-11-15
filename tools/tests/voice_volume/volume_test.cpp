@@ -9,6 +9,8 @@
 
 PPC_FUNC(sub_82B6C650);
 PPC_FUNC(sub_82B71E68);
+PPC_FUNC(sub_82B6EA80);
+PPC_FUNC(sub_82B6F708);
 
 namespace
 {
@@ -132,6 +134,11 @@ extern "C" PPC_FUNC(__imp__sub_82B71E68)
     ctx.r3.u32 = gain; // retail clobbers the argument register
     ctx.f1.f64 = double(gain) / 128.0;
 }
+// Steprant 2.1.1-F: the two bank voice updates ask the category hook for a
+// gain the same way; the fixture records what they got.
+double bankGain = -1;
+extern "C" PPC_FUNC(__imp__sub_82B6EA80) { sub_82B71E68(ctx, base); bankGain = ctx.f1.f64; }
+extern "C" PPC_FUNC(__imp__sub_82B6F708) { sub_82B71E68(ctx, base); bankGain = ctx.f1.f64; }
 extern "C" PPC_FUNC(__imp__sub_82B6C650)
 {
     ++retailUpdates;
@@ -237,9 +244,23 @@ int main()
     // Effects and Voice are zero. The hook does not reclassify every RT as BGM.
     Reset(); Store16(Channel + 124, 0); Store8(Channel + 11, 19);
     Source(Primary, {0, 1}); Options(64, 96, 0, 0);
-    Volume(Primary, .375, "retail type-19 BGM retains Music and master gain", .7);
+    // Steprant 2.1.1-F: stream BGM plays at half its retail gain (BgmBalance).
+    Volume(Primary, .1875, "retail type-19 BGM keeps Music and master, at the BGM balance", .7);
     Options(64, 0, 128, 100);
     Volume(Primary, 0, "Music 0 still mutes actual retail BGM");
+    Store8(Channel + 11, 17); Options(128, 128, 128, 100);
+    Volume(Primary, .5, "type-17 BGM follows the BGM balance too");
+
+    // Bank voices (field dialogue): the retail category gain, untouched.
+    Reset(); Options(128, 128, 56, 100);
+    for (int caller = 0; caller < 2; ++caller)
+    {
+        PPCContext ctx;
+        ctx.r3.u32 = Channel;
+        bankGain = -1;
+        if (caller == 0) sub_82B6EA80(ctx, guest.data()); else sub_82B6F708(ctx, guest.data());
+        Close(bankGain, 56.0 / 128.0, "bank voices keep the retail effects category");
+    }
 
     std::printf("voice volume: %u checks passed through production update/category hooks\n", checks);
 }
