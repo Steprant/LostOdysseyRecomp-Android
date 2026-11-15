@@ -2,38 +2,45 @@
 """Steprant 2.1.1: can CR, XER and the lwarx reservation become locals?
 
 XenonRecomp's cr_as_local, xer_as_local and reserved_as_local give every
-generated function its own zero-initialised copy instead of the shared
-ctx field. That is exact for code that writes the field before reading it in
-the same function, which is what compiled code does: a compare before a
-branch, an add-carrying before the add-extended, an lwarx before its stwcx.
-It is not exact for a function that reads the value a caller (or a tail-call
-predecessor) left behind.
+generated function its own zero-initialised copy instead of the shared ctx
+field. That is exact when every read of a field in a function sees a value
+the same function wrote. It changes behaviour where a read can see a value
+from outside the function:
 
-This scans the generated sources (built with those options off) and lists
-the functions whose first use of a field, in source order, is a read. Source
-order is not execution order, so the list is conservative: it can name
-functions that are fine, never miss one whose entry path reads first.
+- from the caller, on a path from the function entry with no write first;
+- from a callee, on a path from a call with no write in between. Compiled
+  code preserves cr2-cr4 across calls (non-volatile) and never relies on
+  the volatile fields after a call, so a volatile read reached from a call
+  means a callee returns something in CR (hand-written code).
 
-Benign reads that are not listed:
-- mfcr saving the CR fields in a prologue (`rN.u64 |= ctx.crK.xx ? ... : 0`):
-  with locals it saves and later restores the function's own copy, and the
-  caller's copy is untouched, as the ABI requires for cr2-cr4;
-- the summary-overflow copy every compare takes from XER (`, ctx.xer)`): with
-  a local it is 0, as it is everywhere unless an overflow-recording
-  instruction set it.
+This builds the control-flow graph of every generated function (labels,
+gotos, conditional gotos, switches, returns) from the sources generated with
+the options off and runs a data-flow pass per CR bit, XER carry and the
+reservation. It prints function names, the field and the kind of source
+(entry or call) only, no code.
 
-Only function names, field names and line offsets are printed, no code.
+Benign reads, not reported:
+- mfcr in a prologue saving the CR fields: with locals it saves and later
+  restores the function's own copy, and the caller's copy is untouched;
+- XER summary overflow, copied by every compare and by stwcx./stdcx.: it is
+  0 everywhere unless an mtxer sets it, the same with a local.
 """
 import argparse
 import pathlib
 import re
 import sys
+from collections import defaultdict
 
 FUNCTION = re.compile(r"^PPC_FUNC_IMPL\(__imp__(\w+)\) \{")
+LABEL = re.compile(r"^(loc_[0-9A-Fa-f]+):")
+GOTO = re.compile(r"goto (loc_[0-9A-Fa-f]+);")
 CR = re.compile(r"ctx\.cr([0-7])(?:\.(lt|gt|eq|so))?")
 MFCR = re.compile(r"\.u64 \|?= ctx\.cr[0-7]\.(?:lt|gt|eq|so) \? 0x")
-XER = re.compile(r"ctx\.xer(?:\.(ca|so|ov))?")
+XER_CA = re.compile(r"ctx\.xer\.ca")
 RESERVED = re.compile(r"ctx\.reserved(?:\.\w+)?")
+CALL = re.compile(r"(?:\bsub_[0-9A-Fa-f]{8}|__imp__\w+|PPC_CALL_INDIRECT_FUNC)\s*\(")
+BITS = ("lt", "gt", "eq", "so")
+VOLATILE_FIELDS = {0, 1, 5, 6, 7}
 
 
 def is_assignment(line, end):
@@ -41,71 +48,139 @@ def is_assignment(line, end):
     return rest.startswith("=") and not rest.startswith("==")
 
 
-def classify_line(line):
-    """Yield (field, kind) in source order; kind is 'write', 'read' or 'benign'."""
-    events = []
-    if MFCR.search(line):
+def statement_events(line):
+    """Return ('read'|'write', key) events of one line, reads of an assignment's
+    right-hand side before its write. Keys: ('cr', field, bit), ('ca',), ('res',)."""
+    reads, writes = [], []
+    if not MFCR.search(line):
         for match in CR.finditer(line):
-            events.append((match.start(), f"cr{match.group(1)}", "benign"))
-    else:
-        for match in CR.finditer(line):
-            field = f"cr{match.group(1)}"
+            field, bit = int(match.group(1)), match.group(2)
             tail = line[match.end():]
-            if tail.startswith(".compare<") or tail.startswith(".setFromMask(") or is_assignment(line, match.end()):
-                events.append((match.start(), field, "write"))
+            keys = [("cr", field, b) for b in BITS] if bit is None else [("cr", field, bit)]
+            if bit is None and (tail.startswith(".compare<") or tail.startswith(".setFromMask(")):
+                writes.extend(keys)
+            elif is_assignment(line, match.end()):
+                writes.extend(keys)
             else:
-                events.append((match.start(), field, "read"))
-    for match in XER.finditer(line):
-        sub = match.group(1)
-        field = f"xer.{sub}" if sub else "xer"
-        if sub is None:
-            # `compare<...>(a, b, ctx.xer)` copies SO only.
-            events.append((match.start(), "xer.so", "benign" if line[match.end():].lstrip().startswith(")") else "read"))
-        elif is_assignment(line, match.end()):
-            events.append((match.start(), field, "write"))
-        else:
-            events.append((match.start(), field, "read"))
+                reads.extend(keys)
+    for match in XER_CA.finditer(line):
+        (writes if is_assignment(line, match.end()) else reads).append(("ca",))
     for match in RESERVED.finditer(line):
-        events.append((match.start(), "reserved", "write" if is_assignment(line, match.end()) else "read"))
-    # An assignment's right-hand side is evaluated before its target is
-    # written: `ctx.cr6.eq = ctx.cr6.lt` reads first. Put reads that follow
-    # the `=` of an assignment ahead of that assignment's write.
-    events.sort(key=lambda e: e[0])
-    ordered = []
-    pending = []
-    for position, field, kind in events:
-        if kind == "write" and "=" in line[position:]:
-            pending.append((field, kind))
-        else:
-            ordered.append((field, kind))
-    return ordered + pending
+        (writes if is_assignment(line, match.end()) else reads).append(("res",))
+    return [("read", k) for k in reads] + [("write", k) for k in writes]
+
+
+def parse_blocks(lines):
+    """Split a function body into blocks; return [(statements, successors)].
+
+    A block ends at a label, after a goto, a return, an if with a goto or
+    return, and after a whole switch (whose case gotos are its successors)."""
+    blocks = [{"body": [], "targets": [], "falls": True}]
+    labels = {}
+    stripped = [raw.strip() for raw in lines]
+    i = 0
+    while i < len(stripped):
+        line = stripped[i]
+        i += 1
+        if not line:
+            continue
+        label = LABEL.match(line)
+        if label:
+            if blocks[-1]["body"] or blocks[-1]["targets"]:
+                blocks.append({"body": [], "targets": [], "falls": True})
+            labels[label.group(1)] = len(blocks) - 1
+            continue
+        current = blocks[-1]
+        current["body"].append(line)
+        if line.startswith("switch") and line.endswith("{"):
+            depth = 1
+            unreachable_default = False
+            while i < len(stripped) and depth:
+                inner = stripped[i]
+                i += 1
+                depth += inner.count("{") - inner.count("}")
+                current["targets"].extend(GOTO.findall(inner))
+                if inner.startswith("__builtin_unreachable"):
+                    unreachable_default = True
+            current["falls"] = not unreachable_default
+            blocks.append({"body": [], "targets": [], "falls": True})
+            continue
+        current["targets"].extend(GOTO.findall(line))
+        if line.startswith("goto ") or line.startswith("return") or line.startswith("__builtin_unreachable"):
+            current["falls"] = False
+            blocks.append({"body": [], "targets": [], "falls": True})
+        elif line.startswith("if (") and ("goto " in line or "return" in line):
+            blocks.append({"body": [], "targets": [], "falls": True})
+    graph = []
+    for index, block in enumerate(blocks):
+        successors = {labels[t] for t in block["targets"] if t in labels}
+        if block["falls"] and index + 1 < len(blocks):
+            successors.add(index + 1)
+        graph.append((block["body"], successors))
+    return graph
+
+
+KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",)]
+
+
+def analyse(lines):
+    """Return {key: sources} for reads that can see an outside value."""
+    graph = parse_blocks(lines)
+    state_in = [dict() for _ in graph]
+    state_in[0] = {k: frozenset({"entry"}) for k in KEYS}
+    work, queued, reached = [0], {0}, {0}
+    found = {}
+    while work:
+        index = work.pop()
+        queued.discard(index)
+        body, successors = graph[index]
+        state = dict(state_in[index])
+        for line in body:
+            for kind, key in statement_events(line):
+                if kind == "read":
+                    if state.get(key):
+                        found.setdefault(key, set()).update(state[key])
+                else:
+                    state.pop(key, None)
+            if CALL.search(line):
+                for key in KEYS:
+                    if (key[0] == "cr" and key[1] in VOLATILE_FIELDS) or key[0] in ("ca", "res"):
+                        state[key] = state.get(key, frozenset()) | {"call"}
+        for successor in successors:
+            target = state_in[successor]
+            changed = successor not in reached
+            reached.add(successor)
+            for key, sources in state.items():
+                union = target.get(key, frozenset()) | sources
+                if union != target.get(key):
+                    target[key] = union
+                    changed = True
+            if changed and successor not in queued:
+                work.append(successor)
+                queued.add(successor)
+    return found
 
 
 def scan(files):
     functions = 0
-    flagged = {}
+    flagged = defaultdict(list)  # key label -> [(name, sources)]
     for path in files:
-        name = None
-        seen = {}
-        offset = 0
+        name, body = None, []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             started = FUNCTION.match(line)
             if started:
-                name, seen, offset = started.group(1), {}, 0
+                name, body = started.group(1), []
                 functions += 1
                 continue
             if name is None:
                 continue
-            offset += 1
-            if line.startswith("}") and not line.startswith("}}"):
+            if line.startswith("}"):
+                for key, sources in analyse(body).items():
+                    label = f"cr{key[1]}.{key[2]}" if key[0] == "cr" else ("xer.ca" if key[0] == "ca" else "reserved")
+                    flagged[label].append((name, "+".join(sorted(sources))))
                 name = None
                 continue
-            for field, kind in classify_line(line):
-                if kind == "benign" or field in seen:
-                    continue
-                seen[field] = kind
-                if kind == "read":
-                    flagged.setdefault(field.split(".")[0] if field.startswith("cr") else field, []).append((name, field, offset))
+            body.append(line)
     return functions, flagged
 
 
@@ -120,14 +195,24 @@ def main(argv=None):
         return 1
     functions, flagged = scan(files)
     print(f"promotion check: {functions} functions in {len(files)} files")
-    groups = {"CR": [k for k in flagged if k.startswith("cr")], "XER": [k for k in flagged if k.startswith("xer")],
-              "reserved": [k for k in flagged if k == "reserved"]}
-    for label, keys in groups.items():
-        entries = sorted({(n, f, o) for k in keys for (n, f, o) in flagged[k]})
-        names = sorted({n for n, _, _ in entries})
-        print(f"promotion check: {label}: {len(names)} functions read a field before writing it")
-        for n, f, o in entries[: args.limit]:
-            print(f"  {n} {f} first read at line +{o}")
+    for group, prefix in (("CR", "cr"), ("XER carry", "xer"), ("reservation", "reserved")):
+        names = defaultdict(set)
+        for label, entries in flagged.items():
+            if label.startswith(prefix):
+                for name, sources in entries:
+                    names[sources].add(name)
+        total = len(set().union(*names.values())) if names else 0
+        detail = ", ".join(f"{len(v)} from {k}" for k, v in sorted(names.items()))
+        print(f"promotion check: {group}: {total} functions can read an outside value" + (f" ({detail})" if detail else ""))
+    per_field = sorted(((label, len({n for n, _ in entries})) for label, entries in flagged.items()), key=lambda x: -x[1])
+    print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
+    shown = 0
+    for label, entries in sorted(flagged.items()):
+        for name, sources in sorted(set(entries)):
+            if shown >= args.limit:
+                break
+            print(f"  {name} {label} from {sources}")
+            shown += 1
     return 0
 
 
