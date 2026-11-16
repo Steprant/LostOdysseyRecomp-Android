@@ -18,9 +18,7 @@ namespace fixture
 uint8_t Load8(uint32_t address);
 uint16_t Load16(uint32_t address);
 uint32_t Load32(uint32_t address);
-void Write8(uint32_t address, uint8_t value);
 }
 #define PPC_LOAD_U8(address) fixture::Load8(uint32_t(address))
 #define PPC_LOAD_U16(address) fixture::Load16(uint32_t(address))
 #define PPC_LOAD_U32(address) fixture::Load32(uint32_t(address))
-#define PPC_STORE_U8(address, value) fixture::Write8(uint32_t(address), uint8_t(value))

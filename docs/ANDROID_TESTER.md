@@ -96,7 +96,20 @@ per item.
   map, paired base mix, channel type and the gain used, marked `voice` when
   the mono FC dialogue rule applied.
 
-### 2.1.1-F: sound balance, bank voices, power paths
+### 2.1.5: original sound balance, poll back-off
+
+- The mix is the original one again (as upstream): retail category gains, the
+  Voice slider only on the mono FC dialogue track of paired streams, and the
+  stereo fold-down with centre and rears at -3 dB. The 2.1.1-D/E/F and 2.1.4
+  balance changes below (voices forward, BGM halved, companion and field
+  script balances) are gone, and so are their log lines; `voice volume:`
+  lines show the dialogue tracks the Voice slider set.
+- `guest imports:` adds `zero_polls_per_s`, `poll_backoffs_per_s`, `woken`
+  and `lock_held`: a thread that keeps polling one unsignaled object waits on
+  it for at most 500 us instead (`LO_POLL_BACKOFF=0` off); `poll back-off:`
+  names the first threads and callers.
+
+### 2.1.1-F: sound balance, bank voices, power paths (superseded in 2.1.5)
 
 - Stream BGM (types 17 and 19, the Music category) plays at half its retail
   gain by default (`LO_BGM_BALANCE`, 0.05-1): field dialogue comes from sound
