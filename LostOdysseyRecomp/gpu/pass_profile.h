@@ -89,6 +89,9 @@ public:
     uint64_t replayNs[kReplayKinds] = {}, replayCmds[kReplayKinds] = {};
     uint64_t replayAnalyzeNs = 0, replayDriverDrawNs = 0, replayPassBeginNs = 0, replayPassEndNs = 0;
     uint64_t replayPassBegins = 0, replayPassEnds = 0, replayRepeatedSetBinds = 0;
+    // Steprant 2.1.5: replays recorded in parallel (plume parallel_record).
+    uint64_t parallelReplays = 0, parallelChunks = 0, parallelOwnChunks = 0;
+    uint64_t parallelRecordNs = 0, parallelOwnNs = 0, parallelWaitNs = 0;
     uint64_t whatIfMergeablePasses = 0, whatIfMergeBytes = 0, diagDiscardedStores = 0, diagDiscardedStoreBytes = 0;
     plume::RenderPassProfile::ContentFlow flow;
     uint64_t passEnds[size_t(plume::RenderPassProfile::PassEnd::Count)] = {};
@@ -127,6 +130,12 @@ public:
         replayPassBegins += profile.replayPassBegins;
         replayPassEnds += profile.replayPassEnds;
         replayRepeatedSetBinds += profile.replayRepeatedSetBinds;
+        parallelReplays += profile.parallelReplays;
+        parallelChunks += profile.parallelChunks;
+        parallelOwnChunks += profile.parallelOwnChunks;
+        parallelRecordNs += profile.parallelRecordNs;
+        parallelOwnNs += profile.parallelOwnNs;
+        parallelWaitNs += profile.parallelWaitNs;
         textureCopyHazards += profile.textureCopyHazards;
         for (int i = 0; i < 5; ++i) deferredEarlyReasons[i] += profile.deferredEarlyReasons[i];
         whatIfMergeablePasses += profile.whatIfMergeablePasses;
@@ -286,6 +295,11 @@ public:
     // draws and of the render pass begins and ends, a part of the kinds above
     // (a pass begins inside the draw or clear that needs it, and ends inside
     // the framebuffer change, barrier or copy that closes it).
+    // Steprant 2.1.5, where replays recorded in parallel: the kinds are then the
+    // command thread's encoding, and "parallel:" adds, per frame, those
+    // replays, their command buffers (chunks), the driver recording of the
+    // chunks on the helper threads (GPU Record n), the chunks the command
+    // thread recorded itself at the end and their time, and its wait.
     bool HasReplayTiming() const
     {
         if (replayAnalyzeNs != 0) return true;
@@ -313,6 +327,13 @@ public:
             ms(replayDriverDrawNs), ms(replayPassBeginNs), double(replayPassBegins) / f, ms(replayPassEndNs), double(replayPassEnds) / f,
             double(replayRepeatedSetBinds) / f);
         line += buffer;
+        if (parallelReplays != 0)
+        {
+            std::snprintf(buffer, sizeof(buffer), " | parallel: replays=%.1f chunks=%.1f helpers_ms=%.2f own=%.1f/%.2f wait_ms=%.2f",
+                double(parallelReplays) / f, double(parallelChunks) / f, ms(parallelRecordNs), double(parallelOwnChunks) / f, ms(parallelOwnNs),
+                ms(parallelWaitNs));
+            line += buffer;
+        }
         return line;
     }
 

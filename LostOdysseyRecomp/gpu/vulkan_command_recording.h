@@ -14,6 +14,9 @@ inline VkResult BeginCommands(plume::VulkanCommandList& list) {
         return VK_ERROR_UNKNOWN;
     const auto reset = vkResetCommandBuffer(list.vk, 0);
     if (reset != VK_SUCCESS) return reset;
+    // Steprant 2.1.5: the previous recording's parallel chunks are no longer
+    // in flight (a list is begun again only after its fence).
+    list.resetParallelRecording();
     ClearBindings(list);
     VkCommandBufferBeginInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -28,11 +31,14 @@ inline VkResult BeginCommands(plume::VulkanCommandList& list) {
 }
 inline VkResult EndCommands(plume::VulkanCommandList& list) {
     if (!list.vk || !list.recording || list.externalCommandsOpen) return VK_ERROR_UNKNOWN;
-    list.flushCapture();
+    // Steprant 2.1.5: the replay that ends the list may record in parallel;
+    // it returns once every chunk is recorded (see appendSubmitBuffers).
+    list.flushCapture(true);
     list.capturing = false;
     list.endActiveRenderPass();
     list.finishPassProfile();
-    const auto result = vkEndCommandBuffer(list.vk);
+    auto result = vkEndCommandBuffer(list.vk);
+    if (result == VK_SUCCESS && list.parallelResult != VK_SUCCESS) result = list.parallelResult;
     if (result == VK_SUCCESS) {
         ClearBindings(list);
         list.recording = false;

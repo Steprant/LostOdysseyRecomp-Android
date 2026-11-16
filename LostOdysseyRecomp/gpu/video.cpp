@@ -917,7 +917,9 @@ namespace gpu::video
             commandBuffers.reserve(count); waitSemaphores.reserve(waitCount); signalSemaphores.reserve(signalCount);
             for (uint32_t i = 0; i < count; ++i) {
                 if (!lists[i]) { StopGpuWork(submission::VulkanState::InvalidState); return false; }
-                commandBuffers.push_back(static_cast<const plume::VulkanCommandList*>(lists[i])->vk);
+                // Steprant 2.1.5: the list's own command buffer, then the chunks
+                // its last replay recorded in parallel, in order.
+                static_cast<const plume::VulkanCommandList*>(lists[i])->appendSubmitBuffers(commandBuffers);
             }
             for (uint32_t i = 0; i < waitCount; ++i)
                 waitSemaphores.push_back(static_cast<plume::VulkanCommandSemaphore*>(waits[i])->vk);

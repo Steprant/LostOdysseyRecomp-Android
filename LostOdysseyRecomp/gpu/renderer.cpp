@@ -2934,6 +2934,7 @@ namespace gpu::renderer
                 queue = video::GetQueue();
                 vulkan = video::UsesSpirv();
                 nativeVulkan = video::IsVulkan();
+
                 texInfoSpecialization = nativeVulkan && !(getenv("LO_TEXINFO_SPEC") && std::string_view(getenv("LO_TEXINFO_SPEC")) == "0");
 #if defined(LO_GPU_PLUME)
                 dlssController = video::GetDlssController();
@@ -2993,6 +2994,14 @@ namespace gpu::renderer
                         if (!g.srIsolated || !g.srContinuation)
                             return InitFailure("dlss.command_list.create", 0, i);
                     }
+                    // Steprant 2.1.5: the replay that ends a slot list may record on
+                    // helper threads (Plume parallel_record, LO_VK_PARALLEL_RECORD);
+                    // SubmitRendererBatch submits each list's chunks after it. The
+                    // helpers start on this thread (the GPU command thread) and keep
+                    // its cores and priority. A no-op outside Vulkan.
+                    g.list->setParallelRecording(true);
+                    if (g.srIsolated) g.srIsolated->setParallelRecording(true);
+                    if (g.srContinuation) g.srContinuation->setParallelRecording(true);
                     g.fence = device->createCommandFence();
                     if (!g.fence) return InitFailure("command_fence.create", 0, i);
                     // SPIR-V constant reads add their offset to the low address word

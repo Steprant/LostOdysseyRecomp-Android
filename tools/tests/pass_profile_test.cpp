@@ -105,7 +105,20 @@ int main()
         assert(line.rfind("frame graph replay: frames=2 per_frame_ms: total=2.00 analyze=0.20 |", 0) == 0);
         assert(line.find(" draw=1.50/450 pipeline=0.00/0 sets=0.00/0 push=0.30/480 ") != std::string::npos);
         assert(line.find(" other=0.00/0 | driver_ms: draws=0.90 pass_begin=0.40/66.0 pass_end=0.25/66.0 | repeated_set_binds=4000") != std::string::npos);
+        // Steprant 2.1.5: no parallel part without replays recorded in parallel.
+        assert(line.find("parallel:") == std::string::npos);
         assert(!gpu::pass_profile::Summary().HasReplayTiming());
+        {
+            gpu::pass_profile::Summary parallel;
+            plume::RenderPassProfile recorded = frame;
+            recorded.parallelReplays = 1; recorded.parallelChunks = 6; recorded.parallelOwnChunks = 1;
+            recorded.parallelRecordNs = 2'400'000; recorded.parallelOwnNs = 300'000; recorded.parallelWaitNs = 100'000;
+            parallel.Add(recorded, true);
+            parallel.Add(recorded, true);
+            const std::string parallelLine = parallel.FormatReplay();
+            std::printf("%s\n", parallelLine.c_str());
+            assert(parallelLine.find(" | repeated_set_binds=4000 | parallel: replays=1.0 chunks=6.0 helpers_ms=2.40 own=1.0/0.30 wait_ms=0.10") != std::string::npos);
+        }
 
         Reporter timed, untimed;
         const auto t1 = std::chrono::steady_clock::time_point(std::chrono::seconds(500));
