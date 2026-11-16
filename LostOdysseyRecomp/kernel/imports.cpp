@@ -19,6 +19,7 @@
 #include "xex_loader.h"
 #include "guest_printf.h"
 #include "critical_section.h"
+#include "poll_backoff.h"
 #include "io/file_system.h"
 #include <gpu/command_processor.h>
 #include <apu/audio.h>
@@ -366,6 +367,16 @@ std::string TakeImportLine(double seconds)
         out += fmt::format(" | gpu_wait_sleeps_per_s={:.0f} woken={:.0f} at_limit={:.0f} publishes_per_s={:.0f} wake_calls_per_s={:.0f} unannounced={}{}",
             sleeps / span, woken / span, atLimit / span, publishes / span, wakeCalls / span, gp.unannounced.load(std::memory_order_relaxed),
             !gpu_progress::Configured() ? " (off)" : gpu_progress::g_fallback.load() ? " (fell back to timed polling)" : "");
+        // Steprant 2.1.5: zero-timeout polls and those that waited briefly
+        // instead (kernel/poll_backoff.h).
+        auto& pb = kernel::poll_backoff::g_stats;
+        const uint64_t polls = pb.polls.exchange(0, std::memory_order_relaxed);
+        const uint64_t backoffs = pb.waits.exchange(0, std::memory_order_relaxed);
+        const uint64_t backoffWoken = pb.woken.exchange(0, std::memory_order_relaxed);
+        const uint64_t lockHeld = pb.lockHeld.exchange(0, std::memory_order_relaxed);
+        out += fmt::format(" | zero_polls_per_s={:.0f} poll_backoffs_per_s={:.0f} woken={:.0f} lock_held={:.0f}{}",
+            polls / span, backoffs / span, backoffWoken / span, lockHeld / span,
+            kernel::poll_backoff::Enabled() ? "" : " (off)");
     }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)
@@ -572,6 +583,7 @@ struct Mutant final : KernelObject, HostObject<XDISPATCHER_HEADER>
     Mutant(bool initialOwner) : state(initialOwner ? g_ppcContext->r13.u32 : 0) {}
     kernel::wait::Target* WaitTarget() override { return &state; }
     uint32_t Wait(uint32_t timeout) override { return state.Wait(timeout, g_ppcContext->r13.u32); }
+    uint32_t WaitBriefly(uint32_t us) override { return state.WaitFor(us, g_ppcContext->r13.u32); }
     bool Release() { return state.Release(g_ppcContext->r13.u32); }
 };
 
@@ -709,6 +721,39 @@ static uint32_t KeWaitForMultipleObjects(uint32_t Count, xpointer<XDISPATCHER_HE
     for (size_t i = 0; i < Count; ++i) objects.push_back(ResolveWaitObject(Objects[i]));
     return WaitObjects(objects, WaitType, GuestTimeoutToMilliseconds(Timeout));
 }
+// Steprant 2.1.5: a zero-timeout wait. A thread that keeps polling the same
+// unsignaled object waits on it briefly instead (kernel/poll_backoff.h).
+static uint32_t PollObject(KernelObject& object, uint32_t handle)
+{
+    namespace pb = kernel::poll_backoff;
+    pb::g_stats.polls.fetch_add(1, std::memory_order_relaxed);
+    if (!pb::Enabled()) return object.Wait(0);
+    static thread_local pb::Table table;
+    auto& entry = table.Find(handle);
+    const auto nowNs = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    uint32_t result;
+    if (!pb::Table::ShouldWait(entry, nowNs())) {
+        result = object.Wait(0);
+    } else if (pb::t_locksHeld > 0) {
+        pb::g_stats.lockHeld.fetch_add(1, std::memory_order_relaxed);
+        result = object.Wait(0);
+    } else {
+        pb::g_stats.waits.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<uint32_t> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 4)
+            LOG_INFO("poll back-off: thread {:#x} handle {:#x} lr={:#x} after {} polls",
+                g_ppcContext->r13.u32, handle, uint32_t(g_ppcContext->lr), entry.failures);
+        WaitScope scope("NtWaitForSingleObjectEx(poll)", handle);
+        result = object.WaitBriefly(pb::kWaitUs);
+        if (result == STATUS_SUCCESS) pb::g_stats.woken.fetch_add(1, std::memory_order_relaxed);
+    }
+    pb::Table::Record(entry, result != STATUS_TIMEOUT, nowNs());
+    return result;
+}
+
 static uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
 {
     if (Alertable && DeliverUserApcs()) return STATUS_USER_APC;
@@ -716,8 +761,7 @@ static uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t WaitMode, uint
     auto object = GetKernelObject(Handle);
     if (!object) return STATUS_INVALID_HANDLE;
     const auto timeout = GuestTimeoutToMilliseconds(Timeout);
-    // A poll cannot wait for the object to become signaled.
-    if (timeout == 0) return object->Wait(0);
+    if (timeout == 0) return PollObject(*object, Handle);
     WaitScope scope("NtWaitForSingleObjectEx", Handle);
     return object->Wait(timeout);
 }
@@ -811,6 +855,7 @@ static void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     const uint32_t thread = g_ppcContext->r13.u32;
     // Timestamp the slow path only. Uncontended and recursive entries
     // complete without registering a blocked thread.
+    ++kernel::poll_backoff::t_locksHeld;
     if (GuestCriticalSection::TryEnter(cs->RecursionCount, cs->OwningThread, thread))
         return;
     WaitScope scope("RtlEnterCriticalSection", g_memory.MapVirtual(cs));
@@ -819,11 +864,14 @@ static void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 
 static bool RtlTryEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
-    return GuestCriticalSection::TryEnter(cs->RecursionCount, cs->OwningThread, g_ppcContext->r13.u32);
+    const bool entered = GuestCriticalSection::TryEnter(cs->RecursionCount, cs->OwningThread, g_ppcContext->r13.u32);
+    if (entered) ++kernel::poll_backoff::t_locksHeld;
+    return entered;
 }
 
 static void RtlLeaveCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    if (kernel::poll_backoff::t_locksHeld > 0) --kernel::poll_backoff::t_locksHeld;
     GuestCriticalSection::Leave(cs->RecursionCount, cs->OwningThread);
 }
 
@@ -838,10 +886,12 @@ static void KfAcquireSpinLock(uint32_t* spinLock)
             break;
         std::this_thread::yield();
     }
+    ++kernel::poll_backoff::t_locksHeld;
 }
 
 static void KfReleaseSpinLock(uint32_t* spinLock)
 {
+    if (kernel::poll_backoff::t_locksHeld > 0) --kernel::poll_backoff::t_locksHeld;
     os::AtomicRef<uint32_t> ref(*spinLock);
     ref = 0;
 }
@@ -850,7 +900,9 @@ static uint32_t KeTryToAcquireSpinLockAtRaisedIrql(uint32_t* spinLock)
 {
     os::AtomicRef<uint32_t> ref(*spinLock);
     uint32_t expected = 0;
-    return ref.compare_exchange_strong(expected, g_ppcContext->r13.u32) ? 1 : 0;
+    const bool acquired = ref.compare_exchange_strong(expected, g_ppcContext->r13.u32);
+    if (acquired) ++kernel::poll_backoff::t_locksHeld;
+    return acquired ? 1 : 0;
 }
 
 static std::vector<size_t> g_tlsFreeIndices;

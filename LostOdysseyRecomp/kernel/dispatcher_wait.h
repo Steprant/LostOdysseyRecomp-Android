@@ -55,6 +55,13 @@ public:
         Consume(owner);
         return Success;
     }
+    // Steprant 2.1.5: a wait of at most us microseconds (kernel/poll_backoff.h).
+    uint32_t WaitFor(uint32_t us, uint32_t owner = 0) {
+        std::unique_lock lock(mutex);
+        if (!cv.wait_for(lock, std::chrono::microseconds(us), [&] { return Ready(owner); })) return Timeout;
+        Consume(owner);
+        return Success;
+    }
     // Caller owns mutex.
     void Register(MultiWaiter* waiter) { multiWaiters.push_back(waiter); multiWaiterCount.fetch_add(1); }
     void Unregister(MultiWaiter* waiter) {

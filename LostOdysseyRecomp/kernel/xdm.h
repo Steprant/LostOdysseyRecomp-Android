@@ -136,6 +136,12 @@ struct KernelObject
         auto* target = WaitTarget();
         return target ? target->Wait(timeout) : STATUS_INVALID_HANDLE;
     }
+    // Steprant 2.1.5: a wait of at most us microseconds, for a poll that backs
+    // off (kernel/poll_backoff.h). Objects without a wait target just poll.
+    virtual uint32_t WaitBriefly(uint32_t us) {
+        auto* target = WaitTarget();
+        return target ? target->WaitFor(us) : Wait(0);
+    }
 };
 // Function-local registry is intentionally process-lifetime: global guest heap
 // teardown must not race registry destruction while detached guest workers exit.
