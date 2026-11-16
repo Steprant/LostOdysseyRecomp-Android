@@ -1,6 +1,7 @@
 // Only host resources and unrelated temporal services are stand-ins. The
 // reconfiguration, address/format lookup and FG invalidation bodies are production.
 #include <gpu/render_resolution.h>
+#include <gpu/resolve_whatif.h>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -63,6 +64,9 @@ struct Renderer {
     };
     std::unordered_map<uint32_t,std::vector<ResolvedSurface>> resolved;
     std::bitset<4096> resolvedBases;
+    // Steprant 2.1.5: the resolve what-if measurement the copied methods feed.
+    resolve_whatif::Tracker resolveWhatIf;
+    static bool ResolveWhatIfOn() { return true; }
     static size_t ResolvedBaseBit(uint32_t base) { return size_t((base*0x9E3779B1u)>>20); }
     static constexpr uint32_t kDepthResolveTag=0x1000;
     uint64_t activePlanGeneration=0, appliedPlanEpoch=1, frame=10, shadowConfigFrame=~0ull;
