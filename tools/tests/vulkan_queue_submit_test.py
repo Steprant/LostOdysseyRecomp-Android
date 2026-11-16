@@ -32,6 +32,7 @@ static unsigned submits = 0, errors = 0;
 static uint32_t expectedWaits = 0, expectedSignals = 0;
 static VkFence expectedFence = VK_NULL_HANDLE;
 static VkResult submitResult = VK_SUCCESS;
+static std::vector<VkCommandBuffer> expectedBuffers;
 
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t count,
                                             const VkSubmitInfo* info, VkFence fence) {
@@ -52,9 +53,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t count,
     }
     if (!expectedWaits)
         Check(!info->pWaitSemaphores && !info->pWaitDstStageMask, "stale wait pointers");
-    Check(info->commandBufferCount == 2, "wrong command count");
-    for (unsigned i = 0; i < 2; ++i)
-        Check(info->pCommandBuffers[i] == Handle<VkCommandBuffer>(30 + i), "wrong command buffer");
+    Check(info->commandBufferCount == expectedBuffers.size(), "wrong command count");
+    for (unsigned i = 0; i < expectedBuffers.size(); ++i)
+        Check(info->pCommandBuffers[i] == expectedBuffers[i], "wrong command buffer");
     Check(info->signalSemaphoreCount == expectedSignals, "wrong signal count");
     for (uint32_t i = 0; i < expectedSignals; ++i)
         Check(info->pSignalSemaphores[i] == Handle<VkSemaphore>(20 + i), "wrong signal semaphore");
@@ -67,7 +68,15 @@ namespace plume {
 // Minimal host objects; the submission method below is unmodified production
 // code. All Vulkan structures and flags come from the actual pinned headers.
 struct RenderCommandList {};
-struct VulkanCommandList : RenderCommandList { VkCommandBuffer vk; };
+struct VulkanCommandList : RenderCommandList {
+    VkCommandBuffer vk;
+    // Steprant 2.1.5: SubmitVulkan submits the list, then its parallel chunks.
+    std::vector<VkCommandBuffer> chainedCommandBuffers;
+    void appendSubmitBuffers(std::vector<VkCommandBuffer>& buffers) const {
+        buffers.emplace_back(vk);
+        buffers.insert(buffers.end(), chainedCommandBuffers.begin(), chainedCommandBuffers.end());
+    }
+};
 struct RenderCommandSemaphore {};
 struct VulkanCommandSemaphore : RenderCommandSemaphore { VkSemaphore vk; };
 struct RenderCommandFence {};
@@ -110,6 +119,7 @@ int main() try {
     fence.vk = Handle<VkFence>(40);
     // Growing, shrinking and clearing the thread-local arrays must not leave
     // stale entries. Include submissions with and without signals or a fence.
+    expectedBuffers = {Handle<VkCommandBuffer>(30), Handle<VkCommandBuffer>(31)};
     for (const uint32_t count : {8, 1, 0, 3, 2, 0}) {
         expectedWaits = count;
         expectedSignals = count % 3;
@@ -120,10 +130,17 @@ int main() try {
             expectedFence ? &fence : nullptr);
     }
     Check(submits == 6 && errors == 0, "successful submissions reported errors");
+    // Steprant 2.1.5: a list's parallel chunks follow it, before the next list.
+    commands[0].chainedCommandBuffers = {Handle<VkCommandBuffer>(50), Handle<VkCommandBuffer>(51)};
+    expectedBuffers = {Handle<VkCommandBuffer>(30), Handle<VkCommandBuffer>(50), Handle<VkCommandBuffer>(51), Handle<VkCommandBuffer>(31)};
+    expectedWaits = expectedSignals = 0;
+    expectedFence = VK_NULL_HANDLE;
+    queue.executeCommandLists(commandPointers.data(), 2, nullptr, 0, nullptr, 0, nullptr);
+    Check(submits == 7 && errors == 0, "chunked submission reported errors");
     submitResult = VK_ERROR_DEVICE_LOST;
     queue.executeCommandLists(commandPointers.data(), 2, nullptr, 0, nullptr, 0, nullptr);
-    Check(submits == 7 && errors == 1, "failed submission not reported");
-    std::puts("PASS: production Vulkan submit: 0/1/2/3/8 wait masks, generic queue stages, array reuse, commands, signals, fences, device-loss reporting");
+    Check(submits == 8 && errors == 1, "failed submission not reported");
+    std::puts("PASS: production Vulkan submit: 0/1/2/3/8 wait masks, generic queue stages, array reuse, commands, parallel chunks in order, signals, fences, device-loss reporting");
 } catch (const std::exception& error) {
     std::fprintf(stderr, "FAIL: %s\n", error.what());
     return 1;
