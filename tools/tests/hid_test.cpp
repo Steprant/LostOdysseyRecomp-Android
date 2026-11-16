@@ -234,6 +234,27 @@ int main()
     }
 
 #if LO_PLATFORM_ANDROID
+    hid::android_touch::Update(XAMINPUT_GAMEPAD_A, 0, 0, 0, 0, 0, 0);
+    hid::PumpHostInput();
+    Check(hid::PromptFamily() == uint8_t(Family::Xbox), "touch brings back the Xbox prompts in Auto");
+    hid::android_touch::Clear();
+    hid::HandleKeyboardEvent(SDL_SCANCODE_AC_BACK, true);
+    sample();
+    hid::HandleKeyboardEvent(SDL_SCANCODE_AC_BACK, false);
+    Check(hid::PromptFamily() == uint8_t(Family::Xbox), "Android Back does not select keyboard prompts");
+    hid::HandleKeyboardEvent(SDL_SCANCODE_Z, true);
+    hid::HandleKeyboardEvent(SDL_SCANCODE_Z, false);
+    hid::android_touch::Clear();
+    sample();
+    Check(hid::UsesKeyboardPrompts(), "mapped keyboard input works and clearing touch preserves its prompts");
+    hid::SetPromptStyle(uint32_t(Family::PlayStation) + 1);
+    hid::android_touch::Update(XAMINPUT_GAMEPAD_B, 0, 0, 0, 0, 0, 0);
+    sample();
+    Check(hid::UsesPlayStationPrompts(), "explicit prompt selection takes precedence over touch");
+    hid::SetPromptStyle(0);
+    Check(hid::PromptFamily() == uint8_t(Family::Xbox), "guest input also registers touch activity");
+    hid::android_touch::Clear();
+
     SDL_SetJoystickVirtualButton(a, SDL_GAMEPAD_BUTTON_SOUTH, 1);
     SDL_SetJoystickVirtualAxis(b, SDL_GAMEPAD_AXIS_LEFTX, 20000);
     SDL_SetJoystickVirtualAxis(a, SDL_GAMEPAD_AXIS_RIGHTX, 16000);

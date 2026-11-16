@@ -13,6 +13,9 @@ struct State
     int16_t leftY = 0;
     int16_t rightX = 0;
     int16_t rightY = 0;
+    uint32_t activitySerial = 0;
+
+    bool operator==(const State&) const = default;
 };
 
 // The Android UI publishes a complete snapshot after every touch change.

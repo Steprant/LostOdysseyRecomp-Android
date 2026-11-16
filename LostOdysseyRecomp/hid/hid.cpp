@@ -53,6 +53,16 @@ namespace
         g_promptsByPosition.store(g_promptController.ActivePositional(), std::memory_order_relaxed);
     }
 
+#if LO_PLATFORM_ANDROID
+    void ObserveTouchPrompts(const hid::android_touch::State& touch)
+    {
+        static uint32_t lastActivity = 0; // Guarded by g_hidMutex.
+        if (lastActivity == touch.activitySerial) return;
+        lastActivity = touch.activitySerial;
+        g_promptController.TouchScreen();
+    }
+#endif
+
     void ObserveController(SDL_Gamepad* controller)
     {
         uint32_t buttons = 0;
@@ -232,11 +242,17 @@ void hid::HandleControllerEvent(uint32_t eventType, uint32_t which)
 void hid::HandleKeyboardEvent(int32_t scancode, bool pressed)
 {
     std::lock_guard lock(g_hidMutex);
-    if (scancode >= 0 && scancode < SDL_SCANCODE_COUNT)
-    {
-        g_keys[scancode] = pressed;
-        if (pressed) { g_promptController.Keyboard(); PublishPromptStyle(); }
-    }
+    if (scancode < 0 || scancode >= SDL_SCANCODE_COUNT) return;
+    g_keys[scancode] = pressed;
+    if (!pressed) return;
+#if LO_PLATFORM_ANDROID
+    // SDL also delivers the system Back gesture here. Only keys that drive
+    // the game should replace the controller prompts in Auto.
+    if (scancode == SDL_SCANCODE_AC_BACK || scancode == SDL_SCANCODE_UNKNOWN ||
+        std::find(g_keyboardMap.begin(), g_keyboardMap.end(), scancode) == g_keyboardMap.end()) return;
+#endif
+    g_promptController.Keyboard();
+    PublishPromptStyle();
 }
 
 uint8_t hid::PromptFamily()
@@ -378,15 +394,20 @@ static void ProcessHostInput(uint16_t buttons, uint8_t lt, uint8_t rt)
 void hid::PumpHostInput()
 {
     std::lock_guard stateLock(g_getStateMutex);
+#if LO_PLATFORM_ANDROID
+    const auto touch = android_touch::Snapshot();
+#endif
     uint8_t lt = 0, rt = 0;
     uint16_t buttons = 0;
     {
         std::lock_guard lock(g_hidMutex);
         if (g_externalPump) SDL_UpdateGamepads();
+#if LO_PLATFORM_ANDROID
+        ObserveTouchPrompts(touch);
+#endif
         buttons = ReadRawButtonsLocked(lt, rt);
     }
 #if LO_PLATFORM_ANDROID
-    const auto touch = hid::android_touch::Snapshot();
     buttons |= touch.buttons;
     lt = std::max(lt, touch.leftTrigger);
     rt = std::max(rt, touch.rightTrigger);
@@ -421,6 +442,9 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
 
     std::lock_guard stateLock(g_getStateMutex);
     Poll();
+#if LO_PLATFORM_ANDROID
+    const auto touch = android_touch::Snapshot();
+#endif
 
     *pState = {};
     pState->dwPacketNumber = ++g_packet;
@@ -435,6 +459,9 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
     {
         std::lock_guard lock(g_hidMutex);
         if (!g_externalPump) SDL_UpdateGamepads();
+#if LO_PLATFORM_ANDROID
+        ObserveTouchPrompts(touch);
+#endif
         for (auto* controller : g_controllers)
         {
             if (!SDL_GamepadConnected(controller)) continue;
@@ -459,7 +486,6 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
 #if LO_PLATFORM_ANDROID
     // A quiet touch source leaves the physical controller untouched. Active
     // sticks follow the same larger-magnitude policy as multiple SDL pads.
-    const auto touch = android_touch::Snapshot();
     gp.wButtons |= touch.buttons;
     defaultButtons |= touch.buttons;
     gp.bLeftTrigger = std::max(gp.bLeftTrigger, touch.leftTrigger);

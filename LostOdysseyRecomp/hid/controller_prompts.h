@@ -55,6 +55,7 @@ public:
         if (active_ == id) active_ = devices_.empty() ? 0 : devices_.front().id;
     }
     void Keyboard() { active_ = UINT32_MAX; }
+    void TouchScreen() { active_ = 0; }
     void Observe(SDL_JoystickID id, uint32_t buttons, bool stick)
     {
         for (auto &device : devices_)

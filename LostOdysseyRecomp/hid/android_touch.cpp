@@ -20,7 +20,7 @@ State g_state;
 void Update(int32_t buttons, int32_t leftTrigger, int32_t rightTrigger,
             int32_t leftX, int32_t leftY, int32_t rightX, int32_t rightY)
 {
-    const State next{
+    State next{
         static_cast<uint16_t>(buttons & 0xF3FF),
         static_cast<uint8_t>(std::clamp(leftTrigger, 0, 255)),
         static_cast<uint8_t>(std::clamp(rightTrigger, 0, 255)),
@@ -30,6 +30,10 @@ void Update(int32_t buttons, int32_t leftTrigger, int32_t rightTrigger,
         static_cast<int16_t>(std::clamp(rightY, -32768, 32767)),
     };
     std::lock_guard lock(g_mutex);
+    next.activitySerial = g_state.activitySerial;
+    if (next != g_state && (next.buttons || next.leftTrigger || next.rightTrigger ||
+                           next.leftX || next.leftY || next.rightX || next.rightY))
+        ++next.activitySerial;
     g_state = next;
 }
 
@@ -41,8 +45,7 @@ State Snapshot()
 
 void Clear()
 {
-    std::lock_guard lock(g_mutex);
-    g_state = {};
+    Update(0, 0, 0, 0, 0, 0, 0);
 }
 }
 
