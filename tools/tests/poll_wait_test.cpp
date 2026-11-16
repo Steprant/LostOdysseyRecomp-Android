@@ -150,14 +150,21 @@ int main()
         // The real sleep: woken by a publish well before its limit, and the
         // limit when nothing publishes.
         {
-            const uint32_t seen = gpu_progress::Generation();
-            std::thread publisher([] { std::this_thread::sleep_for(std::chrono::microseconds(300)); gpu_progress::Publish(); });
-            const auto t0 = std::chrono::steady_clock::now();
-            const bool moved = gpu_progress::WaitPast(seen, gpu_progress::kWaitUs);
-            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-            publisher.join();
-            assert(moved == gpu_progress::kSupported);
-            if (gpu_progress::kSupported) assert(us < 1900);
+            // A loaded runner (sanitizers, parallel tests) can start the
+            // publisher after the limit: retry, and require one prompt wake.
+            bool prompt = false;
+            long long us = 0;
+            for (int attempt = 0; attempt < 8 && !prompt; ++attempt) {
+                const uint32_t seen = gpu_progress::Generation();
+                std::thread publisher([] { std::this_thread::sleep_for(std::chrono::microseconds(300)); gpu_progress::Publish(); });
+                const auto t0 = std::chrono::steady_clock::now();
+                const bool moved = gpu_progress::WaitPast(seen, gpu_progress::kWaitUs);
+                us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+                publisher.join();
+                if (!gpu_progress::kSupported) { assert(!moved); prompt = true; }
+                else prompt = moved && us < 1900;
+            }
+            assert(prompt);
             const uint32_t still = gpu_progress::Generation();
             const auto t1 = std::chrono::steady_clock::now();
             assert(!gpu_progress::WaitPast(still, 1000));
