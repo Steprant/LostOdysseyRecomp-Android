@@ -4,7 +4,6 @@
 #include <kernel/heap.h>
 #include <kernel/memory.h>
 #include <os/logger.h>
-#include <apu/audio.h>
 #include <utility>
 #include <cmath>
 #include "teleport.h"
@@ -12,7 +11,6 @@
 #include "map_poi.h"
 #include "save_anywhere.h"
 #include "map_info.h"
-#include "menu_animations.h"
 #include <host_ui/host_ui.h>
 #include "cheats.h"
 #include "battle_tour.h"
@@ -82,20 +80,6 @@ uint32_t LocalPlayerController(uint8_t* base, uint32_t engine)
     if (!ObjectAddress(player)) return 0;
     const uint32_t controller = PPC_LOAD_U32(player + 0x40);
     return ObjectAddress(controller) ? controller : 0;
-}
-
-bool FieldEventOwnsPlayer(uint8_t* base, uint32_t engine)
-{
-    // Script DD takes this bit while it owns field controls. Exclude title,
-    // camp, battle (including transitions), and native controller suspension.
-    const uint32_t world = PPC_LOAD_U32(0x83318744);
-    if (!ObjectAddress(world) || PPC_LOAD_U32(world + 472) == 3 || PPC_LOAD_U32(world + 476) == 3 ||
-        PPC_LOAD_U32(0x832644EC) || PPC_LOAD_U32(debug_menu::menu_animations::CampMenu) > 1)
-        return false;
-
-    const uint32_t controller = LocalPlayerController(base, engine);
-    return controller && !PPC_LOAD_U8(controller + 0x639) &&
-        !(PPC_LOAD_U32(controller + 0x5C8) & 0x08000020u);
 }
 
 Position ReadPosition(uint8_t* base, uint32_t pawn)
@@ -561,7 +545,6 @@ PPC_FUNC(sub_82290B60)
     {
         debug_menu::UpdateMapInfo(base); debug_menu::PartySwitchTick(base); Tick(ctx, base); MapJumpTick(ctx, base); debug_menu::PollSceneLoads(base); debug_menu::battle_tour::Poll(base);
         gpu::cinematic_bars::UpdatePause(base);
-        apu::SetFieldDialogueMix(FieldEventOwnsPlayer(base, PPC_LOAD_U32(EngineAddress)));
         discord_rpc::Tick(base);
         bool playerInField;
         {

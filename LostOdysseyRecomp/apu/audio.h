@@ -33,8 +33,6 @@ namespace apu
     // (patches/voice_volume.cpp). Applied when the game next sets a volume.
     void SetVoiceVolume(uint32_t percent);
     uint32_t VoiceVolume();
-    // Published by the guest game thread when a field script owns the player.
-    void SetFieldDialogueMix(bool active);
     // Speaker test noise (test_signal.h) in place of the game's sound. Call
     // it every frame while the test should play; it stops by itself 0.3 s
     // after the last call with true.
