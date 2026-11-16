@@ -106,6 +106,7 @@
 #include "render_batch_policy.h"
 #include "render_arena_policy.h"
 #include "resolve_copy_policy.h"
+#include "resolve_whatif.h"
 #include <os/log_file.h>
 #include <os/startup_diagnostics.h>
 #include <os/capture_archive.h>
@@ -1129,6 +1130,24 @@ namespace gpu::renderer
             uint64_t resolveWriteOrdinal = 0;
             uint64_t nextTargetAllocation = 0;
             resolve_copy::ConsecutiveCopies consecutiveResolveCopies;
+            // Steprant 2.1.5: which resolve copies could be avoided (measurement
+            // only, resolve_whatif.h); a "resolve what-if:" line every 10 s.
+            // LO_RESOLVE_WHATIF=0 turns it off.
+            resolve_whatif::Tracker resolveWhatIf;
+            std::chrono::steady_clock::time_point resolveWhatIfStart{};
+            static bool ResolveWhatIfOn()
+            {
+                static const bool on = []() { const char* v = getenv("LO_RESOLVE_WHATIF"); return !v || strcmp(v, "0") != 0; }();
+                return on;
+            }
+            static uint32_t WhatIfBytesPerPixel(RenderFormat format)
+            {
+                switch (format) {
+                case RenderFormat::R16G16B16A16_FLOAT: case RenderFormat::R32G32_FLOAT: return 8;
+                case RenderFormat::D32_FLOAT_S8_UINT: return 4; // the depth plane a resolve reads
+                default: return 4;
+                }
+            }
             const bool resolveCopyReuse = [] {
                 const char* value = getenv("LO_RESOLVE_COPY_REUSE");
                 return !value || std::string_view(value) != "0";
@@ -1951,8 +1970,10 @@ namespace gpu::renderer
                 if (it == resolved.end())
                     return nullptr;
                 for (ResolvedSurface& rs : it->second)
-                    if (rs.tex && ResolveFormatMatches(fetchFormat, rs.destFormat))
+                    if (rs.tex && ResolveFormatMatches(fetchFormat, rs.destFormat)) {
+                        if (ResolveWhatIfOn()) resolveWhatIf.OnRead(resolve_whatif::SurfaceKey(base, rs.destFormat));
                         return &rs;
+                    }
                 return nullptr;
             }
 
@@ -1969,6 +1990,7 @@ namespace gpu::renderer
                 for (ResolvedSurface& rs : it->second)
                     if (rs.tex && (!best || rs.frame >= best->frame))
                         best = &rs;
+                if (best && ResolveWhatIfOn()) resolveWhatIf.OnRead(resolve_whatif::SurfaceKey(base, best->destFormat));
                 return best;
             }
 
@@ -1986,6 +2008,7 @@ namespace gpu::renderer
 
             void DropResolved(uint32_t base, uint32_t destFormat)
             {
+                if (ResolveWhatIfOn()) resolveWhatIf.OnDrop(resolve_whatif::SurfaceKey(base, destFormat));
                 auto it = resolved.find(base);
                 if (it == resolved.end())
                     return;
@@ -5942,6 +5965,7 @@ void main()
 
             void MarkFgWritable(HostTexture& tex, const char* reason)
             {
+                if (ResolveWhatIfOn()) resolveWhatIf.OnSourceWrite(tex.allocationSerial, false);
                 if (fgUiCapture && fgUiCapture->Valid() && !fgUiCapture->finalRecorded && fgUiCapture->frame == frame &&
                     fgUiCapture->sourceAllocation == tex.allocationSerial && !fgUiBindingExpected)
                     fgUiCapture->Reject(reason);
@@ -5992,6 +6016,15 @@ void main()
                     const bool sceneCameraKnown = temporalScene.Frame() == frame && temporalScene.Draws() != 0;
                     cameraStatic.NoteUntrackedDepth(frame, tex.allocationSerial, sceneCameraKnown,
                         sceneCameraKnown ? temporalScene.Anchor().depthAllocation : 0);
+                }
+                if (ResolveWhatIfOn()) {
+                    // A clear of the whole target (and of depth and stencil both
+                    // on a depth target) could start a fresh image instead.
+                    const bool wholeRect = op.rects.empty() || (op.rects.size() == 1 && op.rects[0].left <= 0 && op.rects[0].top <= 0 &&
+                        op.rects[0].right >= int32_t(tex.width) && op.rects[0].bottom >= int32_t(tex.height));
+                    const bool allAspects = !IsDepthTarget(tex) ||
+                        ((op.aspects & pending_clear::Depth) && (op.aspects & pending_clear::Stencil));
+                    resolveWhatIf.OnSourceWrite(tex.allocationSerial, wholeRect && allAspects);
                 }
                 MarkFgWritable(tex, "edram_clear");
                 if (tex.pendingClear.Size() >= pending_clear::Queue::kMaxOps) RunPendingClears(tex);
@@ -9272,6 +9305,8 @@ void main()
                             RenderBox box{ 0, 0, int32_t(physicalWidth), int32_t(physicalHeight), 0, 1 };
                             commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(view->texture.get()),
                                 RenderTextureCopyLocation::Subresource(rs->tex->texture.get()), 0, 0, 0, &box);
+                            if (ResolveWhatIfOn())
+                                resolveWhatIf.OnCroppedCopy(uint64_t(physicalWidth) * physicalHeight * 2 * WhatIfBytesPerPixel(view->format));
                             view->viewSourceOrdinal = rs->writeOrdinal;
                             view->viewSource = rs->tex->texture.get();
                             view->viewSourceAllocation = rs->tex->allocationSerial;
@@ -14798,6 +14833,16 @@ void main()
                     }
                     recordBurst = burst;
                 }
+                if (ResolveWhatIfOn()) {
+                    resolveWhatIf.EndFrame();
+                    const auto now = std::chrono::steady_clock::now();
+                    if (resolveWhatIfStart == std::chrono::steady_clock::time_point{}) resolveWhatIfStart = now;
+                    else if (now - resolveWhatIfStart >= std::chrono::seconds(10)) {
+                        const std::string line = resolveWhatIf.TakeLine();
+                        if (!line.empty()) LOG_INFO("{}", line);
+                        resolveWhatIfStart = now;
+                    }
+                }
                 ++frame; drawsThisFrame = 0; drops = {};
                 if ((frame & 127) == 0) ReleaseAgedParkedTargets();
             }
@@ -15115,6 +15160,16 @@ void main()
                         RenderTextureCopyLocation::Subresource(depth.texture.get(), 0), x0, y0, 0, &box);
                 }
                 Transition(*rs.tex, RenderTextureLayout::SHADER_READ, RenderBarrierStage::GRAPHICS);
+                if (ResolveWhatIfOn()) {
+                    resolve_whatif::Resolve r;
+                    r.surface = resolve_whatif::SurfaceKey(destBase, destFormat);
+                    r.sourceAllocation = depth.allocationSerial;
+                    r.kind = resolve_whatif::Kind::Depth;
+                    r.wholeSurface = x0 == 0 && y0 == 0 && w == texW && h == texH;
+                    r.sameSize = texW == depth.width && texH == depth.height;
+                    r.bytes = resolve_whatif::ResolveBytes(w, h, 4, 4);
+                    resolveWhatIf.OnResolve(r);
+                }
                 rs.frame = frame;
                 rs.writeOrdinal = ++resolveWriteOrdinal;
                 rs.writeX = x0; rs.writeY = y0; rs.writeWidth = w; rs.writeHeight = h;
@@ -15233,6 +15288,18 @@ void main()
                 }
                 else if (!BlitRegion(color, *rs.tex, x0, y0, w, h))
                     return false;
+                if (ResolveWhatIfOn()) {
+                    resolve_whatif::Resolve r;
+                    r.surface = resolve_whatif::SurfaceKey(destBase, destFormat);
+                    r.sourceAllocation = color.allocationSerial;
+                    r.kind = rs.tex->format == color.format ? resolve_whatif::Kind::ColorCopy : resolve_whatif::Kind::ColorBlit;
+                    r.wholeSurface = x0 == 0 && y0 == 0 && w == texW && h == texH;
+                    r.sameSize = texW == color.width && texH == color.height;
+                    // A reused copy moved nothing.
+                    r.bytes = strcmp(resolveOperation, "copy_reused") == 0 ? 0 :
+                        resolve_whatif::ResolveBytes(w, h, WhatIfBytesPerPixel(color.format), WhatIfBytesPerPixel(rs.tex->format));
+                    resolveWhatIf.OnResolve(r);
+                }
                 Transition(*rs.tex, RenderTextureLayout::SHADER_READ, RenderBarrierStage::GRAPHICS);
                 rs.frame = frame;
                 rs.writeOrdinal = ++resolveWriteOrdinal;

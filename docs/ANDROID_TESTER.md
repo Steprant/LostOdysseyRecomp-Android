@@ -60,6 +60,11 @@ New measurements, for the whole recording:
   kind=audio_others`, every guest thread and the kernel wait it is in.
   Samples now carry four callers and the host thread id (`host=`, as in
   `threads.csv`).
+- `runtime.log`: `resolve what-if:` every ten seconds (2.1.5,
+  `docs/notes/android-resolve-whatif.md`): resolves per frame and the MB they
+  copy, split into the copies that could be avoided (`unread`, `free`,
+  `rename`) and those that must stay (`copy`, `format`, `partial`, `size`),
+  plus the cropped fetch views; `avoidable_mb` is the total that could go.
 - `runtime.log`, once per heavy-profiling burst: `record phases:` (where the
   GPU command thread's per-draw "record" time goes, per frame) and `guest
   imports:` (kernel import calls per second, the most called imports and the

@@ -78,6 +78,7 @@ Check current status first for implementation, validation, acceptance and releas
 | [Merging Render Passes: v1.0.0 Design Research](render-pass-merging-design-2026-10-10.md) · [简体中文](render-pass-merging-design-2026-10-10.zh-CN.md) | Draft |
 | [Render pass merging phase 0: tablet measurements](render-pass-merging-phase0-2026-10-10.md) · [简体中文](render-pass-merging-phase0-2026-10-10.zh-CN.md) | Investigation |
 | [Parallel Vulkan recording of the frame graph replay (Steprant 2.1.5, Android)](android-parallel-recording.md) | Reference |
+| [Resolve what-if: which resolve copies could be avoided (Steprant 2.1.5)](android-resolve-whatif.md) | Investigation |
 
 ## Shader preparation and overrides
 
