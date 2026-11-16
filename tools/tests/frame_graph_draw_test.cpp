@@ -13,6 +13,12 @@
 // wrongly thought dead changes the bytes. Every target of every frame must
 // equal the direct recording byte for byte, and the frame graph must have
 // discarded something. LO_FRAME_GRAPH_DRAW_SEEDS sets the number of frames.
+//
+// Steprant 2.1.5: the frame graph with its replay recorded in parallel, the
+// chunks as small as possible: every chunk is a new command buffer that
+// must bind again the pipeline, descriptor set, push constants, viewport
+// and scissor its draws use. Equal bytes, and the replays must have been
+// split into several chunks.
 #include <plume_render_interface.h>
 #include <stdafx.h>
 #include <gpu/shader/dxc_compiler.h>
@@ -75,13 +81,15 @@ std::unique_ptr<RenderShader> Compile(RenderDevice* device, const char* source, 
 
 // Records and runs the frames; returns the bytes of every target of every
 // frame, or empty on a failure.
-std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores)
+std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& parallelReplays, uint64_t& chunks)
 {
     auto api = CreateVulkanInterface();
     if (!api) return {};
     auto device = api->createDevice();
     auto queue = device->createCommandQueue(RenderCommandListType::DIRECT);
     auto list = queue->createCommandList();
+    // Only takes effect where LO_VK_PARALLEL_RECORD allows it.
+    list->setParallelRecording(true);
     auto fence = device->createCommandFence();
     std::array<std::unique_ptr<RenderTexture>, kColors> colors;
     std::array<std::unique_ptr<RenderFramebuffer>, kColors> colorFbs;
@@ -135,7 +143,7 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores)
     if (!colorPipeline || !samplePipeline || !depthPipeline) return {};
 
     std::vector<uint8_t> out;
-    deadStores = 0;
+    deadStores = parallelReplays = chunks = 0;
     for (uint32_t seed = 1; seed <= seeds; ++seed) {
         std::mt19937 rng(seed * 7919u);
         std::array<RenderTextureLayout, kColors> layoutOf{};
@@ -266,7 +274,11 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores)
         queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence.get());
         queue->waitForCommandFence(fence.get());
         RenderPassProfile profile;
-        if (list->takePassProfile(profile)) deadStores += profile.frameGraphDeadStores;
+        if (list->takePassProfile(profile)) {
+            deadStores += profile.frameGraphDeadStores;
+            parallelReplays += profile.parallelReplays;
+            chunks += profile.parallelChunks;
+        }
         for (auto& readback : readbacks) {
             const auto* bytes = static_cast<const uint8_t*>(readback->map());
             out.insert(out.end(), bytes, bytes + kSize * kSize * 4);
@@ -287,6 +299,10 @@ int main()
         {"frame graph, poisoned discards", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}}},
         {"frame graph, poisoned, no deferral", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_DEFER_COPY", "0"}}},
         {"frame graph, poisoned, full render area", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_RENDER_AREA", "0"}}},
+        {"frame graph, parallel recording, poisoned", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_PARALLEL_RECORD", "1"},
+            {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "1"}}},
+        {"frame graph, parallel recording, 3 helpers, chunks of 3", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_PARALLEL_RECORD", "1"},
+            {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "3"}, {"LO_VK_PARALLEL_RECORD_THREADS", "3"}}},
     };
     std::vector<std::vector<uint8_t>> results;
     int failed = 0;
@@ -298,11 +314,14 @@ int main()
         if (child == 0) {
             ::close(pipe[0]);
             for (const auto& [key, value] : config.env) setenv(key, value, 1);
-            uint64_t dead = 0;
-            const auto bytes = RunFrames(seeds, dead);
-            std::printf("[%s] %u frames, %llu dead stores\n", config.name, seeds, (unsigned long long)dead);
+            uint64_t dead = 0, parallelReplays = 0, chunks = 0;
+            const auto bytes = RunFrames(seeds, dead, parallelReplays, chunks);
+            std::printf("[%s] %u frames, %llu dead stores, %llu replays recorded in parallel, %llu chunks\n", config.name, seeds,
+                (unsigned long long)dead, (unsigned long long)parallelReplays, (unsigned long long)chunks);
             std::fflush(stdout);
-            const uint64_t header[2] = {bytes.size(), dead};
+            const char* parallel = std::getenv("LO_VK_PARALLEL_RECORD");
+            const bool split = parallelReplays == seeds && chunks >= parallelReplays * 4;
+            const uint64_t header[3] = {bytes.size(), dead, (parallel && std::strcmp(parallel, "1") == 0 && !split) ? 1u : 0u};
             ssize_t ignored = ::write(pipe[1], header, sizeof(header));
             for (size_t done = 0; done < bytes.size();) {
                 const ssize_t n = ::write(pipe[1], bytes.data() + done, bytes.size() - done);
@@ -314,7 +333,7 @@ int main()
             _exit(bytes.empty() ? 77 : 0);
         }
         ::close(pipe[1]);
-        uint64_t header[2] = {};
+        uint64_t header[3] = {};
         std::vector<uint8_t> bytes;
         if (::read(pipe[0], header, sizeof(header)) == ssize_t(sizeof(header))) {
             bytes.resize(header[0]);
@@ -339,6 +358,7 @@ int main()
                 ++failed;
             }
             if (header[1] == 0) { std::printf("FAIL [%s]: no dead store to test\n", config.name); ++failed; }
+            if (header[2] != 0) { std::printf("FAIL [%s]: the replays were not split into chunks\n", config.name); ++failed; }
         }
         results.push_back(std::move(bytes));
     }

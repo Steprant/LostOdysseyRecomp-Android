@@ -19,6 +19,11 @@
 // dead shows in the targets.
 // Any byte that differs from the model fails the test with the seed and the
 // first differing pixel. LO_PASS_SEQUENCE_SEEDS sets the number of seeds.
+//
+// Steprant 2.1.5: the frame graph again with its replay recorded in parallel
+// (helper threads, a command buffer per chunk, the chunks as small as
+// possible so that every point outside a pass ends one), which must also
+// split the replays into several chunks.
 #include <plume_render_interface.h>
 #include <array>
 #include <cstdio>
@@ -162,6 +167,8 @@ int RunAll(uint32_t seeds, const char* name) {
     auto device = api->createDevice();
     auto queue = device->createCommandQueue(RenderCommandListType::DIRECT);
     auto commands = queue->createCommandList();
+    // Only takes effect where LO_VK_PARALLEL_RECORD allows it.
+    commands->setParallelRecording(true);
     auto fence = device->createCommandFence();
     Sequence s{device.get(), queue.get(), commands.get(), fence.get()};
     for (int t = 0; t < kTargets; ++t) {
@@ -171,7 +178,7 @@ int RunAll(uint32_t seeds, const char* name) {
         s.readbacks[t] = device->createBuffer(RenderBufferDesc::ReadbackBuffer(kSize * kSize * 4));
     }
     int failures = 0;
-    uint64_t deferred = 0, textureDeferred = 0, passes = 0, deadStores = 0, replayed = 0;
+    uint64_t deferred = 0, textureDeferred = 0, passes = 0, deadStores = 0, replayed = 0, parallelReplays = 0, chunks = 0;
     for (uint32_t seed = 1; seed <= seeds; ++seed) {
         Model model;
         commands->setPassProfiling(true);
@@ -188,6 +195,8 @@ int RunAll(uint32_t seeds, const char* name) {
             passes += profile.passes.size();
             deadStores += profile.frameGraphDeadStores;
             replayed += profile.frameGraphCommands;
+            parallelReplays += profile.parallelReplays;
+            chunks += profile.parallelChunks;
         }
         for (int t = 0; t < kTargets && failures < 4; ++t) {
             const auto* data = static_cast<const uint32_t*>(s.readbacks[t]->map());
@@ -210,6 +219,14 @@ int RunAll(uint32_t seeds, const char* name) {
         std::printf("FAIL [%s]: the frame graph found no dead store to test\n", name);
         ++failures;
     }
+    const char* parallel = std::getenv("LO_VK_PARALLEL_RECORD");
+    if (parallel && std::strcmp(parallel, "1") == 0) {
+        std::printf("[%s] %llu replays recorded in parallel, %llu chunks\n", name, (unsigned long long)parallelReplays, (unsigned long long)chunks);
+        if (parallelReplays != seeds || chunks < parallelReplays * 4) {
+            std::printf("FAIL [%s]: the replays were not split into chunks\n", name);
+            ++failures;
+        }
+    }
     return failures;
 }
 }
@@ -227,6 +244,12 @@ int main() {
         {"frame graph", {{"LO_VK_FRAME_GRAPH", "1"}}},
         {"frame graph, poisoned discards", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}}},
         {"frame graph, no deferral, poisoned", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_DEFER_COPY", "0"}}},
+        {"frame graph, parallel recording", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_PARALLEL_RECORD", "1"}, {"LO_VK_PARALLEL_RECORD_MIN", "1"},
+            {"LO_VK_PARALLEL_RECORD_CHUNK", "1"}}},
+        {"frame graph, parallel recording, poisoned", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_PARALLEL_RECORD", "1"},
+            {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "1"}}},
+        {"frame graph, parallel recording, no deferral, 3 helpers", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_DEFER_COPY", "0"}, {"LO_VK_PARALLEL_RECORD", "1"},
+            {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "2"}, {"LO_VK_PARALLEL_RECORD_THREADS", "3"}}},
     };
     int failed = 0;
     for (const auto& config : configs) {
