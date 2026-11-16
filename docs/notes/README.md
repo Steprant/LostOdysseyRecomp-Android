@@ -77,6 +77,7 @@ Check current status first for implementation, validation, acceptance and releas
 | [Cost of graphics options (1080p output): main f7799aec, RTX 5080 and psvita, 2026-10-15](graphics-options-cost-1080p-2026-10-15.md) · [简体中文](graphics-options-cost-1080p-2026-10-15.zh-CN.md) | Reference |
 | [Merging Render Passes: v1.0.0 Design Research](render-pass-merging-design-2026-10-10.md) · [简体中文](render-pass-merging-design-2026-10-10.zh-CN.md) | Draft |
 | [Render pass merging phase 0: tablet measurements](render-pass-merging-phase0-2026-10-10.md) · [简体中文](render-pass-merging-phase0-2026-10-10.zh-CN.md) | Investigation |
+| [Parallel Vulkan recording of the frame graph replay (Steprant 2.1.5, Android)](android-parallel-recording.md) | Reference |
 
 ## Shader preparation and overrides
 

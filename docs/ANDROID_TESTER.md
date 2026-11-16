@@ -71,7 +71,12 @@ New measurements, for the whole recording:
   pipeline, sets, push, buffers, view_state, framebuffer, barriers, copies,
   clears, other) milliseconds and commands, then `driver_ms`: the time inside
   the driver's draw calls and render pass begins and ends, which are part of
-  the kinds before them.
+  the kinds before them. From 2.1.5, where the replay recorded in parallel
+  (`docs/notes/android-parallel-recording.md`), the kinds are the command
+  thread's encoding, `driver_ms` is 0 for those replays, and the line ends
+  with `parallel:` (replays, chunks, helpers' recording ms, chunks and ms the
+  command thread recorded itself, its wait). The helpers are the `GPU Record`
+  threads in `threads.csv`.
 
 ### 2.1.1-C/E: polling of a critical section
 
