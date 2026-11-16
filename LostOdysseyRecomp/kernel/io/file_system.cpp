@@ -240,6 +240,7 @@ struct FileHandle : KernelObject
     FILE* file = nullptr;
     bool isDirectory = false;
     uint64_t position = 0;
+    uint64_t sequentialReadEnd = UINT64_MAX;
     uint64_t size = 0;
     // Language packs: bytes served from memory over and after the file
     // (modding/text_overlay.h); size then includes them, fileSize does not.
@@ -838,6 +839,12 @@ static uint32_t OpenFileHandle(be<uint32_t>* FileHandleOut, uint32_t DesiredAcce
             return STATUS_ACCESS_DENIED;
         }
         handle->writable = wantWrite;
+#if LO_PLATFORM_ANDROID
+        // Movie and map data are read in many adjacent chunks through FUSE.
+        // Keep more of that sequential stream in the archive's stdio buffer.
+        if (!wantWrite && openedPath.extension() == ".fpd")
+            std::setvbuf(handle->file, nullptr, _IOFBF, 64 * 1024);
+#endif
         _fseeki64(handle->file, 0, SEEK_END);
         handle->size = handle->fileSize = uint64_t(_ftelli64(handle->file));
         _fseeki64(handle->file, 0, SEEK_SET);
@@ -916,6 +923,16 @@ static uint32_t ReadWithRanges(FileHandle& handle, uint64_t offset, uint8_t* out
     return STATUS_SUCCESS;
 }
 
+// Only a complete, error-free read of a plain read-only stream records
+// a reusable host position. The guest file pointer can be set independently.
+static bool SeekForRead(FileHandle& handle, uint64_t offset)
+{
+    if (offset == handle.sequentialReadEnd) return true;
+    handle.sequentialReadEnd = UINT64_MAX;
+    clearerr(handle.file);
+    return _fseeki64(handle.file, int64_t(offset), SEEK_SET) == 0;
+}
+
 uint32_t NtReadFile(uint32_t handleValue, uint32_t Event, uint32_t ApcRoutine, uint32_t ApcContext,
     XIO_STATUS_BLOCK* IoStatusBlock, void* Buffer, uint32_t Length, be<uint64_t>* ByteOffset)
 {
@@ -958,8 +975,7 @@ uint32_t NtReadFile(uint32_t handleValue, uint32_t Event, uint32_t ApcRoutine, u
         }
         else if (Length)
         {
-            clearerr(handle->file);
-            if (_fseeki64(handle->file, int64_t(offset), SEEK_SET) != 0)
+            if (!SeekForRead(*handle, offset))
                 status = FileIoError(errno);
             else
             {
@@ -970,6 +986,8 @@ uint32_t NtReadFile(uint32_t handleValue, uint32_t Event, uint32_t ApcRoutine, u
                     status = STATUS_END_OF_FILE;
                 if (read)
                     handle->position = offset + read;
+                handle->sequentialReadEnd = !handle->writable && status == STATUS_SUCCESS && read == Length
+                    ? offset + read : UINT64_MAX;
             }
         }
         trace.SetResult(status, uint32_t(read));
@@ -1532,8 +1550,7 @@ uint32_t NtReadFileScatter(uint32_t handleValue, uint32_t Event, uint32_t ApcRou
         }
         else if (Length)
         {
-            clearerr(handle->file);
-            if (_fseeki64(handle->file, int64_t(offset), SEEK_SET) != 0)
+            if (!SeekForRead(*handle, offset))
                 status = FileIoError(errno);
             else
             {
@@ -1566,6 +1583,8 @@ uint32_t NtReadFileScatter(uint32_t handleValue, uint32_t Event, uint32_t ApcRou
                 }
                 if (total)
                     handle->position = offset + total;
+                handle->sequentialReadEnd = !handle->writable && status == STATUS_SUCCESS && total == Length
+                    ? offset + total : UINT64_MAX;
             }
         }
         trace.SetResult(status, total);

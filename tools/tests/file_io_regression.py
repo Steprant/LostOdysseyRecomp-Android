@@ -303,6 +303,20 @@ static void ReadCases(bool scatter) {
     Complete(read(2, &offset), iosb, kStatusIoDeviceError, 0, oldEvents);
     Check(ferror(currentHandle->file) && !feof(currentHandle->file) && currentHandle->position == 2,
         "real read failure treated as EOF or changed logical position");
+    FileFixture();
+    currentHandle->writable = false;
+    offset = 0; oldEvents = events;
+    Complete(read(2, &offset), iosb, STATUS_SUCCESS, 2, oldEvents);
+    failSeek = true; oldEvents = events;
+    Complete(read(2), iosb, STATUS_SUCCESS, 2, oldEvents);
+    Check(scatter ? memcmp(g_memory.bytes.data() + 0x1000, "CD", 2) == 0 : memcmp(output.data(), "CD", 2) == 0,
+        "adjacent read from a read-only stream reuses its host cursor");
+    currentHandle->position = 1; oldEvents = events;
+    Complete(read(2), iosb, kStatusIoDeviceError, 0, oldEvents);
+    failSeek = false; oldEvents = events;
+    Complete(read(2), iosb, STATUS_SUCCESS, 2, oldEvents);
+    Check(scatter ? memcmp(g_memory.bytes.data() + 0x1000, "BC", 2) == 0 : memcmp(output.data(), "BC", 2) == 0,
+        "changing the guest cursor still seeks to the requested bytes");
     completionBlock = nullptr;
 }
 static void InvalidHandleCases() {
