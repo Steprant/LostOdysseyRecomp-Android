@@ -15,6 +15,11 @@ on:
         description: 'Build-inputs commit with pgo/lostodyssey.profdata (empty: its default branch)'
         type: string
         default: ''
+      promotion:
+        description: 'Register promotion (2.1.5): on keeps CR/XER/reservation as function locals as the config says; off keeps them in the context'
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
   push:
     branches: ['**']
     paths:
@@ -202,11 +207,19 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18
           cmake --build out/build/tools --target XenonRecomp XenonAnalyse xexdump
       - name: Generate game code
+        env:
+          PROMOTION: ${{ inputs.promotion || 'on' }}
         run: |
+          if [[ "$PROMOTION" == off ]]; then
+            sed -i -E 's/^(cr_as_local|xer_as_local|reserved_as_local) = true/\1 = false/' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
+          fi
+          grep -E '^(cr_as_local|xer_as_local|reserved_as_local|cr_in_context_fields) ' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
           out/build/tools/xexdump LostOdysseyRecompLib/private/disc1/default.xex LostOdysseyRecompLib/private/image_disc1.bin
           python tools/ppc_codegen.py generate --executable out/build/tools/XenonRecomp/XenonRecomp/XenonRecomp
       - name: Check register promotion safety (names and offsets only)
-        run: python tools/ppc_promotion_check.py LostOdysseyRecompLib/ppc --limit 80 --shared 0 --strict
+        env:
+          PROMOTION: ${{ inputs.promotion || 'on' }}
+        run: python tools/ppc_promotion_check.py LostOdysseyRecompLib/ppc --limit 80 --shared 0 $([[ "$PROMOTION" == off ]] || echo --strict)
       - name: Select the Steprant build identity
         id: steprant
         env:

@@ -106,6 +106,19 @@ PPC_FUNC_IMPL(__imp__sub_82000800) {
 \tif (cr6.lt) return;
 \treturn;
 }
+PPC_FUNC_IMPL(__imp__sub_82000900) {
+\tcr6.compare<int32_t>(ctx.r3.s32, 0, xer);
+\tif (cr6.so) return;
+\treturn;
+}
+PPC_FUNC_IMPL(__imp__sub_82000A00) {
+\txer.so = (ctx.r12.u64 & 0x80000000) != 0;
+\tcr6.compare<int32_t>(ctx.r3.s32, 0, xer);
+\tif (cr6.so) return;
+\tcr6.compare(ctx.f1.f64, ctx.f2.f64);
+\tif (cr6.so) return;
+\treturn;
+}
 """
 
 
@@ -126,7 +139,7 @@ class PromotionCheckTest(unittest.TestCase):
         self.names = flagged_names(flagged)
 
     def test_counts_every_function(self):
-        self.assertEqual(self.functions, 9)
+        self.assertEqual(self.functions, 11)
 
     def test_write_first_code_is_clean(self):
         # Compare before branch, carry set before use, mfcr saves, the SO
@@ -158,6 +171,13 @@ class PromotionCheckTest(unittest.TestCase):
         # Locals are tracked like ctx fields; a read after the setjmp return
         # before any write depends on what longjmp leaves in the local.
         self.assertEqual(self.names["sub_82000800"], {("cr6.eq", "setjmp")})
+
+    def test_summary_overflow_through_cr(self):
+        # A compare copies xer.so into cr6.so: reading it depends on an xer.so
+        # set outside the function, unless the function set xer.so itself.
+        # Floating compares put "unordered" there instead.
+        self.assertEqual(check.XSO_BY, {"sub_82000900"})
+        self.assertNotIn("sub_82000A00", self.names)
 
     def test_switch_cases_are_followed(self):
         self.assertEqual(self.names["sub_82000400"], {("cr7.eq", "entry")})

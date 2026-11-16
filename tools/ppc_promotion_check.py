@@ -51,6 +51,14 @@ MFOCRF = re.compile(r"\.u64 = \((?:ctx\.)?cr6\.lt << 7\) \| \((?:ctx\.)?cr6\.gt 
 XER_CA = re.compile(P + r"xer\.ca")
 # xer.so/ov: written only by mtxer; compares copy so into CR. Counted globally.
 XER_SO_WRITE = re.compile(P + r"xer\.(so|ov) =(?!=)")
+# Where xer.so enters CR: integer compares and record forms pass xer, and
+# stwcx./stdcx. copy it. Under xer_as_local, xer.so is a function local (0
+# unless this function's own mtxer set it); in ctx it carries over from the
+# last mtxer anywhere. A CR so bit taken from an xer.so the function did not
+# write itself is tracked with the marker "xso".
+INT_COMPARE = re.compile(P + r"cr([0-7])\.compare<[^>]+>\(.*, (?:ctx\.)?xer\);")
+SO_COPY = re.compile(r"^(?:ctx\.)?cr([0-7])\.so = (?:ctx\.)?xer\.so;")
+XER_SO = re.compile(P + r"xer\.so\b")
 # mtcr: every CR bit written from a GPR, possibly a value an mfcr saved.
 MTCR = re.compile(r"^(?:ctx\.)?cr([0-7])\.(lt|gt|eq|so) = \(ctx\.r[0-9]+\.u32 & 0x[0-9A-F]+\) != 0;")
 MF_DEST = re.compile(r"^(ctx\.r[0-9]+)\.u64 \|?= ")
@@ -94,6 +102,11 @@ def statement_events(line):
                 reads.extend(keys)
     for match in XER_CA.finditer(line):
         (writes if is_assignment(line, match.end()) else reads).append(("ca",))
+    # xer.so: a write by mtxer, or a direct read other than the copy into CR
+    # (that copy is handled with the "xso" marker in analyse).
+    if not SO_COPY.match(line):
+        for match in XER_SO.finditer(line):
+            (writes if is_assignment(line, match.end()) else reads).append(("so",))
     for match in RESERVED.finditer(line):
         (writes if is_assignment(line, match.end()) else reads).append(("res",))
     return [("read", k) for k in reads] + [("write", k) for k in writes]
@@ -151,11 +164,13 @@ def parse_blocks(lines):
     return graph
 
 
-KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",)]
+KEYS = [("cr", f, b) for f in range(8) for b in BITS] + [("ca",), ("res",), ("so",)]
+MARKERS = frozenset({"mtcr", "xso"})
 SHAPES = {}
 RETURNS_LAST = {}
 MF_LAST = []      # (kind, sources) of mfcr/mfocrf reads seeing an outside value
 MTCR_LAST = []    # reads of a value mtcr restored
+XSO_LAST = []     # reads of a CR so bit taken from an xer.so set outside
 SHARED = set()    # CR fields kept in ctx (cr_in_context_fields)
 STORE_OF = re.compile(r"^PPC_STORE_U(?:32|64)\(ctx\.r1\.u32 \+ -?[0-9]+, (ctx\.r[0-9]+)\.u(?:32|64)\);$")
 
@@ -213,7 +228,9 @@ def analyse(lines):
                 for key, sources in state.items():
                     returns.setdefault(key, set()).update(sources)
             for key in mf_reads(line):
-                outside = state.get(key, frozenset()) - {"mtcr"}
+                if "xso" in state.get(key, frozenset()):
+                    XSO_LAST.append(Shape(line))
+                outside = state.get(key, frozenset()) - MARKERS
                 if outside and key[1] not in SHARED:
                     dest = MF_DEST.match(line)
                     MF_LAST.append((mf_use(body, position, dest.group(1)) if dest else "use", frozenset(outside)))
@@ -233,23 +250,29 @@ def analyse(lines):
                     if not (key[0] == "cr" and key[1] in SHARED):
                         state[key] = state.get(key, frozenset()) | {"setjmp"}
                 continue
+            so_outside = bool(state.get(("so",), frozenset()) - MARKERS)
             for kind, key in statement_events(line):
                 if kind == "read":
                     sources = state.get(key, frozenset())
                     if "mtcr" in sources:
                         MTCR_LAST.append(Shape(line))
-                        sources = sources - {"mtcr"}
+                    if "xso" in sources:
+                        XSO_LAST.append(Shape(line))
+                    sources = sources - MARKERS
                     if sources:
                         found.setdefault(key, set()).update(sources)
                         SHAPES.setdefault(Shape(line), 0)
                         SHAPES[Shape(line)] += 1
                 else:
                     state.pop(key, None)
+            so_write = INT_COMPARE.search(line) or SO_COPY.match(line)
+            if so_write and so_outside:
+                state[("cr", int(so_write.group(1)), "so")] = frozenset({"xso"})
             if CALL.search(line):
                 callee = CALLEE.search(line)
                 source = "call:" + (callee.group(0) if callee else "indirect")
                 for key in KEYS:
-                    if (key[0] == "cr" and key[1] in VOLATILE_FIELDS) or key[0] in ("ca", "res"):
+                    if (key[0] == "cr" and key[1] in VOLATILE_FIELDS) or key[0] in ("ca", "res", "so"):
                         state[key] = state.get(key, frozenset()) | {source}
         for successor in successors:
             target = state_in[successor]
@@ -273,6 +296,7 @@ def analyse(lines):
 
 MF_BY = defaultdict(set)     # use kind -> functions
 MTCR_BY = set()
+XSO_BY = set()
 XER_SO_WRITES = [0]
 XER_SO_BY = set()
 
@@ -282,6 +306,7 @@ def scan(files):
     flagged = defaultdict(list)  # key label -> [(name, sources)]
     MF_BY.clear()
     MTCR_BY.clear()
+    XSO_BY.clear()
     XER_SO_WRITES[0] = 0
     XER_SO_BY.clear()
     for path in files:
@@ -300,7 +325,10 @@ def scan(files):
             if line.startswith("}"):
                 MF_LAST.clear()
                 MTCR_LAST.clear()
+                XSO_LAST.clear()
                 result = analyse(body)
+                if XSO_LAST:
+                    XSO_BY.add(name)
                 for kind, _ in MF_LAST:
                     MF_BY[kind].add(name)
                 if MTCR_LAST:
@@ -308,7 +336,7 @@ def scan(files):
                 if name in TRACE:
                     TRACED[name] = {k: set(v) for k, v in RETURNS_LAST.items()}
                 for key, sources in result.items():
-                    label = f"cr{key[1]}.{key[2]}" if key[0] == "cr" else ("xer.ca" if key[0] == "ca" else "reserved")
+                    label = f"cr{key[1]}.{key[2]}" if key[0] == "cr" else {"ca": "xer.ca", "so": "xer.so", "res": "reserved"}[key[0]]
                     flagged[label].append((name, "+".join(sorted(sources))))
                 name = None
                 continue
@@ -337,6 +365,7 @@ def main(argv=None):
     print(f"promotion check: {functions} functions in {len(files)} files")
     mf = {kind: set(names) for kind, names in MF_BY.items()}
     mtcr = set(MTCR_BY)
+    xso = set(XSO_BY)
     xer_so = XER_SO_WRITES[0]
     shared = {label: entries for label, entries in flagged.items() if label.startswith("cr") and int(label[2]) in SHARED}
     for label in shared:
@@ -367,7 +396,7 @@ def main(argv=None):
         for callee, labels in wanted.items():
             state = TRACED.get(callee, {})
             for label in sorted(labels):
-                key = ("cr", int(label[2]), label[4:]) if label.startswith("cr") else (("ca",) if label == "xer.ca" else ("res",))
+                key = ("cr", int(label[2]), label[4:]) if label.startswith("cr") else {"xer.ca": ("ca",), "xer.so": ("so",), "reserved": ("res",)}[label]
                 sources = sorted(state.get(key, set()))
                 print(f"promotion check: chain depth {depth}: {callee} returns {label} from " + (", ".join(sources) or "itself"))
                 for source in sources:
@@ -375,7 +404,7 @@ def main(argv=None):
                         following.setdefault(source[5:], set()).add(label)
         wanted = following
     TRACE.clear()
-    for group, prefix in (("CR", "cr"), ("XER carry", "xer"), ("reservation", "reserved")):
+    for group, prefix in (("CR", "cr"), ("XER carry", "xer.ca"), ("XER summary overflow", "xer.so"), ("reservation", "reserved")):
         names = defaultdict(set)
         for label, entries in flagged.items():
             if label.startswith(prefix):
@@ -394,6 +423,9 @@ def main(argv=None):
         print(f"  mtcr read {name}")
     print(f"promotion check: xer.so/ov writes in generated code: {xer_so}" +
           (" in " + ", ".join(sorted(str(n) for n in XER_SO_BY)) if XER_SO_BY else ""))
+    print(f"promotion check: CR so bits read after taking xer.so from outside: {len(xso)} functions")
+    for name in sorted(xso)[:args.limit]:
+        print(f"  xso read {name}")
     per_field = sorted(((label, len({n for n, _ in entries})) for label, entries in flagged.items()), key=lambda x: -x[1])
     print("promotion check: per field: " + ", ".join(f"{label}={count}" for label, count in per_field[:24]))
     for shape, count in sorted(SHAPES.items(), key=lambda x: -x[1])[:12]:
@@ -406,7 +438,7 @@ def main(argv=None):
         outside = {(f"cr{k[1]}.{k[2]}" if k[0] == "cr" else k[0]): "+".join(sorted(v)) for k, v in state.items() if v}
         print(f"promotion check: trace {name}: values at its returns from outside: " +
               (", ".join(f"{k}<-{v}" for k, v in sorted(outside.items())) or "none"))
-    problems = sum(len(entries) for entries in flagged.values()) + len(mf.get("use", ())) + len(mtcr) + xer_so
+    problems = sum(len(entries) for entries in flagged.values()) + len(mf.get("use", ())) + len(mtcr) + len(xso)
     print(f"promotion check: verdict: {'clean' if not problems else f'{problems} open reads'}")
     shown = 0
     for label, entries in sorted(flagged.items()):
