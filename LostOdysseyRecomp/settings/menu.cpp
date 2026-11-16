@@ -2,7 +2,6 @@
 #include <os/log_collection.h>
 #include <future>
 #include <condition_variable>
-#include <deque>
 #include <thread>
 #include <os/steam_shortcut.h>
 #include "menu.h"
@@ -4634,14 +4633,31 @@ namespace
 // SR4 F-4: one persistent thread rasterizes the menu off the presenting
 // thread. Persistent, because the rasterizer keeps its composed backdrop in a
 // thread-local cache: a new thread per raster would rebuild it every time.
-struct MenuRasterResult { settings::MenuSnapshot snapshot; std::vector<uint32_t> pixels; settings::MenuArrow arrow; bool ok = false; };
+struct MenuRasterResult
+{
+    settings::MenuSnapshot snapshot;
+    std::vector<uint32_t> pixels, backdrop;
+    settings::MenuArrow arrow;
+    bool ok = false;
+};
 class MenuRasterWorker
 {
 public:
-    std::future<MenuRasterResult> Submit(settings::MenuSnapshot snapshot, uint32_t width, uint32_t height)
+    std::future<MenuRasterResult> Submit(settings::MenuSnapshot snapshot, std::filesystem::path root,
+        uint32_t width, uint32_t height, bool needBackdrop,
+        std::shared_ptr<const settings::menu_assets::Assets> previousAssets)
     {
-        std::packaged_task<MenuRasterResult()> task([snapshot = std::move(snapshot), width, height]() mutable {
+        std::packaged_task<MenuRasterResult()> task([snapshot = std::move(snapshot), root = std::move(root),
+            width, height, needBackdrop, previousAssets = std::move(previousAssets)]() mutable {
             MenuRasterResult result;
+            snapshot.assets = settings::menu_assets::Cached(root, snapshot.language);
+            if (needBackdrop || snapshot.assets != previousAssets)
+            {
+                settings::MenuSnapshot panels;
+                panels.assets = snapshot.assets;
+                panels.backdropOnly = true;
+                settings::RasterizeMenu(panels, width, height, result.backdrop);
+            }
             result.ok = settings::RasterizeMenu(snapshot, width, height, result.pixels, &result.arrow);
             result.snapshot = std::move(snapshot);
             return result;
@@ -4651,7 +4667,7 @@ public:
             std::lock_guard lock(mutex);
             if (!thread.joinable())
                 thread = std::thread([this] { Run(); });
-            jobs.push_back(std::move(task));
+            pending = std::move(task);
         }
         wake.notify_one();
         return future;
@@ -4663,16 +4679,15 @@ private:
             std::packaged_task<MenuRasterResult()> job;
             {
                 std::unique_lock lock(mutex);
-                wake.wait(lock, [this] { return !jobs.empty(); });
-                job = std::move(jobs.front());
-                jobs.pop_front();
+                wake.wait(lock, [this] { return pending.valid(); });
+                job = std::move(pending);
             }
             job();
         }
     }
     std::mutex mutex;
     std::condition_variable wake;
-    std::deque<std::packaged_task<MenuRasterResult()>> jobs;
+    std::packaged_task<MenuRasterResult()> pending;
     std::thread thread;
 };
 MenuRasterWorker& RasterWorker()
@@ -4690,14 +4705,15 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
     static uint32_t cachedWidth = 0, cachedHeight = 0;
     static int cachedPromptFamily = -1;
     static bool cachedPreviewPage = false, cachedDialog = false, shown = false, closing = false;
-    static bool openPending = false; // SR4 F-4: panels shown, content raster on the worker
+    static std::future<MenuRasterResult> asyncRaster;
+    static std::array<uint32_t, 4> asyncShape{};
     static int cachedTab = -1;
     static std::wstring cachedPage;
     static std::shared_ptr<const menu_assets::Assets> cachedAssets;
     // Motion is presentation only: input and menu state change at once, and the
     // shown image moves toward the newest raster (#151), timed like the retail menus.
     static MenuTransition motion;
-    static std::vector<uint32_t> raster;
+    static std::vector<uint32_t> raster, backdrop;
     // The list arrow is a layer over the raster: it slides between rows and sways.
     static MenuArrow arrow;
     static MenuRect arrowDrawn;
@@ -4738,34 +4754,35 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
         // A title confirmation is a translucent overlay, never a replacement
         // menu frame. DrawTitleQuit owns its raster and fade independently.
         shown = closing = arrowPlaced = false;
+        asyncRaster = {};
+        backdrop = {};
         arrowDrawn = markerDrawn = {};
         motion.Reset();
         return false;
     }
     if (!active.load())
     {
+        asyncRaster = {};
         // Closing: the content fades off the panels before the game's own exit
         // animation shows. The arrow fades with it.
-        if (shown && !closing && !cachedPreviewPage && cachedWidth == width && cachedHeight == height && !pixels.empty())
+        if (shown && !closing && !cachedPreviewPage && cachedWidth == width && cachedHeight == height &&
+            !pixels.empty() && backdrop.size() == pixels.size())
         {
-            MenuSnapshot panels;
-            panels.assets = cachedAssets;
-            panels.backdropOnly = true;
             motion.Advance(pixels, MenuNow());
             arrowDrawn = markerDrawn = {};
-            closing = RasterizeMenu(panels, width, height, raster) &&
-                      motion.Start(pixels, raster, width, MenuNow(), menu_motion::CloseFade) && motion.Running();
+            raster = std::move(backdrop);
+            closing = motion.Start(pixels, raster, width, MenuNow(), menu_motion::CloseFade) && motion.Running();
         }
         if (closing && motion.Advance(pixels, MenuNow()))
             return true;
         if (shown)
         {
             shown = closing = arrowPlaced = false;
-            openPending = false;
             arrowDrawn = markerDrawn = {};
             cachedAssets.reset();
             motion.Reset();
             std::vector<uint32_t>().swap(raster);
+            std::vector<uint32_t>().swap(backdrop);
         }
         return false;
     }
@@ -4804,77 +4821,38 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
         drawArrow(now);
         return true;
     };
-    const bool sameShape = cachedWidth == width && cachedHeight == height &&
-        cachedPromptFamily == current.promptFamily && !pixels.empty();
-    if (!opened && revision == current.revision && sameShape)
+    const bool canReuse = shown && cachedWidth == width && cachedHeight == height && !pixels.empty();
+    if (canReuse && revision == current.revision && cachedPromptFamily == current.promptFamily)
         return steady();
-    current.assets = menu_assets::Cached(FileSystem::GetGameRoot(), current.language);
     MenuArrow nextArrow;
-    // Steprant 2.0 WP3.4: a raster at the output size takes 41-58 ms on the
-    // Xiaomi 14 (2670x1200), and every move or change in the menu needed one
-    // on the presenting thread (menu-draw, 9/11 logs). A change of an open
-    // page at the same size is rasterized on a worker instead; the shown image
-    // keeps moving and the new raster eases in when it is ready (about one
-    // frame later). Opening, a resize, a new prompt style and the preview
-    // pages stay synchronous. The rasterizer is pure on its snapshot; its
-    // backdrop cache is per thread.
-    static std::future<MenuRasterResult> asyncRaster;
-    // SR4 F-4: an open shows the panels at once and the content cascades in
-    // when the worker has it (an open cost 113-137 ms of presenting thread
-    // in 1.8: the content and the panels, both rasterized synchronously).
     const bool currentPreview = current.calibration.open || current.brightness.open || current.neuralRendering.open;
-    if (opened && !currentPreview)
+    if (currentPreview)
     {
-        if (asyncRaster.valid())
-            asyncRaster.wait(), asyncRaster = {};
-        MenuSnapshot panels;
-        panels.assets = current.assets;
-        panels.backdropOnly = true;
-        if (RasterizeMenu(panels, width, height, pixels))
-        {
-            asyncRaster = RasterWorker().Submit(current, width, height);
-            openPending = true;
-            motion.Reset();
-            shown = true;
-            arrow = {};
-            arrowDrawn = markerDrawn = {};
-            openTime = arrowTime = MenuNow();
-            arrowPlaced = false;
-            cachedWidth = width;
-            cachedHeight = height;
-            cachedPromptFamily = current.promptFamily;
-            cachedPreviewPage = false;
-            cachedDialog = !current.dialogChoices.empty();
-            cachedTab = current.tab;
-            cachedPage = current.pageTitle;
-            cachedAssets = current.assets;
-            // revision stays: the content comes through the branch below.
-            return true;
-        }
-    }
-    if (!opened && sameShape && !currentPreview && !cachedPreviewPage)
-    {
-        if (!asyncRaster.valid())
-            asyncRaster = RasterWorker().Submit(current, width, height);
-        // An open's content is bounded: past 250 ms it is waited for (the
-        // raster takes about 45 ms on the phone, so this does not block there).
-        const bool openLate = openPending && MenuNow() - openTime > std::chrono::milliseconds(250);
-        if (!openLate && asyncRaster.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-            return steady();
-        auto result = asyncRaster.get();
-        if (!result.ok)
-            return steady();
-        // Ease in what was rasterized; a newer revision starts the next one.
-        current = std::move(result.snapshot);
-        raster = std::move(result.pixels);
-        nextArrow = result.arrow;
+        asyncRaster = {};
+        current.assets = menu_assets::Cached(FileSystem::GetGameRoot(), current.language);
+        if (!RasterizeMenu(current, width, height, raster, &nextArrow)) return false;
     }
     else
     {
-        if (asyncRaster.valid())
-            asyncRaster.wait(), asyncRaster = {};
-        if (!RasterizeMenu(current, width, height, raster, &nextArrow))
-            return false;
+        // Opening and resizing can require a fresh backdrop and a cold load
+        // of the font atlas. Keep both on the worker. Ignore stale geometry
+        // and never wait for a pending job on the presentation thread.
+        const std::array shape{width, height, uint32_t(current.promptFamily), current.language};
+        if (!asyncRaster.valid() || asyncShape != shape)
+        {
+            asyncRaster = RasterWorker().Submit(current, FileSystem::GetGameRoot(), width, height,
+                !canReuse || cachedPreviewPage || backdrop.empty(), cachedAssets);
+            asyncShape = shape;
+        }
+        if (asyncRaster.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return canReuse && steady();
+        auto result = asyncRaster.get();
+        if (!result.ok)
+            return canReuse && steady();
+        current = std::move(result.snapshot);
+        raster = std::move(result.pixels);
+        nextArrow = result.arrow;
+        if (!result.backdrop.empty()) backdrop = std::move(result.backdrop);
     }
     // Ease what the player did: opening (content over the panels) and a new
     // revision at the same size and prompt style. A resize, a controller style
@@ -4885,23 +4863,10 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
     const bool previewPage = current.calibration.open || current.brightness.open || current.neuralRendering.open;
     const bool dialog = !current.dialogChoices.empty();
     bool eased = false;
-    const bool cascade = openPending && !opened && !previewPage;
-    if (cascade)
+    if (opened && !previewPage && !backdrop.empty())
     {
-        // The panels are already shown (pixels): cascade the content over them.
-        openPending = false;
-        arrowDrawn = markerDrawn = {};
-        // Timed from the open, as if the content had been there: a late raster
-        // joins the cascade where it would be by now.
-        eased = motion.StartCascade(pixels, raster, width, openTime, MenuOpenCascade(width, height, current.tab, !current.pageTitle.empty()));
-    }
-    else if (opened && !previewPage)
-    {
-        MenuSnapshot panels;
-        panels.assets = current.assets;
-        panels.backdropOnly = true;
-        eased = RasterizeMenu(panels, width, height, pixels) &&
-                motion.StartCascade(pixels, raster, width, now, MenuOpenCascade(width, height, current.tab, !current.pageTitle.empty()));
+        pixels = backdrop;
+        eased = motion.StartCascade(pixels, raster, width, now, MenuOpenCascade(width, height, current.tab, !current.pageTitle.empty()));
     }
     else if (!opened && cachedWidth == width && cachedHeight == height &&
              cachedPromptFamily == current.promptFamily && !previewPage && !cachedPreviewPage)
@@ -4928,15 +4893,10 @@ bool settings::DrawMenu(std::vector<uint32_t> &pixels, uint64_t &revision, uint3
         openTime = arrowTime = now;
         arrowPlaced = false;
     }
-    else if (cascade)
-    {
-        arrowTime = now;
-        arrowPlaced = false;
-    }
     arrow = nextArrow;
     if (arrow.visible && !arrowPlaced)
     {
-        arrowY = arrow.y - (opened || cascade ? menu_motion::ArrowOpenDrop : 0);
+        arrowY = arrow.y - (opened ? menu_motion::ArrowOpenDrop : 0);
         arrowPlaced = true;
     }
     drawMarker();

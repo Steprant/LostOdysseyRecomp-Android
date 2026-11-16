@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 
@@ -422,19 +423,24 @@ std::shared_ptr<const Assets> Load(const std::filesystem::path &gameRoot, uint32
 }
 std::shared_ptr<const Assets> Cached(const std::filesystem::path &gameRoot, uint32_t language) noexcept
 {
-    // Only the presentation thread calls this. No per-frame filesystem scans.
+    static std::mutex mutex;
     static std::filesystem::path root;
     static uint64_t generation = 0;
     static std::map<uint32_t, std::shared_ptr<const Assets>> cache;
     try
     {
         const auto currentGeneration = modding::Generation();
-        if (root != gameRoot || generation != currentGeneration) {
-            root = gameRoot; generation = currentGeneration; cache.clear();
+        {
+            std::lock_guard lock(mutex);
+            if (root != gameRoot || generation != currentGeneration) {
+                root = gameRoot; generation = currentGeneration; cache.clear();
+            }
+            if (const auto entry = cache.find(language); entry != cache.end()) return entry->second;
         }
-        auto [entry, inserted] = cache.try_emplace(language);
-        if (inserted) entry->second = Load(gameRoot, language);
-        return entry->second;
+        auto loaded = Load(gameRoot, language);
+        std::lock_guard lock(mutex);
+        if (root != gameRoot || generation != currentGeneration) return loaded;
+        return cache.try_emplace(language, std::move(loaded)).first->second;
     }
     catch (...) { return {}; }
 }

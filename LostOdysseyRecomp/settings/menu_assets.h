@@ -54,7 +54,7 @@ struct Assets
 // Reads selected FPI package extents and optional, validated image overlays.
 // No game writes, guest memory or renderer dependency.
 std::shared_ptr<const Assets> Load(const std::filesystem::path &gameRoot, uint32_t language) noexcept;
-// Presentation-thread cache, invalidated by root or mod generation changes.
+// Shared immutable assets, invalidated by root or mod generation changes.
 std::shared_ptr<const Assets> Cached(const std::filesystem::path &gameRoot, uint32_t language) noexcept;
 
 // Empty packagePath keeps the pure original-resource readers used by fixtures.

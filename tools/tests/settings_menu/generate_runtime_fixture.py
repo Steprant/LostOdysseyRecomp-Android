@@ -21,7 +21,6 @@ PREAMBLE = r'''
 #include <fstream>
 #include <future>
 #include <condition_variable>
-#include <deque>
 #include <thread>
 #include <mutex>
 #include <hid/glyph_atlases.h>
@@ -700,7 +699,15 @@ int main(int argc, char** argv) {
     // A controller-style change must invalidate the raster cache without a guest tick.
     std::vector<uint32_t> promptPixels;
     uint64_t promptRevision = UINT64_MAX;
-    Check(settings::DrawMenu(promptPixels,promptRevision,1280,720),"menu opens");
+    const auto drawUntil = [&](auto ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            if (settings::DrawMenu(promptPixels,promptRevision,1280,720) && ready()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    Check(drawUntil([&] { return promptRevision != UINT64_MAX; }),"menu opens with the raster from the worker");
     const auto openingPixels = promptPixels;
     // The opening cascade is presentation only and settles once its time has passed.
     settings::menuClockOffset+=std::chrono::seconds(2);
@@ -715,11 +722,11 @@ int main(int argc, char** argv) {
     const auto xboxPixels = promptPixels;
     const auto sameRevision = promptRevision;
     hid::playStationPrompts = true;
-    Check(settings::DrawMenu(promptPixels,promptRevision,1280,720),"PlayStation prompts render");
+    Check(drawUntil([&] { return !sameBesideArrow(promptPixels,xboxPixels); }),"PlayStation prompts render");
     Check(promptRevision == sameRevision && !sameBesideArrow(promptPixels,xboxPixels),
         "controller style changes pixels with unchanged menu revision");
     hid::playStationPrompts = false;
-    Check(settings::DrawMenu(promptPixels,promptRevision,1280,720),"Xbox prompts restore");
+    Check(drawUntil([&] { return sameBesideArrow(promptPixels,xboxPixels); }),"Xbox prompts restore");
     Check(promptRevision == sameRevision && sameBesideArrow(promptPixels,xboxPixels),
         "controller style round trip restores original pixels");
     settings::menuClockOffset-=std::chrono::seconds(2);
