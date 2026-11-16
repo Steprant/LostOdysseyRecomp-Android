@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PRELUDE = r'''
 #include "gpu/resolve_copy_policy.h"
 #include "gpu/pending_clear.h"
+#include "gpu/resolve_whatif.h"
+#include <cstring>
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -63,6 +65,10 @@ struct Fixture {
     resolve_copy::ConsecutiveCopies consecutiveResolveCopies;
     bool resolveCopyReuse = true;
     unsigned resolveCopiesSkipped = 0, resolveCopiesRecorded = 0, barriers = 0, clears = 0;
+    // Steprant 2.1.5: the resolve what-if measurement the production block feeds.
+    resolve_whatif::Tracker resolveWhatIf;
+    static bool ResolveWhatIfOn() { return true; }
+    static uint32_t WhatIfBytesPerPixel(uint32_t) { return 4; }
     void MarkFgWritable(HostTexture& tex, const char*) { ++tex.writable; }
     void Transition(HostTexture& tex, RenderTextureLayout layout, RenderBarrierStage) {
         if (!tex.pendingClear.Empty()) {
@@ -82,6 +88,7 @@ struct Fixture {
     }
     bool Resolve(uint32_t x0 = 0, uint32_t y0 = 0, uint32_t w = 32, uint32_t h = 16) {
         const uint32_t texW = rs.tex->width, texH = rs.tex->height;
+        const uint32_t destBase = 0x1000, destFormat = rs.tex->format;
         consecutiveResolveCopies.BeginResolve();
         /* RECORD_PRODUCTION */
         Check(rs.tex->layout == RenderTextureLayout::SHADER_READ, "resolve leaves readable destination");
