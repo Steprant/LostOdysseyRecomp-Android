@@ -101,6 +101,16 @@ per item.
   map, paired base mix, channel type and the gain used, marked `voice` when
   the mono FC dialogue rule applied.
 
+### 2.1.6: audio workers wait instead of spinning
+
+- `guest imports:` adds `audio_barrier:` with `calls_per_s`, `waits_per_s`,
+  `wait_ms_per_s` (time the audio workers spent waiting for each other),
+  `over_50us_per_s`, `over_1ms_per_s`, `sleeps_per_s` and `max_us`. The
+  rendezvous of the game's audio workers (sub_82CC3C50) waits with WFE on its
+  flag word instead of re-reading it in a busy loop; it sleeps only after
+  2 ms. `LO_AUDIO_BARRIER=0` restores the loop; `LO_AUDIO_BARRIER_SPIN_NS`,
+  `_WFE_US`, `_SLEEP_US` tune it.
+
 ### 2.1.5: original sound balance, poll back-off
 
 - The mix is the original one again (as upstream): retail category gains, the

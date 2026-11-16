@@ -20,6 +20,7 @@
 #include "guest_printf.h"
 #include "critical_section.h"
 #include "poll_backoff.h"
+#include <patches/audio_barrier.h>
 #include "io/file_system.h"
 #include <gpu/command_processor.h>
 #include <apu/audio.h>
@@ -377,6 +378,19 @@ std::string TakeImportLine(double seconds)
         out += fmt::format(" | zero_polls_per_s={:.0f} poll_backoffs_per_s={:.0f} woken={:.0f} lock_held={:.0f}{}",
             polls / span, backoffs / span, backoffWoken / span, lockHeld / span,
             kernel::poll_backoff::Enabled() ? "" : " (off)");
+        // Steprant 2.1.6: the audio workers' rendezvous (patches/audio_barrier.h):
+        // calls, those that had to wait, time spent waiting, long waits, sleeps.
+        auto& ab = audio_barrier::g_stats;
+        const uint64_t abCalls = ab.calls.exchange(0, std::memory_order_relaxed);
+        const uint64_t abWaits = ab.waits.exchange(0, std::memory_order_relaxed);
+        const uint64_t abWaitNs = ab.waitNs.exchange(0, std::memory_order_relaxed);
+        const uint64_t abOver50 = ab.over50us.exchange(0, std::memory_order_relaxed);
+        const uint64_t abOver1ms = ab.over1ms.exchange(0, std::memory_order_relaxed);
+        const uint64_t abSleeps = ab.sleeps.exchange(0, std::memory_order_relaxed);
+        const uint64_t abMax = ab.maxNs.exchange(0, std::memory_order_relaxed);
+        out += fmt::format(" | audio_barrier: calls_per_s={:.0f} waits_per_s={:.0f} wait_ms_per_s={:.2f} over_50us_per_s={:.0f} over_1ms_per_s={:.1f} sleeps_per_s={:.0f} max_us={}{}",
+            abCalls / span, abWaits / span, abWaitNs / span / 1e6, abOver50 / span, abOver1ms / span, abSleeps / span,
+            abMax / 1000, audio_barrier::Config().enabled ? "" : " (off)");
     }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)
