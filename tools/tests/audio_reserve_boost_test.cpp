@@ -79,6 +79,16 @@ int main()
         r = restart.Update(3 * s, 12, 1, 0, false);
         Check(r.frames == 24 && r.reason == ReserveBoost::Reason::EmptyQueue, "but the next empty queue after it is");
         Check(std::string_view(ReserveBoost::Name(ReserveBoost::Reason::EmptyQueue)) == "empty device queue", "names for the log");
+        ReserveBoost startup{true};
+        r = startup.Update(s, 12, 0, 0, false);
+        Check(r.frames == 32 && r.reason == ReserveBoost::Reason::Startup, "prime for the intro before an underrun");
+        r = startup.Update(16 * s, 12, 0, 92, false);
+        Check(r.frames == 32, "keep ahead of the observed startup callback stalls");
+        r = startup.Update(17 * s, 12, 0, 0, false);
+        Check(r.frames == 31, "the startup reserve steps down even while the ordinary boost holds");
+        for (uint64_t i = 1; i <= 10; ++i)
+            r = startup.Update(17 * s + i * ReserveBoost::kStepNs, 12, 0, 0, false);
+        Check(r.frames == 24, "the startup reserve falls back to the active ordinary boost");
         std::printf("audio reserve boost: %u checks passed\n", checks);
         return 0;
     } catch (const std::exception& e) {

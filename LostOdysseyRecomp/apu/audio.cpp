@@ -47,6 +47,7 @@ namespace apu
         SDL_AudioStream* g_stream = nullptr;
         uint32_t g_channels = 2; // interleaved channels queued to g_device
         bool g_paused = false;
+        bool g_priming = false; // Android opens the logical device paused until its queue is ready.
         // Counts pauses, resumes and invalidations of the queued audio.
         std::atomic<uint32_t> g_pauseChanges{ 0 };
         bool g_audioReady = false;
@@ -157,6 +158,7 @@ namespace apu
             g_deviceOpens.fetch_add(1, std::memory_order_relaxed);
             if (g_stream) SDL_DestroyAudioStream(g_stream);
             g_stream = nullptr;
+            g_priming = false;
 #if LO_PLATFORM_ANDROID
             g_mixerFed.store(false, std::memory_order_relaxed);
 #endif
@@ -202,7 +204,11 @@ namespace apu
                     g_stream = SDL_CreateAudioStream(&desired, &obtained);
                 }
 #if LO_PLATFORM_ANDROID
-                if (g_stream) SDL_SetAudioStreamGetCallback(g_stream, NoteMixerShortage, nullptr);
+                if (g_stream)
+                {
+                    g_priming = SDL_PauseAudioDevice(g_device);
+                    SDL_SetAudioStreamGetCallback(g_stream, NoteMixerShortage, nullptr);
+                }
 #endif
                 if (!g_stream || !SDL_BindAudioStream(g_device, g_stream))
                 {
@@ -216,7 +222,7 @@ namespace apu
             {
                 g_channels = desired.channels;
                 if (g_paused) SDL_PauseAudioDevice(g_device);
-                else SDL_ResumeAudioDevice(g_device);
+                else if (!g_priming) SDL_ResumeAudioDevice(g_device);
             }
             if (!g_device) LOG_WARNING("audio device unavailable: {}", SDL_GetError());
             else LOG_INFO("audio output: 48000 Hz {} float, device channels listed {} mix {}, SDL driver {} ({} Hz, {} sample frames)",
@@ -229,7 +235,20 @@ namespace apu
         uint32_t QueuedFrames()
         {
             std::lock_guard lock(g_deviceMutex);
-            return g_stream ? std::max(0, SDL_GetAudioStreamQueued(g_stream)) / FrameBytes() : 0;
+            const uint32_t frames = g_stream ? std::max(0, SDL_GetAudioStreamQueued(g_stream)) / FrameBytes() : 0;
+#if LO_PLATFORM_ANDROID
+            if (g_stream && g_priming && !g_paused && frames >= g_effectiveReserve.load(std::memory_order_relaxed))
+            {
+                g_priming = false;
+                if (SDL_ResumeAudioDevice(g_device))
+                {
+                    g_mixerFed.store(true, std::memory_order_relaxed);
+                    LOG_INFO("audio: device started with {} frames queued ({:.1f} ms)", frames, FrameMs(frames));
+                }
+                else LOG_WARNING("audio: could not start the primed device: {}", SDL_GetError());
+            }
+#endif
+            return frames;
         }
 
 #if LO_PLATFORM_ANDROID
@@ -458,7 +477,7 @@ namespace apu
             uint32_t pauseChangesSeen = g_pauseChanges.load(std::memory_order_relaxed);
             uint32_t deviceOpensSeen = g_deviceOpens.load(std::memory_order_relaxed);
 #if LO_PLATFORM_ANDROID
-            detail::ReserveBoost reserveBoost;
+            detail::ReserveBoost reserveBoost{!g_reserveFromEnvironment.load(std::memory_order_relaxed)};
             uint32_t reserveLines = 0;
             // AudioFlinger can pace reads differently from the host timer.
             // Repay only sample deficits reported by the SDL mixer.
@@ -497,7 +516,8 @@ namespace apu
                         {
                             ++reserveLines;
                             LOG_INFO("audio buffering: reserve {} frames ({:.1f} ms) for at least {:.0f} s, reason: {} (starved={})",
-                                reserve, FrameMs(reserve), detail::ReserveBoost::kHoldNs / 1e9,
+                                reserve, FrameMs(reserve), (boost.reason == detail::ReserveBoost::Reason::Startup
+                                    ? detail::ReserveBoost::kStartupNs : detail::ReserveBoost::kHoldNs) / 1e9,
                                 detail::ReserveBoost::Name(boost.reason), g_starved.load(std::memory_order_relaxed));
                         }
                         else if (reserve < previous && !reserveBoost.Boosted() && reserve == g_reserveFrames.load(std::memory_order_relaxed))
@@ -994,14 +1014,14 @@ namespace apu
             {
                 const float* data = g_channels == 6 ? surround.data() : stereo.data();
                 const int before = SDL_GetAudioStreamQueued(g_stream);
-                if (before == 0 && n > 1) g_starved.fetch_add(1, std::memory_order_relaxed);
+                if (before == 0 && n > 1 && !g_priming) g_starved.fetch_add(1, std::memory_order_relaxed);
                 // Safety cap above the reserve; never reached while the driver
                 // paces production against the reserve.
                 if (before < int(FrameBytes() * (g_effectiveReserve.load(std::memory_order_relaxed) + 8)))
                 {
                     if (!SDL_PutAudioStreamData(g_stream, data, int(FrameBytes()))) ++queueErrors;
 #if LO_PLATFORM_ANDROID
-                    else g_mixerFed.store(true, std::memory_order_relaxed);
+                    else if (!g_priming) g_mixerFed.store(true, std::memory_order_relaxed);
 #endif
                 }
                 else ++queueDrops;
@@ -1043,7 +1063,7 @@ namespace apu
         if (g_device)
         {
             if (paused) SDL_PauseAudioDevice(g_device);
-            else SDL_ResumeAudioDevice(g_device);
+            else if (!g_priming) SDL_ResumeAudioDevice(g_device);
         }
     }
 }

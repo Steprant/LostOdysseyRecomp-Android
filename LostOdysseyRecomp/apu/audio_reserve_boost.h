@@ -26,11 +26,13 @@ class ReserveBoost
 {
 public:
     static constexpr uint32_t kBoostFrames = 24;               // 128 ms at 48 kHz, 256-sample frames
+    static constexpr uint32_t kStartupFrames = 32;            // First movie and sound-bank startup
+    static constexpr uint64_t kStartupNs = 16'000'000'000ull;
     static constexpr uint32_t kStallMs = 40;
     static constexpr uint64_t kHoldNs = 15'000'000'000ull;
     static constexpr uint64_t kStepNs = 100'000'000ull;
 
-    enum class Reason : uint8_t { None, EmptyQueue, LongCallback, FrozenPicture };
+    enum class Reason : uint8_t { None, EmptyQueue, LongCallback, FrozenPicture, Startup };
 
     struct Result
     {
@@ -39,13 +41,20 @@ public:
         Reason reason = Reason::None; // what started (or renewed) a boost now
     };
 
+    explicit ReserveBoost(bool protectStartup = false) : protectStartup_(protectStartup) {}
+
     // Driver thread, once per period. starvedTotal is the running count of
     // frames that found the device queue empty; callbackMs the longest guest
     // callback since the previous call.
     Result Update(uint64_t nowNs, uint32_t base, uint64_t starvedTotal, uint32_t callbackMs, bool pictureFrozen)
     {
         Result r;
-        if (!started_) { started_ = true; starvedSeen_ = starvedTotal; }
+        const bool starting = !started_;
+        if (starting) {
+            started_ = true;
+            starvedSeen_ = starvedTotal;
+            if (protectStartup_) startupUntil_ = nowNs + kStartupNs;
+        }
         if (starvedTotal < starvedSeen_) starvedSeen_ = starvedTotal; // counter restarted
         if (starvedTotal > starvedSeen_) r.reason = Reason::EmptyQueue;
         else if (callbackMs >= kStallMs) r.reason = Reason::LongCallback;
@@ -54,8 +63,11 @@ public:
         if (r.reason != Reason::None) until_ = nowNs + kHoldNs;
         const bool boosted = until_ && nowNs < until_;
         if (!boosted) until_ = 0;
-        if (boosted || last_ <= base) {
-            r.frames = boosted ? std::max(base, kBoostFrames) : base;
+        const bool startup = nowNs < startupUntil_;
+        if (starting && startup) r.reason = Reason::Startup;
+        const uint32_t target = std::max(base, startup ? kStartupFrames : (boosted ? kBoostFrames : 0));
+        if (last_ <= target) {
+            r.frames = target;
             nextStep_ = 0;
         } else {
             // Stepping down: one frame per kStepNs.
@@ -76,14 +88,16 @@ public:
         case Reason::EmptyQueue: return "empty device queue";
         case Reason::LongCallback: return "long game audio callback";
         case Reason::FrozenPicture: return "frozen picture";
+        case Reason::Startup: return "startup movie and sound banks";
         default: return "none";
         }
     }
 
 private:
+    bool protectStartup_;
     bool started_ = false;
     uint64_t starvedSeen_ = 0;
-    uint64_t until_ = 0, nextStep_ = 0;
+    uint64_t startupUntil_ = 0, until_ = 0, nextStep_ = 0;
     uint32_t last_ = 0;
 };
 }
