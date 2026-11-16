@@ -1199,18 +1199,23 @@ namespace gpu
                 }
             }
             const auto timingPace = std::chrono::steady_clock::now();
-            const auto fpsCap = loading::Active() ? loading::Target(GetFrameRateTarget())
-                : video::GetFramePacingTarget(GetFrameRateTarget());
+            const bool fastLoading = loading::Active();
+            const auto gameTarget = GetFrameRateTarget();
+            const auto fpsCap = fastLoading ? loading::Target(gameTarget, true, loading::portable.load(std::memory_order_relaxed))
+                : video::GetFramePacingTarget(gameTarget);
             const bool timingEnabled = frame_timing::Active();
             frame_timing::PacingSample pacing;
             static FramePacer pacer;
             {
                 static OutputFramePacer outputPacer;
                 static DeadlineWait pacingWait;
+                static bool wasLoading = false;
                 // Preserve the original schedule anchor; sleep without millisecond rounding.
-                const auto nativeDeadline = pacer.Schedule(timingPace, fpsCap);
-                const auto output = loading::Active() ? video::DynamicFgOutputPacing{}
-                    : video::GetDynamicFgOutputPacing(GetFrameRateTarget());
+                // A late first frame after a load should not wait another full game period.
+                const auto nativeDeadline = pacer.Schedule(timingPace, fpsCap, wasLoading && !fastLoading);
+                wasLoading = fastLoading;
+                const auto output = fastLoading ? video::DynamicFgOutputPacing{}
+                    : video::GetDynamicFgOutputPacing(gameTarget);
                 const auto outputDeadline = outputPacer.Schedule(timingPace, output.outputFps, output.actualPresents);
                 const auto deadline = std::max(nativeDeadline, outputDeadline);
                 const auto sleepStart = timingEnabled ? std::chrono::steady_clock::now() : timingPace;

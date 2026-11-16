@@ -60,6 +60,15 @@ int main()
         Require(!rate::Supported(invalid) && rate::Normalize(invalid) == 30 && rate::MenuIndex(invalid) == 0,
             "invalid persisted rate defaults to 30; diagnostics are separate");
     {
+        FramePacer late, early;
+        const auto lastLoad = late.Schedule(origin, 120);
+        const auto alreadyLate = lastLoad + milliseconds(45);
+        Require(late.Schedule(alreadyLate, 30, true) == alreadyLate, "slow first frame after loading presents immediately");
+        const auto lastEarlyLoad = early.Schedule(origin, 120);
+        Require(early.Schedule(lastEarlyLoad + milliseconds(8), 30, true) == lastEarlyLoad + nanoseconds(1000000000ull / 30),
+            "a quick first frame still follows the 30 FPS cadence from the last load frame");
+    }
+    {
         gpu::OutputFramePacer output;
         const auto period = nanoseconds(1000000000ull / 141);
         Require(output.Schedule(origin, 141, 100) == origin, "first FG output observation starts a new cadence");

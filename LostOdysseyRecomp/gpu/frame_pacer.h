@@ -10,12 +10,12 @@ class FramePacer
 {
 public:
     using Clock = std::chrono::steady_clock;
-    Clock::time_point Schedule(Clock::time_point now, uint32_t fps)
+    Clock::time_point Schedule(Clock::time_point now, uint32_t fps, bool keepAnchorOnRateChange = false)
     {
         if (!fps) { m_fps = 0; m_next = now; return now; }
         const auto period = std::chrono::nanoseconds(1000000000ull / fps);
         const auto candidate = m_next + period;
-        if (fps != m_fps || candidate > now + period)
+        if ((fps != m_fps && !keepAnchorOnRateChange) || candidate > now + period)
             m_next = now + period;
         else
             // The current frame is already late: release it immediately and

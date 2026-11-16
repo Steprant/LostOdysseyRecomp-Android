@@ -877,6 +877,9 @@ namespace gpu::video
             bool nativeVsyncInitialized = false;
             bool nativeVsyncBaseline = true, nativeVsyncRequested = true;
             bool nativeVsyncReportPending = false;
+#if LO_PLATFORM_ANDROID
+            bool immediateUnavailable = false;
+#endif
             double metalMinimumPresentDuration = 0.0;
         } g_presentationDisplay;
         constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::R8G8B8A8_UNORM;
@@ -3393,6 +3396,7 @@ namespace gpu::video
             g_androidResumePlanHold = {true, false, g_androidPlannedWidth, g_androidPlannedHeight, 0, 0,
                 std::chrono::steady_clock::now()};
         g_presentationDisplay.nativeVsyncInitialized = false;
+        g_presentationDisplay.immediateUnavailable = false;
         LOG_INFO("video: Android native surface swapchain recreated window={:#x} serial={}",
             g_androidNativeWindowIdentity.load(), surfaceSerial);
         return true;
@@ -4448,8 +4452,11 @@ namespace gpu::video
         }
 #else
         const auto syncConfig = settings::GetConfig();
-        const bool nativeVsync = vrr::HostVsyncEnabled(nativeTarget, syncConfig.vsync,
+        bool nativeVsync = vrr::HostVsyncEnabled(nativeTarget, syncConfig.vsync,
             nativePolicy.nativeVsyncBaseline, forceImmediate, syncConfig.variableRefreshRate);
+#if LO_PLATFORM_ANDROID
+        nativeVsync = nativeVsync || nativePolicy.immediateUnavailable;
+#endif
 #endif
         if (nativeVsync != nativePolicy.nativeVsyncRequested) {
             // Plume marks Vulkan's swapchain for resize; the existing transaction
@@ -4564,6 +4571,12 @@ namespace gpu::video
                 // Accept the backend's fallback instead of leaving a mismatched
                 // required/created mode that could rebuild on every frame.
                 g_swapChain->setVsyncEnabled(reportedVsync);
+#if LO_PLATFORM_ANDROID
+                // Fast loading toggles the requested mode on every map/battle.
+                // A FIFO-only surface cannot honor it on any of those transitions.
+                nativePolicy.immediateUnavailable = true;
+                nativePolicy.nativeVsyncRequested = reportedVsync;
+#endif
                 g_presentProgress.Policy(loading::Active(), reportedVsync);
             }
             nativePolicy.nativeVsyncReportPending = false;
