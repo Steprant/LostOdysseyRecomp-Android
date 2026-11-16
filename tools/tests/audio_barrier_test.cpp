@@ -27,7 +27,6 @@ uint64_t Raw(std::initializer_list<int> bytes)
     std::memcpy(&v, b, 8);
     return v;
 }
-void SetByte(uint64_t& word, int i) { __atomic_store_n(reinterpret_cast<uint8_t*>(&word) + i, uint8_t(1), __ATOMIC_RELEASE); }
 }
 
 int main()
@@ -39,54 +38,70 @@ int main()
         // 1. Nothing to wait for: complete, or already closed.
         {
             Stats st;
+            Slot slot;
             alignas(8) uint64_t word = Raw({0, 1, 2});
-            Check(WaitForWord(&word, Raw({0, 1, 2}), s, st) == Raw({0, 1, 2}), "complete word not returned");
+            Check(WaitForWord(&word, Raw({0, 1, 2}), slot, s, st) == Raw({0, 1, 2}), "complete word not returned");
             word = 0;
-            Check(WaitForWord(&word, Raw({0, 1, 2}), s, st) == 0, "closed word not returned");
+            Check(WaitForWord(&word, Raw({0, 1, 2}), slot, s, st) == 0, "closed word not returned");
             Check(st.waits.load() == 0, "waited without a reason");
         }
-        // 2. The last participant arrives later: woken with the full word.
+        // 2. The last participant arrives through the protocol while the
+        // waiter sleeps on the futex: woken by the arrival, not the timeout.
         {
             Stats st;
+            Slot slot;
+            Settings sleepy = s;
+            sleepy.spinNs = 0;
+            sleepy.wfeUs = 0;
+            sleepy.sleepUs = 1'000'000;
             alignas(8) uint64_t word = Raw({0, 1});
-            std::thread late([&] { std::this_thread::sleep_for(std::chrono::microseconds(300)); SetByte(word, 2); });
+            std::thread late([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                StoreFlag(reinterpret_cast<uint8_t*>(&word) + 2, slot, st);
+            });
             const auto start = Clock::now();
-            const uint64_t seen = WaitForWord(&word, Raw({0, 1, 2}), s, st);
+            const uint64_t seen = WaitForWord(&word, Raw({0, 1, 2}), slot, sleepy, st);
             late.join();
             Check(seen == Raw({0, 1, 2}), "arrival not seen");
-            Check(Ms(start) < 200, "arrival seen late");
-            Check(st.waits.load() == 1 && st.waitNs.load() > 0, "wait not counted");
+            Check(Ms(start) < 300, "the arrival did not wake the sleeper");
+            Check(st.sleeps.load() >= 1 && st.timeouts.load() == 0 && st.wakes.load() >= 1, "no futex sleep, or woken by the timeout");
         }
-        // 3. Another participant closes the round (stores 0): the wait ends with 0.
+        // 3. A write made outside the protocol (no wake) is seen at the
+        // next timeout.
         {
             Stats st;
+            Slot slot;
+            Settings sleepy = s;
+            sleepy.spinNs = 0;
+            sleepy.wfeUs = 0;
+            sleepy.sleepUs = 1000;
             alignas(8) uint64_t word = Raw({3});
-            std::thread closer([&] { std::this_thread::sleep_for(std::chrono::microseconds(300)); __atomic_store_n(&word, uint64_t(0), __ATOMIC_RELEASE); });
-            const uint64_t seen = WaitForWord(&word, Raw({0, 3}), s, st);
+            std::thread closer([&] { std::this_thread::sleep_for(std::chrono::milliseconds(3)); __atomic_store_n(&word, uint64_t(0), __ATOMIC_SEQ_CST); });
+            const auto start = Clock::now();
+            const uint64_t seen = WaitForWord(&word, Raw({0, 3}), slot, sleepy, st);
             closer.join();
             Check(seen == 0, "closing zero not seen");
+            Check(st.timeouts.load() >= 1 && Ms(start) < 300, "timeout did not catch an unannounced write");
         }
-        // 4. A long wait sleeps between checks and still ends on the arrival.
+        // 4. Short arrival with the default phases: no sleep needed.
         {
             Stats st;
-            Settings quick = s;
-            quick.spinNs = 0;
-            quick.wfeUs = 0;
-            quick.sleepUs = 50;
+            Slot slot;
             alignas(8) uint64_t word = Raw({1});
-            std::thread late([&] { std::this_thread::sleep_for(std::chrono::milliseconds(3)); SetByte(word, 4); });
-            const auto start = Clock::now();
-            const uint64_t seen = WaitForWord(&word, Raw({1, 4}), quick, st);
+            std::thread late([&] { StoreFlag(reinterpret_cast<uint8_t*>(&word) + 4, slot, st); });
+            const uint64_t seen = WaitForWord(&word, Raw({1, 4}), slot, s, st);
             late.join();
-            Check(seen == Raw({1, 4}), "arrival after sleeps not seen");
-            Check(st.sleeps.load() > 0 && Ms(start) < 500, "sleep phase not used or too slow");
-            Check(st.over1ms.load() == 1, "long wait not counted");
+            Check(seen == Raw({1, 4}), "quick arrival not seen");
         }
         // 5. Rounds of the guest protocol between three threads: each sets its
         // byte, waits, and the one that sees the full word stores 0. A
-        // std::barrier separates rounds, as the engine's own pass does.
-        {
+        // std::barrier separates rounds, as the engine's own pass does. Run
+        // with the default phases and with every wait on the futex.
+        for (int variant = 0; variant < 2; ++variant) {
             Stats st;
+            Slot slot;
+            Settings run = s;
+            if (variant == 1) { run.spinNs = 0; run.wfeUs = 0; run.sleepUs = 200'000; }
             alignas(8) uint64_t word = 0;
             constexpr int threads = 3, rounds = 20000;
             const uint64_t expected = Raw({0, 1, 2});
@@ -97,9 +112,9 @@ int main()
             for (int t = 0; t < threads; ++t)
                 pool.emplace_back([&, t] {
                     for (int r = 0; r < rounds; ++r) {
-                        SetByte(word, t);
-                        if (WaitForWord(&word, expected, s, st) != 0) {
-                            __atomic_store_n(&word, uint64_t(0), __ATOMIC_RELEASE);
+                        StoreFlag(reinterpret_cast<uint8_t*>(&word) + t, slot, st);
+                        if (WaitForWord(&word, expected, slot, run, st) != 0) {
+                            CloseRound(&word, slot, st);
                             closes.fetch_add(1);
                         }
                         gate.arrive_and_wait();
@@ -108,8 +123,13 @@ int main()
             for (auto& thread : pool) thread.join();
             Check(word == 0, "a round left the word set");
             Check(closes.load() >= rounds, "a round was never closed");
-            std::printf("audio barrier: %d rounds of 3 threads in %lld ms, %llu waits, %llu sleeps\n",
-                rounds, (long long)Ms(start), (unsigned long long)st.waits.load(), (unsigned long long)st.sleeps.load());
+            // With a 200 ms timeout, any timeout would be a lost wake: every
+            // arrival goes through StoreFlag. (With the default 1 ms one, an
+            // oversubscribed host can make a participant legitimately late.)
+            Check(variant == 0 || st.timeouts.load() == 0, "a protocol arrival needed the timeout");
+            std::printf("audio barrier (%s): %d rounds of 3 threads in %lld ms, %llu waits, %llu sleeps, %llu timeouts\n",
+                variant ? "futex only" : "default phases", rounds, (long long)Ms(start), (unsigned long long)st.waits.load(),
+                (unsigned long long)st.sleeps.load(), (unsigned long long)st.timeouts.load());
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "audio barrier test failed: %s (after %u checks)\n", e.what(), checks);

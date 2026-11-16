@@ -2,11 +2,17 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
 #if defined(__linux__)
+#include <linux/futex.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
 #endif
 
 // Steprant 2.1.6: the rendezvous of the game's audio workers (sub_82CC3C50).
@@ -23,33 +29,40 @@
 //     closed the round: return) or equals expected (all arrived: store 0
 //     and return).
 // The re-read is a plain loop with no import call, so a waiting worker keeps
-// its core fully busy. In the profile of the 16/11 17:26 session the loop
-// was 78% of every guest block executed (1.56e12 iterations for 15.2 million
-// calls); the two workers used 10-22% of a core in the recent sessions.
+// its core busy. It is the most executed block of the 16/11 17:26 profile
+// (1.56e12 executions for 15.2 million calls; a block of a few instructions,
+// so that says how often, not how long). The two workers used 10-22% of a
+// core in the recent sessions, work and waiting together.
 //
-// Here the loop waits instead: a short spin, then (arm64) WFE on the word
-// with the exclusive monitor armed, which sleeps the core until another
-// core writes that cache line (a participant's flag, or the closing 0) or
-// the kernel's timer event stream ticks. The flag word is then read again,
-// so every exit happens on the same values the guest loop would have seen;
-// no latency is added while participants arrive. Only a wait longer than
-// wfeUs (2 ms, the audio engine would already be late) sleeps between
-// checks. Memory accesses keep the guest's widths (one byte store, 64-bit
-// loads and store). Registers end as the guest function leaves them
-// (r9, r10, r11; cr6 and xer.ca when they are context fields). A
-// misaligned flag array runs the original. The CI build checks the result
-// against the generated function (tools/audio_barrier_equivalence.py).
+// Here the loop waits in three phases, each ending as soon as the word reads
+// 0 or expected:
+//   1. spinNs of spinning with a pause hint (arrivals within microseconds);
+//   2. up to wfeUs of WFE on the word (arm64), with the exclusive monitor
+//      armed: the core is clock-gated until another core writes that cache
+//      line. The kernel still counts the thread as running;
+//   3. a futex sleep: the thread leaves the CPU, so the scheduler and the
+//      frequency governor see it idle. Every participant arrives through
+//      this override, so each flag store and each closing 0 bumps a host
+//      sequence for the word and wakes its sleepers. A write made elsewhere
+//      in guest code is still seen at the next timeout (sleepUs).
+// Every exit happens on the values the guest loop would have seen. Memory
+// accesses keep the guest's widths (one byte store, 64-bit loads and store).
+// Registers end as the guest function leaves them (r9, r10, r11; cr6 and
+// xer.ca when they are context fields). A misaligned flag array runs the
+// original. The CI build checks the result against the generated function
+// (tools/audio_barrier_equivalence.py).
 //
 // LO_AUDIO_BARRIER=0 runs the original loop; LO_AUDIO_BARRIER_SPIN_NS,
-// _WFE_US and _SLEEP_US tune the phases. On by default on arm64 only.
+// _WFE_US and _SLEEP_US (futex timeout) tune the phases. On by default on
+// arm64 only.
 namespace audio_barrier
 {
 struct Settings
 {
     bool enabled = false;
     uint32_t spinNs = 2000;
-    uint32_t wfeUs = 2000;
-    uint32_t sleepUs = 100;
+    uint32_t wfeUs = 50;
+    uint32_t sleepUs = 1000;
 };
 
 inline uint32_t EnvValue(const char* name, uint32_t fallback, uint32_t limit)
@@ -80,9 +93,20 @@ inline const Settings& Config()
 
 struct Stats
 {
-    std::atomic<uint64_t> calls{0}, waits{0}, waitNs{0}, over50us{0}, over1ms{0}, sleeps{0}, maxNs{0};
+    std::atomic<uint64_t> calls{0}, waits{0}, waitNs{0}, over50us{0}, over1ms{0};
+    std::atomic<uint64_t> sleeps{0}, timeouts{0}, wakes{0}, maxNs{0};
 };
 inline Stats g_stats;
+
+// Host-side wake channel per flag word (hashed; a collision only wakes a
+// sleeper that then finds its word unchanged and sleeps again).
+struct alignas(64) Slot
+{
+    std::atomic<uint32_t> sequence{0};
+    std::atomic<uint32_t> sleepers{0};
+};
+inline Slot g_slots[64];
+inline Slot& SlotFor(uint32_t flags) { return g_slots[((flags >> 3) * 0x9E3779B1u) >> 26]; }
 
 inline int64_t NowNs()
 {
@@ -99,7 +123,7 @@ inline void CpuRelax()
 #endif
 }
 
-inline uint64_t Load(const uint64_t* word) { return __atomic_load_n(word, __ATOMIC_ACQUIRE); }
+inline uint64_t Load(const uint64_t* word) { return __atomic_load_n(word, __ATOMIC_SEQ_CST); }
 
 #if defined(__aarch64__)
 // The exclusive load arms the monitor on the word's cache line; any store
@@ -115,18 +139,37 @@ inline void ClearExclusive() { asm volatile("clrex" ::: "memory"); }
 inline void WaitForEvent() { asm volatile("wfe" ::: "memory"); }
 #endif
 
-inline void PreciseSleeps()
+// True when the sleep ran to its timeout.
+inline bool SleepOn(std::atomic<uint32_t>& sequence, uint32_t seen, uint32_t us)
 {
 #if defined(__linux__)
     // App threads sleep with 50 us of timer slack by default.
-    static thread_local bool set = false;
-    if (!set) { prctl(PR_SET_TIMERSLACK, 10'000UL, 0, 0, 0); set = true; }
+    static thread_local bool slack = false;
+    if (!slack) { prctl(PR_SET_TIMERSLACK, 10'000UL, 0, 0, 0); slack = true; }
+    timespec timeout{time_t(us / 1'000'000), long(us % 1'000'000) * 1000};
+    return syscall(SYS_futex, reinterpret_cast<uint32_t*>(&sequence), FUTEX_WAIT_PRIVATE, seen, &timeout, nullptr, 0) != 0 &&
+        errno == ETIMEDOUT;
+#else
+    (void)sequence; (void)seen;
+    std::this_thread::sleep_for(std::chrono::microseconds(us));
+    return true;
+#endif
+}
+
+// After a participant's write to the flag word: wake whoever sleeps on it.
+inline void Notify(Slot& slot, Stats& st)
+{
+    slot.sequence.fetch_add(1, std::memory_order_seq_cst);
+    if (slot.sleepers.load(std::memory_order_seq_cst) == 0) return;
+    st.wakes.fetch_add(1, std::memory_order_relaxed);
+#if defined(__linux__)
+    syscall(SYS_futex, reinterpret_cast<uint32_t*>(&slot.sequence), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
 #endif
 }
 
 // Waits until the raw (guest big-endian) 64-bit word is 0 or expectedRaw and
 // returns the value that ended the wait.
-inline uint64_t WaitForWord(const uint64_t* word, uint64_t expectedRaw, const Settings& s, Stats& st)
+inline uint64_t WaitForWord(const uint64_t* word, uint64_t expectedRaw, Slot& slot, const Settings& s, Stats& st)
 {
     const auto done = [&](uint64_t v) { return v == 0 || v == expectedRaw; };
     uint64_t v = Load(word);
@@ -149,21 +192,18 @@ inline uint64_t WaitForWord(const uint64_t* word, uint64_t expectedRaw, const Se
         if (done(v = Load(word))) goto finished;
         now = NowNs();
     }
-#else
-    while (now - start < int64_t(s.wfeUs) * 1000) {
-        for (int i = 0; i < 32; ++i) {
-            CpuRelax();
-            if (done(v = Load(word))) goto finished;
-        }
-        std::this_thread::yield();
-        if (done(v = Load(word))) goto finished;
-        now = NowNs();
-    }
 #endif
-    PreciseSleeps();
     for (;;) {
-        std::this_thread::sleep_for(std::chrono::microseconds(s.sleepUs));
+        // Registered before the sequence is read: a participant that writes
+        // after this either moves the sequence (the futex returns at once)
+        // or sees a sleeper and wakes it.
+        slot.sleepers.fetch_add(1, std::memory_order_seq_cst);
+        const uint32_t seen = slot.sequence.load(std::memory_order_seq_cst);
+        if (done(v = Load(word))) { slot.sleepers.fetch_sub(1, std::memory_order_seq_cst); break; }
+        const bool timedOut = SleepOn(slot.sequence, seen, s.sleepUs);
+        slot.sleepers.fetch_sub(1, std::memory_order_seq_cst);
         st.sleeps.fetch_add(1, std::memory_order_relaxed);
+        if (timedOut) st.timeouts.fetch_add(1, std::memory_order_relaxed);
         if (done(v = Load(word))) break;
     }
 finished:
@@ -174,6 +214,18 @@ finished:
     uint64_t seen = st.maxNs.load(std::memory_order_relaxed);
     while (waited > seen && !st.maxNs.compare_exchange_weak(seen, waited, std::memory_order_relaxed)) {}
     return v;
+}
+
+// A participant's writes (also used by the host test).
+inline void StoreFlag(uint8_t* byte, Slot& slot, Stats& st)
+{
+    __atomic_store_n(byte, uint8_t(1), __ATOMIC_SEQ_CST);
+    Notify(slot, st);
+}
+inline void CloseRound(uint64_t* word, Slot& slot, Stats& st)
+{
+    __atomic_store_n(word, uint64_t(0), __ATOMIC_SEQ_CST);
+    Notify(slot, st);
 }
 
 #if defined(PPC_FUNC)
@@ -205,16 +257,17 @@ inline void Run(PPCContext& __restrict ctx, uint8_t* base, const Settings& s, St
         finish(false);
         return;
     }
+    Slot& slot = SlotFor(flags);
     const uint8_t processor = PPC_LOAD_U8(ctx.r13.u32 + 0x10C);
-    __atomic_store_n(base + uint32_t(flags + processor), uint8_t(1), __ATOMIC_RELEASE);
+    StoreFlag(base + uint32_t(flags + processor), slot, st);
     uint64_t expected = 0;
     for (uint32_t i = 0; i < 6; ++i)
         if (PPC_LOAD_U32(object + 0x134 + 4 * i) != 0) expected |= uint64_t(1) << (56 - 8 * i);
     ctx.r9.u64 = expected & ~(uint64_t(0xFF) << 56);
     ctx.r10.u64 = expected;
     auto* word = reinterpret_cast<uint64_t*>(base + flags);
-    const uint64_t seen = WaitForWord(word, __builtin_bswap64(expected), s, st);
-    if (seen != 0) __atomic_store_n(word, uint64_t(0), __ATOMIC_RELEASE);
+    const uint64_t seen = WaitForWord(word, __builtin_bswap64(expected), slot, s, st);
+    if (seen != 0) CloseRound(word, slot, st);
     finish(true);
 }
 #endif

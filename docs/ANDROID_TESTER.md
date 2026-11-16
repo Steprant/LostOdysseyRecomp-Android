@@ -105,11 +105,14 @@ per item.
 
 - `guest imports:` adds `audio_barrier:` with `calls_per_s`, `waits_per_s`,
   `wait_ms_per_s` (time the audio workers spent waiting for each other),
-  `over_50us_per_s`, `over_1ms_per_s`, `sleeps_per_s` and `max_us`. The
-  rendezvous of the game's audio workers (sub_82CC3C50) waits with WFE on its
-  flag word instead of re-reading it in a busy loop; it sleeps only after
-  2 ms. `LO_AUDIO_BARRIER=0` restores the loop; `LO_AUDIO_BARRIER_SPIN_NS`,
-  `_WFE_US`, `_SLEEP_US` tune it.
+  `over_50us_per_s`, `over_1ms_per_s`, `sleeps_per_s`, `timeouts_per_s`,
+  `wakes_per_s` and `max_us`. The rendezvous of the game's audio workers
+  (sub_82CC3C50) no longer re-reads its flag word in a busy loop: 2 us of
+  spin, up to 50 us of WFE (core clock-gated, still counted as running),
+  then a futex sleep (thread off the CPU) woken by the next participant's
+  arrival, with a 1 ms timeout for writes made elsewhere. `wait_ms_per_s` is
+  the most this can save. `LO_AUDIO_BARRIER=0` restores the loop;
+  `LO_AUDIO_BARRIER_SPIN_NS`, `_WFE_US`, `_SLEEP_US` tune it.
 
 ### 2.1.5: original sound balance, poll back-off
 

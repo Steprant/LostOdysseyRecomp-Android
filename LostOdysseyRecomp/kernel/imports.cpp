@@ -387,10 +387,12 @@ std::string TakeImportLine(double seconds)
         const uint64_t abOver50 = ab.over50us.exchange(0, std::memory_order_relaxed);
         const uint64_t abOver1ms = ab.over1ms.exchange(0, std::memory_order_relaxed);
         const uint64_t abSleeps = ab.sleeps.exchange(0, std::memory_order_relaxed);
+        const uint64_t abTimeouts = ab.timeouts.exchange(0, std::memory_order_relaxed);
+        const uint64_t abWakes = ab.wakes.exchange(0, std::memory_order_relaxed);
         const uint64_t abMax = ab.maxNs.exchange(0, std::memory_order_relaxed);
-        out += fmt::format(" | audio_barrier: calls_per_s={:.0f} waits_per_s={:.0f} wait_ms_per_s={:.2f} over_50us_per_s={:.0f} over_1ms_per_s={:.1f} sleeps_per_s={:.0f} max_us={}{}",
+        out += fmt::format(" | audio_barrier: calls_per_s={:.0f} waits_per_s={:.0f} wait_ms_per_s={:.2f} over_50us_per_s={:.0f} over_1ms_per_s={:.1f} sleeps_per_s={:.0f} timeouts_per_s={:.0f} wakes_per_s={:.0f} max_us={}{}",
             abCalls / span, abWaits / span, abWaitNs / span / 1e6, abOver50 / span, abOver1ms / span, abSleeps / span,
-            abMax / 1000, audio_barrier::Config().enabled ? "" : " (off)");
+            abTimeouts / span, abWakes / span, abMax / 1000, audio_barrier::Config().enabled ? "" : " (off)");
     }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)

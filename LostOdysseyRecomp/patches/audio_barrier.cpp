@@ -19,7 +19,7 @@ PPC_FUNC(sub_82CC3C50)
     }
     static std::atomic<bool> reported{false};
     if (!reported.exchange(true))
-        LOG_INFO("audio barrier: waiting on the flag word (spin {} ns, wfe {} us, then sleeps of {} us)",
+        LOG_INFO("audio barrier: waiting on the flag word (spin {} ns, wfe {} us, then futex sleeps woken by arrivals, timeout {} us)",
             settings.spinNs, settings.wfeUs, settings.sleepUs);
     audio_barrier::Run(ctx, base, settings, audio_barrier::g_stats);
 }
