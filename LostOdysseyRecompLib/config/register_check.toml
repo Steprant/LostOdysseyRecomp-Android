@@ -1,0 +1,31 @@
+# Steprant 2.2: what tools/ppc_register_check.py must know beyond the generated
+# code, for the register promotion (non_argument_as_local/non_volatile_as_local).
+# Used by `analyse` (to write registers_in_context.toml) and by `check` in CI.
+
+# Host overrides that change memory and r3 only (patches/crt_native.cpp:
+# memcpy, memset). The check fails if a caller reads any other volatile
+# register after them (the generated versions also change r0, r4-r12, ctr,
+# cr0).
+native = ["sub_82B7A0B0", "sub_82B7BC40"]
+
+# Functions whose own register reads do not count:
+# - sub_82B7E504, the stack probe: a host no-op (patches/crt_native.cpp);
+# - sub_83111958, sub_83111CA0: store all VMX128 registers to memory (and
+#   load them back): a vector context save/switch, never executed in the
+#   profile. A guest context switch cannot work in recompiled code anyway;
+#   as a save/restore around other work it has nothing to keep with locals;
+# - sub_82DF34A0, the guest setjmp: every call to it is the native setjmp.
+replaced = ["sub_82B7E504", "sub_83111958", "sub_83111CA0", "sub_82DF34A0"]
+
+# Callees that leave these volatile registers unchanged: the stack probe's
+# callers read r12 (minus the frame size) after the call.
+preserves = ["sub_82B7E504:r12"]
+
+# Host overrides that read registers of one caller, chosen by return
+# address: CALLER:CALLEE:registers. CALLER keeps them in ctx.
+site_reads = [
+    "sub_82AD6088:sub_828F7840:r30,r31",            # gpu/cinematic_bars.cpp (lr 0x82AD616C)
+    "sub_823CE960:sub_823CF390:r28,r29,r30,r31",    # patches/occlusion_history.cpp via cpu/poll_wait.cpp
+    "sub_8238ACC8:sub_8238AE08:f31",                # patches/battle_script_timer.cpp (lr 0x8238AD64)
+    "sub_8237D258:sub_828212E0:r31",                # debug/asset_failure.cpp (lr 0x8237D308)
+]

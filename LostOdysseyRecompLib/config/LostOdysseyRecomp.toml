@@ -18,8 +18,15 @@ xer_as_local = true
 reserved_as_local = true
 cr_as_local = true
 cr_in_context_fields = [0]
-non_argument_as_local = false
-non_volatile_as_local = false
+# Steprant 2.2: general, float and vector registers as locals too. The
+# functions that read a register from their caller or a callee (non-ABI code,
+# register save/restore around setjmp, calls the Xbox compiler knew kept f0 or
+# r11) keep all registers in ctx, with the callers and callees that pass or
+# return the values: registers_in_context.toml, written and checked by
+# tools/ppc_register_check.py on every build.
+non_argument_as_local = true
+non_volatile_as_local = true
+registers_in_context_file_path = "registers_in_context.toml"
 
 # 编译器生成的寄存器保存/恢复函数，用 XenonAnalyse 或 Ghidra 搜索
 restgprlr_14_address = 0x82B7A700

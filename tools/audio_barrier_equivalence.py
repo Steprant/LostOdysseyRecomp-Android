@@ -100,7 +100,17 @@ Result Run(const Case& c, uint32_t seed, Call call)
 
 bool Same(const Result& a, const Result& b)
 {
+#if LO_GUEST_R11_LOCAL
+    // Steprant 2.2: the generated function keeps r11 as a local (register
+    // promotion), so its r11 never reaches the context; the override still
+    // stores the 0 the guest code leaves there. No caller reads r11 after
+    // the call (tools/ppc_register_check.py), so that field is not compared.
+    PPCContext x = a.ctx, y = b.ctx;
+    y.r11 = x.r11;
+    return a.memory == b.memory && std::memcmp(&x, &y, sizeof(PPCContext)) == 0;
+#else
     return a.memory == b.memory && std::memcmp(&a.ctx, &b.ctx, sizeof(PPCContext)) == 0;
+#endif
 }
 
 // True when the guest loop ends at its first check (no other thread needed).
@@ -209,6 +219,8 @@ def main():
     args = parser.parse_args()
     body = extract(args.ppc_dir)
     source = HARNESS.replace('@FUNCTION_BODY@', body).replace('@FUNCTION_NAME@', FUNCTION)
+    r11_local = '\tPPCRegister r11{};' in body
+    source = f'#define LO_GUEST_R11_LOCAL {int(r11_local)}\n' + source
     with tempfile.TemporaryDirectory() as tmp:
         cpp = Path(tmp) / 'audio_barrier_equivalence.cpp'
         exe = Path(tmp) / 'audio_barrier_equivalence'
@@ -228,7 +240,7 @@ def main():
                 print('  ' + message[:160])
             return 1
         run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=900)
-        print(run.stdout.strip())
+        print(run.stdout.strip() + (' (r11 is a local of the generated function: not compared)' if r11_local else ''))
         if run.returncode != 0:
             print(f'audio barrier equivalence: exit status {run.returncode}')
         return run.returncode
