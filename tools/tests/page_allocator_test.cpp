@@ -22,12 +22,19 @@ template<class K, class V> using map = std::unordered_map<K, V>;
 struct GuestStorage
 {
     std::array<uint8_t, 0x50000> bytes{};
+    uint8_t* base = bytes.data();
     void* Translate(size_t offset)
     {
         assert(offset < bytes.size());
         return bytes.data() + offset;
     }
 } g_memory;
+
+// Steprant 2.4: large virtual allocations ask for huge pages; nothing to map here.
+namespace GuestAddressSpace
+{
+inline uint64_t AdviseHugePages(uint8_t*, uint32_t, uint64_t) { return 0; }
+}
 
 constexpr uint32_t STATUS_SUCCESS = 0;
 constexpr uint32_t STATUS_INVALID_PARAMETER = 0xC000000D;

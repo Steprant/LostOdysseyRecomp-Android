@@ -1,8 +1,9 @@
 """Compile and run production guest-allocation regressions without game assets.
 
 The allocator declarations, method bodies, rounding helper and allocation imports
-are extracted unchanged. Only guest storage, logging and the unordered-map
-dependency are supplied by the fixture; guest endian wrappers use XenonUtils.
+are extracted unchanged. Only guest storage, logging, the huge-page advice
+(a no-op) and the unordered-map dependency are supplied by the fixture; guest
+endian wrappers use XenonUtils.
 """
 import argparse
 from pathlib import Path
