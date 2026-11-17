@@ -34,7 +34,7 @@ permissions:
 jobs:
   pin-test-build:
     name: Preserve Steprant test build commit
-    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2' || github.ref == 'refs/heads/steprant/v2.0.3' || github.ref == 'refs/heads/steprant/v2.0.4' || github.ref == 'refs/heads/steprant/v2.0.5' || github.ref == 'refs/heads/steprant/v2.0.6' || github.ref == 'refs/heads/steprant/v2.0.7' || github.ref == 'refs/heads/steprant/v2.0.8' || github.ref == 'refs/heads/steprant/v2.1' || github.ref == 'refs/heads/steprant/v2.1.1' || github.ref == 'refs/heads/steprant/v2.1.2' || github.ref == 'refs/heads/steprant/v2.1.3' || github.ref == 'refs/heads/steprant/v2.1.4' || github.ref == 'refs/heads/steprant/v2.1.5' || github.ref == 'refs/heads/steprant/v2.1.6'
+    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2' || github.ref == 'refs/heads/steprant/v2.0.3' || github.ref == 'refs/heads/steprant/v2.0.4' || github.ref == 'refs/heads/steprant/v2.0.5' || github.ref == 'refs/heads/steprant/v2.0.6' || github.ref == 'refs/heads/steprant/v2.0.7' || github.ref == 'refs/heads/steprant/v2.0.8' || github.ref == 'refs/heads/steprant/v2.1' || github.ref == 'refs/heads/steprant/v2.1.1' || github.ref == 'refs/heads/steprant/v2.1.2' || github.ref == 'refs/heads/steprant/v2.1.3' || github.ref == 'refs/heads/steprant/v2.1.4' || github.ref == 'refs/heads/steprant/v2.1.5' || github.ref == 'refs/heads/steprant/v2.1.6' || github.ref == 'refs/heads/steprant/v2.2'
     permissions:
       contents: write
     runs-on: ubuntu-22.04
@@ -61,6 +61,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.1.4 ]] && version=2.1.4
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.1.5 ]] && version=2.1.5
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.1.6 ]] && version=2.1.6
+          [[ "$GITHUB_REF" == refs/heads/steprant/v2.2 ]] && version=2.2
           pin="steprant/build-$version-$GITHUB_RUN_ID"
           if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
             [[ "$actual" == "$GITHUB_SHA" ]] || { echo "::error::Build ref points to another commit"; exit 1; }
@@ -212,15 +213,28 @@ jobs:
           PROMOTION: ${{ inputs.promotion || 'on' }}
         run: |
           if [[ "$PROMOTION" == off ]]; then
-            sed -i -E 's/^(cr_as_local|xer_as_local|reserved_as_local) = true/\1 = false/' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
+            sed -i -E 's/^(cr_as_local|xer_as_local|reserved_as_local|non_argument_as_local|non_volatile_as_local) = true/\1 = false/' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
           fi
-          grep -E '^(cr_as_local|xer_as_local|reserved_as_local|cr_in_context_fields) ' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
+          grep -E '^(cr_as_local|xer_as_local|reserved_as_local|cr_in_context_fields|non_argument_as_local|non_volatile_as_local|registers_in_context_file_path) ' LostOdysseyRecompLib/config/LostOdysseyRecomp.toml
           out/build/tools/xexdump LostOdysseyRecompLib/private/disc1/default.xex LostOdysseyRecompLib/private/image_disc1.bin
           python tools/ppc_codegen.py generate --executable out/build/tools/XenonRecomp/XenonRecomp/XenonRecomp
       - name: Check register promotion safety (names and offsets only)
         env:
           PROMOTION: ${{ inputs.promotion || 'on' }}
         run: python tools/ppc_promotion_check.py LostOdysseyRecompLib/ppc --limit 80 --shared 0 $([[ "$PROMOTION" == off ]] || echo --strict)
+      - name: Check general register promotion safety (names and counts only)
+        # Steprant 2.2: r0/r2/r11/r12, r14-r31, f0, f14-f31 and the VMX128
+        # registers are function locals except in the functions listed in
+        # registers_in_context.toml; fails if a local can see a value from a
+        # caller or callee, if the list misses a function, or if a caller
+        # reads a register the native memcpy/memset leave unchanged.
+        if: ${{ (inputs.promotion || 'on') != 'off' }}
+        run: |
+          python tools/ppc_register_check.py check LostOdysseyRecompLib/ppc \
+            --config LostOdysseyRecompLib/config/register_check.toml \
+            --list LostOdysseyRecompLib/config/registers_in_context.toml --strict
+      - name: Check native memcpy and memset against the generated functions (counts only)
+        run: python tools/crt_native_equivalence.py LostOdysseyRecompLib/ppc
       - name: Check the audio barrier against the generated function (counts only)
         # Steprant 2.1.6: patches/audio_barrier.h replaces the audio workers'
         # spin in sub_82CC3C50; every byte of memory and context must match
@@ -264,6 +278,9 @@ jobs:
             steprant/v2.1.5) version=2.1.5 ;;
             # 2.1.6 (16/11): the audio workers wait instead of spinning.
             steprant/v2.1.6) version=2.1.6 ;;
+            # 2.2 (17/11): general register promotion and native memcpy/memset
+            # on 2.1.6, versionCode 2020000.
+            steprant/v2.2) version=2.2 ;;
             *) version= ;;
           esac
           # The developer page (A/B switches) is compiled out: the 1.9 logs
