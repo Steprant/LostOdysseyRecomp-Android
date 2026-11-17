@@ -21,14 +21,26 @@ A local is exact where every read of a register sees a value the same function w
 - from a callee: a volatile register read after a call that may change it. The Xbox compiler knew which registers some callees leave alone (f0 kept across a call, the stack probe and r12) and one function returns a value in r11 (`sub_82F99F48`, the same chain that keeps cr0 in the context). Callees that never write the register (transitively) do not count;
 - registers read by host patches (`gpu/cinematic_bars.cpp`, `patches/occlusion_history.cpp`, `patches/battle_script_timer.cpp`, `debug/asset_failure.cpp`): `register_check.toml`, `site_reads`.
 
-Those functions keep every register in the context, as before, together with the callers that pass them a value (followed upwards while the value at the call site is still the caller's own entry value), the callees that return one (followed downwards), and every function with setjmp (`ctx = env` restores the context, not locals). The patched XenonRecomp reads the list from `registers_in_context.toml` (13,352 functions, all but about 250 of them funclets) and keeps the helper calls in those functions. With a list in use the context keeps all its register fields, so host code that reads them (crash dumps, debug traces) still compiles.
+Those functions keep every register in the context, as before, together with the callers that pass them a value (followed upwards while the value at the call site is still the caller's own entry value), the callees that return one (followed downwards), and every function with setjmp (`ctx = env` restores the context, not locals). The patched XenonRecomp reads the list from `registers_in_context.toml` (13,359 functions after the movie fix of 17/11, all but about 250 of them funclets) and keeps the helper calls in those functions. With a list in use the context keeps all its register fields, so host code that reads them (crash dumps, debug traces) still compiles.
 
 In the profile, the functions that keep their registers in the context are 99 executed ones out of 20,886, about 0.2% of the guest blocks.
 
 Not covered by the analysis:
 
 - a function reached only through a pointer cannot be followed to its callers: 4 executed ones (and the entry point `_xstart`) need a register from their caller. Each chain ends in a large function (`sub_82FDB200`, 23 levels down, and `sub_82824AD8`) where the read sits on a path the data flow cannot rule out but that only correlated branches would take: the paths that set the register are the ones that read it. The context keeps these functions; from an indirect caller they would see the last value written to the context;
-- `sub_83111958` and `sub_83111CA0` store and load all VMX128 registers (a vector context save or switch, never executed): with locals there is nothing to save; a real context switch cannot work in translated code anyway.
+- the other entry reads of functions reached only through pointers (r11, r24, r30, f26-f30) sit on such paths too. The check prints them on every build ("left out by pointer_registers").
+
+### Movie decoder (fix of 17/11)
+
+The first 2.2 build broke the movies (green and magenta blocks, 17/11 13:17 and 13:27). `sub_83111958` and `sub_83111CA0` are the VMX register-file swaps of the movie decoder: they store v32-v127 of the caller to `[r4]` and load v64-v72 (`sub_83111CA0`: all of v32-v127) from `[r3]`. The decoder's routines, called through pointers, read v64, v65, v69 and v72 without setting them. `register_check.toml` had listed the two functions under `replaced` (read as an unused context switch), so they were left out of the list: their loads went to locals and never reached the routines.
+
+What changed in `ppc_register_check.py`:
+
+- a callee-saved register a function writes in the context without saving it first now counts as a value the callee may return (the caller sees either that value or the old one), like a volatile register. Only blocks reachable from the entry count: a jump table XenonRecomp did not recognise is decoded as code after the `bctr` (in 2.2, `lwz r17,...` words that never run);
+- a function that writes v64-v127 for its caller always keeps its registers in the context ("loads registers for its caller": the two swaps and the guest longjmp `sub_82DF3060`);
+- the function-pointer rule (`pointer_registers = ["v64-v127"]` in `register_check.toml`): for a register an indirect-only function reads from its caller, every indirect call site may be that caller. A function with locals never touches the context copy of the same register (`check` fails on a function that does), so the value the routine finds in the context is the last one a context function wrote. Only the function that really wrote it needs the context: the caller holding its own write at the site, or the callee whose value it holds there. Callers that carry their own entry value pass the need up without it. Keeping every caller along the chain instead would have put 47,000 functions in the context.
+
+The list grows by 7 functions: the two swaps, the guest longjmp, and the context restore of the exception unwind (`sub_82B84DFC`, it loads r14-r31 and f14-f31 for its caller) with the 3 functions around it. No function leaves the list. `check` on the old list now reports the 7 as missing.
 
 `android-apk.yml` runs `ppc_register_check.py check` on every build (strict): it fails if a local can see an outside value, if a function the analysis needs is missing from the list, or if a caller reads a register the native memcpy/memset leave unchanged. When the generated code changes (new boundaries, new hooks), regenerate the list:
 

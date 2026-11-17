@@ -28,12 +28,18 @@ sources generated with the two options off) and checks a promoted build
 - the callers that pass it a register do too, and their callers while the
   value at the call site is still the caller's own entry value;
 - the callees that return a volatile register do too, and their callees while
-  the value comes from a deeper call;
+  the value comes from a deeper call; the same for a callee-saved register a
+  callee writes in ctx without saving it (the movie decoder's VMX swaps);
+- for the registers a function reached only through pointers reads from its
+  caller (pointer_registers): the function that really wrote the value at
+  each indirect call site (the site's own function or a callee); a function
+  with locals never touches the ctx copy of the same register, which the
+  check verifies;
 - every function with setjmp keeps its registers in ctx (ctx = env restores
   ctx, not locals).
 
 A function reached only indirectly cannot be followed to its callers: those
-are counted apart. Only function names, register names and counts are
+are counted apart, and the registers outside pointer_registers are printed. Only function names, register names and counts are
 printed; the generated code is derived from the game and stays out of logs.
 """
 import argparse
@@ -49,13 +55,17 @@ LABEL = re.compile(r"^(loc_[0-9A-Fa-f]+):")
 GOTO = re.compile(r"goto (loc_[0-9A-Fa-f]+);")
 DIRECT_CALL = re.compile(r"^(sub_[0-9A-Fa-f]{8}|__\w+)\(ctx, base\);")
 INDIRECT_CALL = re.compile(r"PPC_CALL_INDIRECT_FUNC\(")
-REG = re.compile(r"(?<![\w.])(ctx\.)?([rfv])([0-9]+)\.")
+# A register mention: a field access (ctx.r3.u32), a whole-register
+# assignment (ctx.v10 = vTemp; from vupkd3d128) or a register passed by
+# reference to a mid-asm hook (Hook(ctx.r1, r31)).
+REG = re.compile(r"(?<![\w.])(ctx\.)?([rfv])([0-9]+)(?=\.|,|\)| = )")
+HOOK_ARGS = re.compile(r"^\w+\((?:(?:ctx\.)?[rfv][0-9]+(?:, )?)+\);$")
 SETJMP_CALL = re.compile(r"= setjmp\(")
 LONGJMP = re.compile(r"^longjmp\(")
 # A store whose address is relative to the stack pointer: a prologue save.
 STACK_STORE = re.compile(r"^(?:PPC_STORE_U(?:32|64)\((?:ctx\.)?r1\.u32 \+ -?[0-9]+, |simde_mm_store_si128\(\(simde__m128i\*\)\(base \+ \(\([^)]*\br1\.u32)")
 SELF_MOVE = re.compile(r"^(ctx\.)?([rf])([0-9]+)\.u64 = (ctx\.)?([rf])([0-9]+)\.u64;$")
-ASSIGN = re.compile(r"^(ctx\.)?([rfv])([0-9]+)\.[a-z0-9]+(?:\[[^\]]*\])? (=|\|=|&=|\^=|\+=|-=) ")
+ASSIGN = re.compile(r"^(ctx\.)?([rfv])([0-9]+)(?:\.[a-z0-9]+(?:\[[^\]]*\])?)? (=|\|=|&=|\^=|\+=|-=) ")
 VSTORE = re.compile(r"^simde_mm_store\w*\((?:\(simde__m128i?\*\))?(ctx\.)?v([0-9]+)\.")
 
 OFFSET = {"r": 0, "f": 32, "v": 64}
@@ -188,6 +198,8 @@ def events(line):
     """(reads, write, forms) of a statement as register indices; forms lists
     (kind, n, in_ctx) of every mention. Element writes (one lane) count as
     writes: compiled code does not keep lanes of a caller's vector register."""
+    events.hook_writes = []
+    events.write_in_ctx = False
     if STACK_STORE.match(line):
         return (), None, ()
     move = SELF_MOVE.match(line)
@@ -213,6 +225,11 @@ def events(line):
             continue
         reads.append(index(key[0], key[1]))
     write = index(written[0], written[1]) if written else None
+    events.write_in_ctx = bool(written and written[2])
+    if HOOK_ARGS.match(line) and not DIRECT_CALL.match(line):
+        events.hook_writes = [index(k, n) for k, n, _ in forms]
+    else:
+        events.hook_writes = []
     special = SPECIAL_WRITE.match(line)
     special_write = None
     if special:
@@ -232,7 +249,8 @@ def events(line):
 
 class Function:
     __slots__ = ("name", "entry_reads", "call_reads", "site_entry", "site_calls",
-                 "ret_entry", "ret_calls", "local", "ctx", "setjmp", "callees", "indirect_reads", "ctx_needs")
+                 "ret_entry", "ret_calls", "local", "ctx", "setjmp", "callees", "indirect_reads", "ctx_needs",
+                 "indirect_entry", "indirect_written", "indirect_calls", "site_written", "unsaved")
 
     def __init__(self, name):
         self.name = name
@@ -248,42 +266,84 @@ class Function:
         self.setjmp = False
         self.callees = set()
         self.ctx_needs = 0                   # registers a host patch reads from this function
+        self.indirect_entry = 0              # at indirect calls: registers that may hold our entry value
+        self.indirect_written = 0            # at indirect calls: registers we may have written
+        self.indirect_calls = {}             # at indirect calls: {register: callees whose value it may hold}
+        self.site_written = defaultdict(int) # callee -> registers we may have written, at the call
+        self.unsaved = 0                     # callee-saved registers written without a save first
+
+
+HIGH_VMX = sum(1 << index("v", n) for n in range(64, 128))
+NONVOLATILE = mask_of(lambda kind, n: (kind in "rf" and n >= 14) or (kind == "v" and (14 <= n <= 31 or n >= 64)))
+SAVE_HELPER = re.compile(r"^__save(gprlr|fpr|vmx)_([0-9]+)\(ctx, base\);")
+VECTOR_FRAME_STORE = re.compile(r"^simde_mm_store_si128\(\(simde__m128i\*\)\(base \+ \(\((?:ctx\.)?r(?:1|11|12)\.u32")
 
 
 def first_pass(lines):
-    """Registers a function writes itself, its direct callees, indirect calls."""
-    writes, callees, indirect = 0, set(), False
-    for raw in lines:
-        line = raw.split("//", 1)[0].strip()
+    """Registers a function can leave changed for its caller (volatile ones it
+    writes, callee-saved ones it writes without saving them first), its
+    direct callees, whether it makes indirect calls, and the callee-saved
+    registers it saves."""
+    writes, shared, saved, callees, indirect = 0, 0, 0, set(), False
+    # Only blocks reachable from the entry: a jump table XenonRecomp did not
+    # recognise is decoded as code after the bctr (0x8229xxxx words read as
+    # lwz r17,...), and those writes never happen.
+    graph = parse_blocks(lines)
+    seen, stack = {0}, [0]
+    while stack:
+        for successor in graph[stack.pop()][1]:
+            if successor not in seen:
+                seen.add(successor)
+                stack.append(successor)
+    for line in (line for number in sorted(seen) for line in graph[number][0]):
         if not line:
+            continue
+        helper = SAVE_HELPER.match(line)
+        if helper:
+            kind = {"gprlr": "r", "fpr": "f", "vmx": "v"}[helper.group(1)]
+            first = int(helper.group(2))
+            for n in range(first, 128 if kind == "v" and first >= 64 else 32):
+                saved |= 1 << index(kind, n)
+        if STACK_STORE.match(line) or VECTOR_FRAME_STORE.match(line):
+            for r in REG.finditer(line):
+                saved |= 1 << index(r.group(2), int(r.group(3)))
             continue
         _, write, _ = events(line)
         if write is not None:
             writes |= 1 << write
+            if events.write_in_ctx:
+                shared |= 1 << write
+        for r in events.hook_writes:
+            writes |= 1 << r
         callee = DIRECT_CALL.match(line)
         if callee:
             if not is_helper(callee.group(1)):
                 callees.add(callee.group(1))
         elif INDIRECT_CALL.search(line):
             indirect = True
-    return writes, callees, indirect
+    # A callee-saved register written as a local (a promoted build, where the
+    # save helpers are dropped too) never reaches the caller.
+    return (writes & VOLATILE) | (shared & NONVOLATILE & ~saved), saved, callees, indirect
 
 
 def may_write(first):
-    """Volatile registers each function can leave changed for its caller:
-    its own writes and those of everything it calls (all of them through an
-    indirect call or an unknown callee), to a fixed point."""
-    result = {name: (writes & VOLATILE) | (VOLATILE if indirect else 0) for name, (writes, _, indirect) in first.items()}
+    """Registers each function can leave changed for its caller: volatile
+    registers it or anything it calls writes (all of them through an
+    indirect call or an unknown callee), and callee-saved registers written
+    without a save (sub_83111958 and sub_83111CA0 load v64-v127 for the
+    movie decoder), to a fixed point."""
+    result = {name: writes | (VOLATILE if indirect else 0) for name, (writes, _, _, indirect) in first.items()}
     callers = defaultdict(set)
-    for name, (_, callees, _) in first.items():
+    for name, (_, _, callees, _) in first.items():
         for callee in callees:
             callers[callee].add(name)
     work = list(first)
     while work:
         name = work.pop()
         mask = result[name]
-        for callee in first[name][1]:
-            mask |= result.get(callee, VOLATILE)
+        saved = first[name][1]
+        for callee in first[name][2]:
+            mask |= result.get(callee, VOLATILE) & ~saved
         if mask != result[name]:
             result[name] = mask
             work.extend(callers.get(name, ()))
@@ -291,6 +351,7 @@ def may_write(first):
 
 
 MAY_WRITE = {}
+FIRST = {}
 
 
 def analyse_function(name, lines):
@@ -298,13 +359,13 @@ def analyse_function(name, lines):
     graph = parse_blocks(lines)
     # State: (mask of registers that may hold the entry value,
     #         {register: frozenset(callees)} for values from a callee).
-    states = {0: (ALL, {})}
+    states = {0: (ALL, {}, 0)}
     work, queued = [0], {0}
     while work:
         number = work.pop()
         queued.discard(number)
         body, successors = graph[number]
-        entry_mask, calls = states[number]
+        entry_mask, calls, written = states[number]
         calls = dict(calls)
         for line in body:
             if SETJMP_CALL.search(line):
@@ -324,6 +385,9 @@ def analyse_function(name, lines):
             if write is not None:
                 entry_mask &= ~(1 << write)
                 calls.pop(write, None)
+                written |= 1 << write
+            for r in events.hook_writes:
+                written |= 1 << r
             callee = DIRECT_CALL.match(line)
             if callee or INDIRECT_CALL.search(line):
                 target = callee.group(1) if callee else "indirect"
@@ -331,15 +395,31 @@ def analyse_function(name, lines):
                     if callee:
                         fn.callees.add(target)
                         fn.site_entry[target] |= entry_mask
+                        fn.site_written[target] |= written
                         site = fn.site_calls.setdefault(target, {})
                         for r, owners in calls.items():
                             site.setdefault(r, set()).update(owners)
+                    else:
+                        fn.indirect_entry |= entry_mask
+                        fn.indirect_written |= written
+                        for r, owners in calls.items():
+                            fn.indirect_calls.setdefault(r, set()).update(owners)
                     changed_by_call = MAY_WRITE.get(target, VOLATILE) if callee else VOLATILE
-                    entry_mask &= ~changed_by_call
+                    # A volatile register the callee may write is the
+                    # callee's afterwards. A callee-saved one it writes
+                    # without a save may be its value or still the old one
+                    # (a save the scan does not see): both.
+                    entry_mask &= ~(changed_by_call & VOLATILE)
                     tag = frozenset({target})
-                    for r in VOLATILE_BITS:
-                        if changed_by_call >> r & 1:
+                    bits = changed_by_call
+                    while bits:
+                        low = bits & -bits
+                        r = low.bit_length() - 1
+                        if low & VOLATILE:
                             calls[r] = tag
+                        else:
+                            calls[r] = calls.get(r, frozenset()) | tag
+                        bits ^= low
             if line.startswith("return") or (line.startswith("if (") and "return" in line):
                 fn.ret_entry |= entry_mask
                 for r, owners in calls.items():
@@ -347,12 +427,13 @@ def analyse_function(name, lines):
         for successor in successors:
             old = states.get(successor)
             if old is None:
-                states[successor] = (entry_mask, dict(calls))
+                states[successor] = (entry_mask, dict(calls), written)
                 changed = True
             else:
-                old_mask, old_calls = old
+                old_mask, old_calls, old_written = old
                 new_mask = old_mask | entry_mask
-                changed = new_mask != old_mask
+                new_written = old_written | written
+                changed = new_mask != old_mask or new_written != old_written
                 merged = dict(old_calls)
                 for r, owners in calls.items():
                     union = merged.get(r, frozenset()) | owners
@@ -360,7 +441,7 @@ def analyse_function(name, lines):
                         merged[r] = union
                         changed = True
                 if changed:
-                    states[successor] = (new_mask, merged)
+                    states[successor] = (new_mask, merged, new_written)
             if changed and successor not in queued:
                 work.append(successor)
                 queued.add(successor)
@@ -389,12 +470,19 @@ def bodies(directory):
 
 def scan(directory):
     first = {name: first_pass(body) for name, body in bodies(directory)}
+    FIRST.clear()
+    FIRST.update(first)
     MAY_WRITE.clear()
     MAY_WRITE.update(may_write(first))
-    return {name: analyse_function(name, body) for name, body in bodies(directory)}
+    functions = {name: analyse_function(name, body) for name, body in bodies(directory)}
+    for name, fn in functions.items():
+        fn.unsaved = first[name][0] & NONVOLATILE
+    return functions
 
 
-def closure(functions, preserves, replaced, forced=()):
+def closure(functions, preserves, replaced, forced=(), saves=()):
+    # closure.pointer_registers: mask of the registers the pointer rule
+    # applies to (None: all of them), set by main from the config.
     """{function: reason} of the functions that must keep their registers in
     ctx, with entry_needs and return_needs as register masks."""
     callers = defaultdict(set)
@@ -424,7 +512,12 @@ def closure(functions, preserves, replaced, forced=()):
             continue
         if fn.setjmp:
             add(fn.name, "setjmp")
-        if fn.entry_reads & PROMOTABLE:
+        if fn.unsaved & HIGH_VMX:
+            # v64-v127 written for the caller: the VMX register-file swaps of
+            # the movie decoder (sub_83111958, sub_83111CA0) and the guest
+            # longjmp. Their writes must reach ctx whoever reads them.
+            add(fn.name, "loads registers for its caller")
+        if fn.entry_reads & PROMOTABLE and fn.name not in saves:
             add(fn.name, "reads from its caller")
             entry_needs[fn.name] |= fn.entry_reads & PROMOTABLE
             work.append(("entry", fn.name))
@@ -436,36 +529,109 @@ def closure(functions, preserves, replaced, forced=()):
                 add(fn.name, "reads from a callee")
             for owner in kept:
                 wants_return(owner, r)
-    while work:
-        kind, name = work.pop()
-        if kind == "entry":
-            regs = entry_needs[name]
-            for caller in callers.get(name, ()):
-                add(caller, "passes registers")
-                pass_needs[caller] |= regs
-                cfn = functions[caller]
-                passed = cfn.site_entry.get(name, 0) & regs
-                if passed & ~entry_needs[caller]:
-                    entry_needs[caller] |= passed
-                    work.append(("entry", caller))
-                for r, owners in cfn.site_calls.get(name, {}).items():
+    # carry_needs: registers a function may carry from its entry to an
+    # indirect call site where a function reached only through pointers may
+    # read them (the pointer rule below).
+    carry_needs = defaultdict(int)
+
+    def drain():
+        while work:
+            kind, name = work.pop()
+            if kind == "entry":
+                # A caller passing its own entry value keeps its registers in
+                # ctx too, and so on up while the value is still the entry
+                # value (the rule of the first 2.2).
+                regs = entry_needs[name]
+                for caller in callers.get(name, ()):
+                    add(caller, "passes registers")
+                    pass_needs[caller] |= regs
+                    cfn = functions[caller]
+                    passed = cfn.site_entry.get(name, 0) & regs
+                    if passed & ~entry_needs[caller]:
+                        entry_needs[caller] |= passed
+                        work.append(("entry", caller))
+                    for r, owners in cfn.site_calls.get(name, {}).items():
+                        if regs >> r & 1:
+                            for owner in owners:
+                                wants_return(owner, r)
+            elif kind == "carry":
+                # Through function pointers: a function keeping its registers
+                # as locals never touches their ctx copies (check fails on a
+                # function that does), so the value found in ctx at the
+                # indirect site is the last one a ctx function wrote. Only the
+                # function that really wrote it needs ctx: the caller holding
+                # its own write at the call, or the callee whose value it
+                # holds there (return_needs). A caller that carries its own
+                # entry value passes the need up without ctx.
+                regs = carry_needs[name]
+                for caller in callers.get(name, ()):
+                    cfn = functions[caller]
+                    own = cfn.site_written.get(name, 0) & regs
+                    if own:
+                        add(caller, "sets registers for a function pointer")
+                        pass_needs[caller] |= own
+                    passed = cfn.site_entry.get(name, 0) & regs
+                    if passed & ~carry_needs[caller]:
+                        carry_needs[caller] |= passed
+                        work.append(("carry", caller))
+                    for r, owners in cfn.site_calls.get(name, {}).items():
+                        if regs >> r & 1:
+                            for owner in owners:
+                                wants_return(owner, r)
+            else:
+                fn = functions.get(name)
+                if fn is None or is_helper(name) or name in replaced:
+                    continue
+                add(name, "returns registers")
+                regs = return_needs[name]
+                through = fn.ret_entry & regs
+                if through & ~entry_needs[name]:
+                    entry_needs[name] |= through
+                    work.append(("entry", name))
+                for r, owners in fn.ret_calls.items():
                     if regs >> r & 1:
                         for owner in owners:
                             wants_return(owner, r)
-        else:
-            fn = functions.get(name)
-            if fn is None or is_helper(name) or name in replaced:
+
+    drain()
+    # A function reached only through pointers that reads registers from its
+    # caller: any indirect call site may be that caller (the "carry" rule
+    # above). The registers come from closure.pointer_registers (None: all):
+    # the entry reads of indirect-only functions outside it are paths that
+    # do not happen (see register_check.toml). The EH funclets (read r12
+    # only, never called directly) are not called through the game's
+    # pointers.
+    indirect_regs = 0
+    closure.left_out = 0
+    while True:
+        wanted = 0
+        for n, m in entry_needs.items():
+            if m and not callers.get(n) and not (m == 1 << index("r", 12)):
+                wanted |= m
+        if getattr(closure, "pointer_registers", None) is not None:
+            closure.left_out |= wanted & ~closure.pointer_registers
+            wanted &= closure.pointer_registers
+        if wanted == indirect_regs:
+            break
+        indirect_regs = wanted
+        for fn in functions.values():
+            if is_helper(fn.name) or fn.name in replaced:
                 continue
-            add(name, "returns registers")
-            regs = return_needs[name]
-            through = fn.ret_entry & regs
-            if through & ~entry_needs[name]:
-                entry_needs[name] |= through
-                work.append(("entry", name))
-            for r, owners in fn.ret_calls.items():
-                if regs >> r & 1:
+            own = fn.indirect_written & indirect_regs
+            if own:
+                add(fn.name, "sets registers for a function pointer")
+                pass_needs[fn.name] |= own
+            up = fn.indirect_entry & indirect_regs & ~carry_needs[fn.name]
+            if up:
+                carry_needs[fn.name] |= up
+                work.append(("carry", fn.name))
+            for r, owners in fn.indirect_calls.items():
+                if indirect_regs >> r & 1:
                     for owner in owners:
                         wants_return(owner, r)
+        drain()
+    closure.indirect_regs = indirect_regs
+    closure.carry_needs = carry_needs
     unreachable = sorted(n for n, m in entry_needs.items() if m and not callers.get(n))
     indirect_returns = sorted(n for n, fn in functions.items() if fn.indirect_reads & PROMOTABLE and n not in replaced)
     for name, regs in pass_needs.items():
@@ -509,6 +675,10 @@ def main(argv=None):
     parser.add_argument("--site-reads", action="append", default=[],
                         help="CALLER:CALLEE:REG,REG: a host override of CALLEE reads these registers when called from CALLER "
                              "(it checks the return address): CALLER keeps them in ctx, and passes on those it got from its own caller")
+    parser.add_argument("--pointer-registers", nargs="*", default=None,
+                        help="registers the function-pointer rule applies to (default: all)")
+    parser.add_argument("--saves", action="append", default=[],
+                        help="function that stores the caller's registers to a save area: its entry reads are saves")
     parser.add_argument("--force", action="append", default=[],
                         help="function kept in ctx for a host patch that reads its registers")
     parser.add_argument("--json", type=pathlib.Path, help="analyse: write the details here")
@@ -527,12 +697,23 @@ def main(argv=None):
         args.preserves += config.get("preserves", [])
         args.site_reads += config.get("site_reads", [])
         args.force += config.get("force", [])
+        args.saves += config.get("saves", [])
+        if "pointer_registers" in config:
+            args.pointer_registers = config["pointer_registers"]
     preserves = defaultdict(set)
     for item in args.preserves:
         name, regs = item.split(":")
         for reg in regs.split(","):
             preserves[name].add(index(reg[0], int(reg[1:])))
     replaced = set(args.replaced) | set(args.native)
+    closure.pointer_registers = None
+    if args.pointer_registers is not None:
+        closure.pointer_registers = 0
+        for item in args.pointer_registers:
+            first, _, last = item.partition("-")
+            last = last or first
+            for n in range(int(first[1:]), int(last[1:]) + 1):
+                closure.pointer_registers |= 1 << index(first[0], n)
     functions = scan(args.directory)
     for item in args.entry_reads:
         name, regs = item.split(":")
@@ -563,12 +744,14 @@ def main(argv=None):
         print(f"register check: no generated sources in {args.directory}")
         return 1
     print(f"register check: {len(functions)} functions")
-    need, entry_needs, return_needs, unreachable, indirect_returns = closure(functions, preserves, replaced, forced)
+    need, entry_needs, return_needs, unreachable, indirect_returns = closure(functions, preserves, replaced, forced, set(args.saves))
     reasons = defaultdict(int)
     for why in need.values():
         reasons[why] += 1
     print(f"register check: {len(need)} functions keep the registers in ctx (" +
           ", ".join(f"{k}: {v}" for k, v in sorted(reasons.items())) + ")")
+    print(f"register check: registers passed through function pointers: {', '.join(masks_to_names(closure.indirect_regs)) or 'none'}"
+          + (f"; left out by pointer_registers: {', '.join(masks_to_names(closure.left_out))}" if closure.left_out else ""))
     print(f"register check: {len(unreachable)} of them read registers from a caller but are never called directly; "
           f"{len(indirect_returns)} read a volatile register after an indirect call")
     if args.mode == "analyse":
@@ -616,6 +799,12 @@ def main(argv=None):
         if bad:
             problems.append((name, ",".join(masks_to_names(bad)[:6]), need[name]))
     problems += [(name, reg, "reads it after native " + callee) for name, reg, callee in native_reads]
+    # The closure relies on a function with locals never touching the ctx
+    # copy of the same register.
+    mixed = sorted(n for n, fn in functions.items() if fn.local & fn.ctx & PROMOTABLE)
+    print(f"register check: {len(mixed)} functions use a register both as a local and in ctx")
+    problems += [(n, ",".join(masks_to_names(functions[n].local & functions[n].ctx & PROMOTABLE)[:6]),
+                  "local and ctx copy of the same register") for n in mixed]
     if args.list:
         addresses = mapping(args.directory)
         in_list = listed(args.list)

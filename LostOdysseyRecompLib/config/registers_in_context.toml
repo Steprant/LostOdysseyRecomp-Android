@@ -2,7 +2,7 @@
 # in ctx under non_argument_as_local/non_volatile_as_local. Written by
 #   python tools/ppc_register_check.py analyse <sources generated with both options off> --write-list ...
 # (the options used are in .github/workflows/android-apk.yml). Do not edit by hand.
-# forced: 4, passes registers: 132, reads from a callee: 30, reads from its caller: 13178, returns registers: 1, setjmp: 7
+# forced: 4, loads registers for its caller: 5, passes registers: 131, reads from a callee: 32, reads from its caller: 13176, returns registers: 4, setjmp: 7
 [registers_in_context]
 functions = [
     0x82290640,
@@ -12432,6 +12432,9 @@ functions = [
     0x82B7E470,
     0x82B7E4A0,
     0x82B80480,
+    0x82B80938,
+    0x82B80A80,
+    0x82B80BF0,
     0x82B819E8,
     0x82B81AF8,
     0x82B81DE0,
@@ -12440,6 +12443,7 @@ functions = [
     0x82B81F78,
     0x82B820A4,
     0x82B820C4,
+    0x82B84DFC,
     0x82B84F84,
     0x82B84FF0,
     0x82B85294,
@@ -13218,6 +13222,7 @@ functions = [
     0x82DF2884,
     0x82DF28C8,
     0x82DF2AC8,
+    0x82DF3060,
     0x82DF3E80,
     0x82DF4144,
     0x82DF4164,
@@ -13354,6 +13359,8 @@ functions = [
     0x83111250,
     0x83111390,
     0x83111538,
+    0x83111958,
+    0x83111CA0,
     0x83128FB8,
     0x83129D88,
     0x8312A200,

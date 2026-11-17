@@ -10,12 +10,30 @@ native = ["sub_82B7A0B0", "sub_82B7BC40"]
 
 # Functions whose own register reads do not count:
 # - sub_82B7E504, the stack probe: a host no-op (patches/crt_native.cpp);
-# - sub_83111958, sub_83111CA0: store all VMX128 registers to memory (and
-#   load them back): a vector context save/switch, never executed in the
-#   profile. A guest context switch cannot work in recompiled code anyway;
-#   as a save/restore around other work it has nothing to keep with locals;
 # - sub_82DF34A0, the guest setjmp: every call to it is the native setjmp.
-replaced = ["sub_82B7E504", "sub_83111958", "sub_83111CA0", "sub_82DF34A0"]
+replaced = ["sub_82B7E504", "sub_82DF34A0"]
+
+# Functions that store the caller's registers to a save area: their reads at
+# the entry are saves, not uses. sub_83111958 and sub_83111CA0 are the VMX
+# register-file swaps of the movie decoder: they store v32-v127 to [r4] and
+# load v64-v72 (sub_83111CA0: all of v32-v127) from [r3]. The decoder's
+# routines, called through pointers, read v64, v65, v69 and v72 without
+# setting them. The first 2.2 listed the two under `replaced`, so they kept
+# their registers as locals, their loads never reached the routines and the
+# movies came out as green and magenta blocks (17/11 13:17 and 13:27). They
+# now keep their registers in ctx (they write callee-saved registers for
+# their caller), and the pointer rule below follows v64-v127.
+saves = ["sub_83111958", "sub_83111CA0"]
+
+# Registers the function-pointer rule follows (a range like "v64-v127" is
+# fine). A function reached only through pointers that reads one of these
+# from its caller makes the code that really wrote it, at every indirect
+# call site, keep its registers in ctx. Left out: the other entry reads of
+# indirect-only functions (r11, r24, r30 and f26-f30 in 2.2), all
+# on paths that do not run: the analysis counts them, the profile never
+# reaches them, and 2.2 ran them as locals through whole sessions without a
+# fault. The check prints them on every build.
+pointer_registers = ["v64-v127"]
 
 # Callees that leave these volatile registers unchanged: the stack probe's
 # callers read r12 (minus the frame size) after the call.
