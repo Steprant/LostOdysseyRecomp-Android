@@ -14,6 +14,7 @@
 #include "xbox.h"
 #include "heap.h"
 #include "memory.h"
+#include "guest_address_space.h"
 #include "xam.h"
 #include "xdm.h"
 #include "xex_loader.h"
@@ -1177,6 +1178,10 @@ static uint32_t NtAllocateVirtualMemory(be<uint32_t>* baseAddressPtr, be<uint32_
 
     *baseAddressPtr = address;
     *regionSizePtr = alignedSize;
+    // Steprant 2.4: the game's large pools (its heaps) get huge pages on their
+    // 2 MiB-aligned part when the kernel offers them; small regions stay 4 KiB.
+    if (alignedSize >= (2u << 20))
+        GuestAddressSpace::AdviseHugePages(g_memory.base, address, alignedSize);
     static const bool traceMem = getenv("LO_TRACE_MEM") != nullptr;
     if (traceMem)
         LOG_KERNEL("base={:#x} size={:#x} type={:#x} -> {:#x}", baseAddress, regionSize, allocationType, address);

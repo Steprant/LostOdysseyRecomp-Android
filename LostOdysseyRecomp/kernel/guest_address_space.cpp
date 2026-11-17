@@ -1,5 +1,6 @@
 #include "guest_address_space_layout.h"
 #include <os/platform.h>
+#include <algorithm>
 #include <cstddef>
 #include <cerrno>
 
@@ -10,6 +11,9 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
 #endif
 
 namespace GuestAddressSpace
@@ -124,6 +128,64 @@ void RecordFailure(FailureOperation operation, uint32_t error, int32_t viewIndex
 // macOS: 16 KiB host pages cannot express the E view's 4 KiB offset; see
 // guest_address_space_macos.cpp.
 #if !LO_PLATFORM_MACOS
+static bool s_virtualAnonymous = false;
+
+#if LO_PLATFORM_ANDROID
+static bool AnonymousVirtualWanted()
+{
+    // Read during static construction (g_memory), before main.
+    const char* value = std::getenv("LO_GUEST_THP");
+    return !(value && std::strcmp(value, "0") == 0);
+}
+#endif
+
+bool VirtualViewAnonymous() { return s_virtualAnonymous; }
+
+uint64_t AdviseHugePages(uint8_t* base, uint32_t guestAddress, uint64_t size)
+{
+#if LO_PLATFORM_ANDROID && defined(MADV_HUGEPAGE)
+    constexpr uint64_t kHuge = 2ull << 20;
+    if (!s_virtualAnonymous || !base || !size) return 0;
+    const uint64_t end = std::min<uint64_t>(uint64_t(guestAddress) + size, kSizes[0]);
+    const uint64_t first = (uint64_t(guestAddress) + kHuge - 1) & ~(kHuge - 1);
+    const uint64_t last = end & ~(kHuge - 1);
+    if (last <= first) return 0;
+    return madvise(base + first, size_t(last - first), MADV_HUGEPAGE) == 0 ? last - first : 0;
+#else
+    (void)base; (void)guestAddress; (void)size;
+    return 0;
+#endif
+}
+
+std::string DescribeHugePages()
+{
+#if LO_PLATFORM_ANDROID
+    auto readLine = [](const char* path) {
+        std::ifstream in(path);
+        std::string line;
+        if (!in || !std::getline(in, line)) return std::string("unreadable");
+        return line;
+    };
+    std::string anonHuge = "unreadable";
+    {
+        std::ifstream in("/proc/self/smaps_rollup");
+        std::string line;
+        while (in && std::getline(in, line))
+            if (line.rfind("AnonHugePages:", 0) == 0) {
+                const auto digits = line.find_first_of("0123456789");
+                anonHuge = digits == std::string::npos ? line : line.substr(digits);
+                break;
+            }
+    }
+    return std::string("virtual view ") + (s_virtualAnonymous ? "anonymous" : "shared") +
+        ", thp enabled=[" + readLine("/sys/kernel/mm/transparent_hugepage/enabled") +
+        "] defrag=[" + readLine("/sys/kernel/mm/transparent_hugepage/defrag") +
+        "], process AnonHugePages " + anonHuge;
+#else
+    return {};
+#endif
+}
+
 uint8_t* Allocate()
 {
     failure = {};
@@ -226,8 +288,21 @@ uint8_t* Allocate()
     bool success = ftruncate(section, kBackingSize) == 0;
     if (!success)
         RecordFailure(FailureOperation::ResizeBacking, uint32_t(errno), -1, nullptr, kBackingSize);
+    s_virtualAnonymous = false;
     for (size_t i = 0; success && i < 4; ++i)
     {
+#if LO_PLATFORM_ANDROID
+        // Steprant 2.4: nothing aliases the virtual view, so private anonymous
+        // memory serves it as well as the shared backing, and unlike that
+        // backing (shmem, huge pages off on Android) it can get huge pages.
+        if (i == 0 && AnonymousVirtualWanted() &&
+            mmap(base, kSizes[0], PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0) != MAP_FAILED)
+        {
+            s_virtualAnonymous = true;
+            continue;
+        }
+#endif
         success = mmap(base + kStarts[i], kSizes[i], PROT_READ | PROT_WRITE,
             MAP_SHARED | MAP_FIXED, section, kOffsets[i]) != MAP_FAILED;
         if (!success)

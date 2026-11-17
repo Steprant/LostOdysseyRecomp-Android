@@ -77,6 +77,12 @@ Memory::Memory()
     if (!base)
         return;
 
+    // Steprant 2.4: the image (the game's global data) and the function table
+    // after it (every indirect call) get huge pages when the kernel offers them,
+    // before the loop below touches the table.
+    GuestAddressSpace::AdviseHugePages(base, PPC_IMAGE_BASE,
+        uint64_t(PPC_IMAGE_SIZE) + uint64_t(PPC_CODE_SIZE) * 2);
+
     // Every code address the recompiler did not emit a function for gets a
     // logging stub instead of a null pointer, so a virtual call into a missed
     // function reports the guest address instead of jumping to host 0.

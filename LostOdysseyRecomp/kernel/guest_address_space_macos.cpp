@@ -146,5 +146,9 @@ void Release(uint8_t* base)
         s_probeBase = nullptr;
     munmap(base, kSize);
 }
+
+bool VirtualViewAnonymous() { return false; }
+uint64_t AdviseHugePages(uint8_t*, uint32_t, uint64_t) { return 0; }
+std::string DescribeHugePages() { return {}; }
 }
 #endif

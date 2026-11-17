@@ -2,6 +2,9 @@
 #include "heap.h"
 #include "memory.h"
 #include <os/logger.h>
+#include "guest_address_space.h"
+#include <os/thread_name.h>
+#include <thread>
 
 // Host heap occupies the top of the guest virtual region so it never collides
 // with the game's own NtAllocateVirtualMemory requests (which grow upwards).
@@ -15,6 +18,19 @@ void Heap::Init()
     heap = o1heapInit(g_memory.Translate(HOST_HEAP_BEGIN), HOST_HEAP_END - HOST_HEAP_BEGIN);
     assert(heap != nullptr);
     LOG_INFO("host heap at {} capacity {:#x}", (void*)heap, o1heapGetDiagnostics(heap).capacity);
+#if LO_PLATFORM_ANDROID
+    // Steprant 2.4: whether the guest's virtual memory gets huge pages, at the
+    // start and then every 10 minutes from a thread that only sleeps between.
+    LOG_INFO("guest huge pages: {}", GuestAddressSpace::DescribeHugePages());
+    std::thread([] {
+        os::SetCurrentThreadName("Huge page log");
+        std::this_thread::sleep_for(std::chrono::minutes(2));
+        for (;;) {
+            LOG_INFO("guest huge pages: {}", GuestAddressSpace::DescribeHugePages());
+            std::this_thread::sleep_for(std::chrono::minutes(10));
+        }
+    }).detach();
+#endif
 }
 
 void* Heap::Alloc(size_t size)

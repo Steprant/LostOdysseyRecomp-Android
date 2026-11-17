@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace GuestAddressSpace
 {
@@ -49,4 +50,15 @@ const char* FailureApiName(FailureOperation operation);
 // Keep these OS mappings coherent even for direct recompiled base+address loads.
 uint8_t* Allocate();
 void Release(uint8_t* base);
+
+// Steprant 2.4 (Android): the virtual view (0 - 0xA0000000) has no alias, so
+// Allocate maps it as private anonymous memory, which the kernel can back
+// with transparent huge pages; the physical views stay one shared backing.
+// LO_GUEST_THP=0 keeps the 2.2 mapping. AdviseHugePages asks for huge pages
+// on the 2 MiB-aligned part of a virtual range and returns the bytes advised
+// (0 elsewhere, or when the view is not anonymous). DescribeHugePages gives
+// the kernel's THP settings and the process's huge-page total for the log.
+bool VirtualViewAnonymous();
+uint64_t AdviseHugePages(uint8_t* base, uint32_t guestAddress, uint64_t size);
+std::string DescribeHugePages();
 }

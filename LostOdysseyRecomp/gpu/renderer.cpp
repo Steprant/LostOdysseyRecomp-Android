@@ -487,6 +487,9 @@ namespace gpu::renderer
             uint32_t mipAddress = 0, mipBytes = 0; // stored mip chain, if uploaded
             uint64_t guestHash = 0, guestFullHash = 0;
             uint64_t checkedFrame = ~0ull;      // last frame this texture was bound
+            // Steprant 2.4: last frame a draw looked this texture up (every hit,
+            // also for textures without a guest footprint). ReleaseUnusedTextures.
+            uint32_t usedFrame = 0;
             uint64_t nextFullScanFrame = 0;
             uint32_t writeGeneration = 0;        // guest_writes generation at the last look
             uint64_t replacementPending = 0; // fingerprint of a mod replacement still being read
@@ -8449,6 +8452,68 @@ void main()
                     parking::TotalBytes(parkedTargets, bytesOf) >> 20);
             }
 
+            // Steprant 2.4: the texture cache only lost an entry when its guest bytes
+            // changed or a resolve covered it, so the textures of every area left
+            // behind stayed in GPU memory (graphics PSS 1.5 -> 2.6 GB over a session).
+            // About every 17 s: while the cached textures exceed the budget (guest
+            // footprint), the ones no draw looked up for kUnusedTextureFrames go,
+            // oldest first, through the same retirement as a changed texture (freed
+            // after the slot's fence). A later lookup uploads it again from guest
+            // memory, so the picture is the same; a texture used in the last three
+            // minutes is never touched. LO_TEXTURE_RETIRE=0 keeps everything (2.2).
+            static constexpr uint32_t kUnusedTextureFrames = 30 * 180;
+            static constexpr uint64_t kTextureCacheBudgetBytes = 512ull << 20;
+            uint64_t texturesRetired = 0, textureBytesRetired = 0;
+            uint32_t textureCacheLogFrame = 0;
+            static uint64_t CachedTextureBytes(const HostTexture& texture)
+            {
+                return uint64_t(texture.guestBytes) + texture.mipBytes;
+            }
+            void ReleaseUnusedTextures()
+            {
+                static const bool enabled = [] {
+                    const char* value = std::getenv("LO_TEXTURE_RETIRE");
+                    return !(value && std::string_view(value) == "0");
+                }();
+                uint64_t total = 0;
+                std::vector<std::pair<uint32_t, TextureKey>> candidates;
+                for (const auto& [key, texture] : textures) {
+                    if (!texture || !texture->guestBytes) continue;
+                    const uint64_t bytes = CachedTextureBytes(*texture);
+                    total += bytes;
+                    if (frame - std::min(frame, texture->usedFrame) >= kUnusedTextureFrames)
+                        candidates.emplace_back(texture->usedFrame, key);
+                }
+                const bool logSize = frame - textureCacheLogFrame >= 1800;
+                if (logSize) textureCacheLogFrame = frame;
+                if (!enabled || total <= kTextureCacheBudgetBytes || candidates.empty()) {
+                    if (logSize)
+                        LOG_INFO("renderer: texture cache {} textures, {} MB (guest size); {} retired so far ({} MB){}",
+                            textures.size(), total >> 20, texturesRetired, textureBytesRetired >> 20,
+                            enabled ? "" : " (LO_TEXTURE_RETIRE=0)");
+                    return;
+                }
+                std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+                uint64_t count = 0, bytes = 0;
+                for (const auto& candidate : candidates) {
+                    if (total <= kTextureCacheBudgetBytes) break;
+                    const auto it = textures.find(candidate.second);
+                    if (it == textures.end() || !it->second) continue;
+                    const uint64_t size = CachedTextureBytes(*it->second);
+                    Gpu().retiredTextures.push_back(std::move(it->second));
+                    textures.erase(it);
+                    total -= std::min(total, size);
+                    bytes += size;
+                    ++count;
+                }
+                if (!count) return;
+                ++texturesVersion;
+                texturesRetired += count;
+                textureBytesRetired += bytes;
+                LOG_INFO("renderer: retired {} textures unused for over {} s ({} MB); cache now {} textures, {} MB (guest size)",
+                    count, kUnusedTextureFrames / 30, bytes >> 20, textures.size(), total >> 20);
+            }
+
             void FailCurrentPlan(frame_plan::FailureReason reason = frame_plan::FailureReason::Unknown)
             {
                 if (!activePlan.cpuSerial || !activePlan.geometryEpoch) return;
@@ -9327,6 +9392,7 @@ void main()
                 {
                     recentTexture = {key, it, texturesVersion};
                     HostTexture* cached = it->second.get();
+                    cached->usedFrame = frame;
                     // An original whose mod replacement was read since, or any replaceable
                     // texture made before the mod list changed: re-create it.
                     const bool replacementArrived = (cached->replacementPending && ReplacementArrived(*cached)) ||
@@ -9499,6 +9565,7 @@ void main()
                 tex->guestAddress = sourceAddress;
                 tex->guestBytes = uint32_t(guestBytes);
                 tex->checkedFrame = frame;
+                tex->usedFrame = frame;
                 tex->modReplaceable = modReplaceable;
                 tex->modsEpoch = textureModsEpoch;
                 // writeGeneration stays 0: a file read that landed before or during
@@ -14845,6 +14912,7 @@ void main()
                 }
                 ++frame; drawsThisFrame = 0; drops = {};
                 if ((frame & 127) == 0) ReleaseAgedParkedTargets();
+                if ((frame & 511) == 0) ReleaseUnusedTextures();
             }
             frame_generation::ResolveIdentity FgIdentity(const ResolvedSurface& rs) const
             {
