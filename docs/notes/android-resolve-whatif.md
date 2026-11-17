@@ -45,3 +45,18 @@ Per scene (city, field, battle, TV):
 - In between: decide with the GPU time of the copies from the pass profile.
 
 Not measured on the phone yet.
+
+## Steprant 2.2: what deferral would save, and which surfaces
+
+An unread copy can only be skipped by deferring it until the surface is read (and dropping it when the surface is resolved again). If the source is written in the meantime, the deferred copy must be made at that write, before the source changes, and nothing is saved. Measured on 16/11: about 75 MB per frame of unread copies, but not whether their sources stayed intact.
+
+The line now ends with:
+
+```
+... | unread_intact=n/mb | unread_top: base=0x... fmt=N n= mb= intact=P%; (three surfaces)
+```
+
+- `unread_intact`: the unread copies whose source was not written until the surface was resolved again or dropped. Only these would be saved by deferred resolves.
+- `unread_top`: the three destination surfaces with the most unread bytes (destination base and format), with the share of their unread copies that kept the source intact.
+
+Decision rule as before, on `unread_intact` (plus `free` and `rename`) instead of all unread bytes.

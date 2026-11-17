@@ -118,6 +118,27 @@ int main()
         assert(t.TakeLine().empty());
     }
 
+    // Steprant 2.2: unread copies whose source stayed untouched, and the
+    // surfaces with the most unread bytes.
+    {
+        Tracker t;
+        t.OnResolve(Make(0x100000, 1, Kind::ColorCopy, true, true, 4u << 20));
+        t.OnResolve(Make(0x100000, 1, Kind::ColorCopy, true, true, 4u << 20));   // unread, source intact
+        t.OnSourceWrite(1, false);
+        t.OnDrop(SurfaceKey(0x100000, 6));                                        // unread, source written
+        t.OnResolve(Make(0x200000, 2, Kind::ColorCopy, true, true, 1u << 20));
+        t.OnDrop(SurfaceKey(0x200000, 6));                                        // unread, intact
+        t.EndFrame();
+        assert(t.Window().unreadIntact == 2 && t.Window().unreadIntactBytes == (5u << 20));
+        const std::string line = t.TakeLine();
+        std::printf("%s\n", line.c_str());
+        assert(line.find("unread=3.0/9.0mb") != std::string::npos);
+        assert(line.find("| unread_intact=2.0/5.0mb | unread_top: base=0x00100000 fmt=6 n=2.0 mb=8.0 intact=50%; base=0x00200000 fmt=6 n=1.0 mb=1.0 intact=100%;") != std::string::npos);
+        Tracker empty;
+        empty.EndFrame();
+        assert(empty.TakeLine().find("unread_top: none") != std::string::npos);
+    }
+
     // Surfaces never resolved again leave: the oldest is finished at the cap.
     {
         Tracker t;

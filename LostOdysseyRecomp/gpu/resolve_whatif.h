@@ -33,6 +33,15 @@
 // Reads are every lookup of the surface (draw fetches, presentation,
 // diagnostics), so "read after write" errs towards "copy": the avoidable
 // numbers are a lower bound.
+//
+// Steprant 2.2: an unread copy can only be skipped by deferring it until
+// the surface is read (and dropping it when the surface is resolved again).
+// If the source is written in the meantime, the deferred copy has to be made
+// at that write, before the source changes: nothing is saved. The line adds
+// unread_intact, the unread copies whose source stayed untouched until the
+// surface was resolved again or dropped (what deferral would save), and the
+// three surfaces with the most unread bytes (destination base, format, share
+// intact), to tell which resolves they are.
 namespace gpu::resolve_whatif
 {
     enum class Kind : uint8_t { ColorCopy, ColorBlit, Depth };
@@ -104,6 +113,9 @@ namespace gpu::resolve_whatif
             uint64_t outcomeBytes[size_t(Outcome::Count)] = {};
             uint64_t kinds[3] = {};
             uint64_t croppedCopies = 0, croppedBytes = 0;
+            uint64_t unreadIntact = 0, unreadIntactBytes = 0;
+            struct Surface { uint64_t surface = 0, count = 0, bytes = 0, intact = 0; };
+            std::vector<Surface> unreadSurfaces;   // at most kMaxSurfaces
         };
 
         // A new resolve: the previous one of the same surface is finished.
@@ -182,8 +194,21 @@ namespace gpu::resolve_whatif
                 n(c[at(Outcome::Size)]), mb(b[at(Outcome::Size)]),
                 n(totals.croppedCopies), mb(totals.croppedBytes),
                 mb(avoidable), classified ? 100.0 * double(avoidable) / double(classified) : 0.0);
+            std::string line = buffer;
+            std::snprintf(buffer, sizeof(buffer), " | unread_intact=%.1f/%.1fmb | unread_top:",
+                n(totals.unreadIntact), mb(totals.unreadIntactBytes));
+            line += buffer;
+            auto top = totals.unreadSurfaces;
+            std::sort(top.begin(), top.end(), [](const auto& x, const auto& y) { return x.bytes > y.bytes; });
+            if (top.empty()) line += " none";
+            for (size_t i = 0; i < top.size() && i < 3; i++) {
+                std::snprintf(buffer, sizeof(buffer), " base=0x%08x fmt=%u n=%.1f mb=%.1f intact=%.0f%%;",
+                    unsigned(top[i].surface >> 32), unsigned(top[i].surface & 0xFFFFFFFFu), n(top[i].count), mb(top[i].bytes),
+                    top[i].count ? 100.0 * double(top[i].intact) / double(top[i].count) : 0.0);
+                line += buffer;
+            }
             totals = Totals();
-            return buffer;
+            return line;
         }
 
     private:
@@ -191,6 +216,7 @@ namespace gpu::resolve_whatif
         // Surfaces resolved once and never again stay live; the oldest is
         // finished past this many.
         static constexpr size_t kMaxLive = 256;
+        static constexpr size_t kMaxSurfaces = 32;
 
         std::vector<Live> live;
         uint64_t watched = 0;   // a bit per source allocation (mod 64): a quick miss
@@ -204,6 +230,22 @@ namespace gpu::resolve_whatif
             const Outcome outcome = Classify(l.resolve, l.fate);
             totals.count[size_t(outcome)]++;
             totals.outcomeBytes[size_t(outcome)] += l.resolve.bytes;
+            if (outcome == Outcome::Unread) {
+                const bool intact = !l.fate.sourceWritten;
+                if (intact) {
+                    totals.unreadIntact++;
+                    totals.unreadIntactBytes += l.resolve.bytes;
+                }
+                auto& surfaces = totals.unreadSurfaces;
+                auto it = std::find_if(surfaces.begin(), surfaces.end(), [&](const auto& x) { return x.surface == l.resolve.surface; });
+                if (it == surfaces.end() && surfaces.size() < kMaxSurfaces)
+                    it = surfaces.insert(surfaces.end(), Totals::Surface{l.resolve.surface});
+                if (it != surfaces.end()) {
+                    it->count++;
+                    it->bytes += l.resolve.bytes;
+                    it->intact += intact;
+                }
+            }
             live.erase(live.begin() + ptrdiff_t(index));
             RebuildWatched();
         }
