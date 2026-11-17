@@ -8460,9 +8460,12 @@ void main()
             // oldest first, through the same retirement as a changed texture (freed
             // after the slot's fence). A later lookup uploads it again from guest
             // memory, so the picture is the same; a texture used in the last three
-            // minutes is never touched. LO_TEXTURE_RETIRE=0 keeps everything (2.2).
+            // minutes is never touched. At most kTexturesRetiredPerPass go at once, so
+            // their release after the fence stays short. LO_TEXTURE_RETIRE=0 keeps
+            // everything (2.2).
             static constexpr uint32_t kUnusedTextureFrames = 30 * 180;
             static constexpr uint64_t kTextureCacheBudgetBytes = 512ull << 20;
+            static constexpr uint64_t kTexturesRetiredPerPass = 128;
             uint64_t texturesRetired = 0, textureBytesRetired = 0;
             uint32_t textureCacheLogFrame = 0;
             static uint64_t CachedTextureBytes(const HostTexture& texture)
@@ -8496,7 +8499,7 @@ void main()
                 std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
                 uint64_t count = 0, bytes = 0;
                 for (const auto& candidate : candidates) {
-                    if (total <= kTextureCacheBudgetBytes) break;
+                    if (total <= kTextureCacheBudgetBytes || count >= kTexturesRetiredPerPass) break;
                     const auto it = textures.find(candidate.second);
                     if (it == textures.end() || !it->second) continue;
                     const uint64_t size = CachedTextureBytes(*it->second);
