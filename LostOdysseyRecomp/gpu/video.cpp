@@ -50,6 +50,7 @@
 #include "frame_pacer.h"
 #include "overlay_upload.h"
 #include "deadline_wait.h"
+#include "cinematic_power.h"
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
 #include <modding/rebuild_progress.h>
@@ -4990,6 +4991,8 @@ namespace gpu::video
         if (overlay::Frame(mode, now, outputWidth, outputHeight)) {
             overlay::Sources sources;
             sources.backend = g_metal ? "METAL" : g_vulkan ? "VULKAN" : "D3D12";
+            // The latest Android battery sample (RuntimeActivity); 0 elsewhere.
+            sources.batteryTenths = gpu::cinematic_power::batteryTenths.load(std::memory_order_relaxed);
             using upscaling::TemporalConsumer;
             const auto consumer = plan.cpuSerial ? plan.consumer : TemporalConsumer::None;
             sources.upscaler = upscaling::IsDlssConsumer(consumer) ? "DLSS" : consumer == TemporalConsumer::FsrSr ? "FSR" :

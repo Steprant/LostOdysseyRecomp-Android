@@ -2083,8 +2083,8 @@ void Publish(uint8_t *base, uint32_t config)
 #endif
             break;
         case GraphicsRow::PerformanceOverlay:
-            next.help = Tr(L"FPS: the frame rate at the top left. Detailed: a top bar with the upscaler and its resolution, frame generation, and CPU and GPU load.",
-                           L"FPS：左上角顯示影格率。詳細：頂端資訊列，含縮放器與解析度、影格生成、CPU 與 GPU 負載。");
+            next.help = Tr(L"FPS: the frame rate at the top left. Detailed: a top bar with the upscaler and its resolution, frame generation, and CPU and GPU load. On Android both also show the battery temperature.",
+                           L"FPS：左上角顯示影格率。詳細：頂端資訊列，含縮放器與解析度、影格生成、CPU 與 GPU 負載。Android 上兩者也顯示電池溫度。");
             break;
         case GraphicsRow::FrameGeneration:
         case GraphicsRow::FrameGenerationMultiplier:

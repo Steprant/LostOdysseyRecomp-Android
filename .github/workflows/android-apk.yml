@@ -281,6 +281,9 @@ jobs:
             # 2.2 (17/11): general register promotion and native memcpy/memset
             # on 2.1.6, versionCode 2020000.
             steprant/v2.2) version=2.2 ;;
+            # 2.2.1 (17/11): 2.2 with the movie fix and the battery temperature
+            # in the performance overlay, versionCode 2020001.
+            steprant/v2.2.1) version=2.2.1 ;;
             *) version= ;;
           esac
           # The developer page (A/B switches) is compiled out: the 1.9 logs

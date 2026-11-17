@@ -36,6 +36,10 @@ constexpr uint32_t kBackendLabel = Rgb(235, 91, 91);   // the graphics API
 constexpr uint32_t kUpscalerLabel = Rgb(173, 100, 193);
 constexpr uint32_t kFgLabel = Rgb(194, 102, 147);
 constexpr uint32_t kGraph = Rgb(120, 225, 90);
+// Battery temperature: white up to 42 C, orange to 45 C, red above.
+constexpr uint32_t kWarm = Rgb(255, 165, 40);
+constexpr uint32_t kHot = Rgb(255, 80, 70);
+constexpr int kWarmTenths = 420, kHotTenths = 450;
 constexpr uint32_t kBackground = 0x99000000u; // black at 60%
 constexpr uint32_t kDivider = 0xC0707070u;
 
@@ -207,6 +211,7 @@ struct Values {
     double fps = 0, frameMs = 0;
     int cpu = -1, gpu = -1;  // percent; -1 unknown
     double fgFps = -1;       // -1 while frame generation is off
+    int batteryTenths = 0;   // 0.1 C; 0 unknown (no battery reading)
 };
 
 // One row of fields separated by dividers. Labels sit on the values' baseline;
@@ -234,9 +239,10 @@ public:
         const double size = reduced ? smallValueSize_ : valueSize_;
         x_ += canvas_.Text(x_, baseline_ - canvas_.CapRows(size).second, text, size, color);
     }
-    void Unit(const char* text) {
+    void Unit(const char* text) { Unit(Ascii(text)); }
+    void Unit(const std::u32string& text) {
         x_ += 2 * canvas_.Scale();
-        x_ += canvas_.Text(x_, capTop_ - canvas_.CapRows(unitSize_).first, Ascii(text), unitSize_, kUnit);
+        x_ += canvas_.Text(x_, capTop_ - canvas_.CapRows(unitSize_).first, text, unitSize_, kUnit);
         x_ += 6 * canvas_.Scale();
     }
     void Divider() {
@@ -266,6 +272,7 @@ std::u32string Number(double value, int decimals) {
     return Ascii(text);
 }
 std::u32string Percent(int value) { return value < 0 ? U"--" : Ascii(std::to_string(value)); }
+uint32_t TemperatureColor(int tenths) { return tenths > kHotTenths ? kHot : tenths >= kWarmTenths ? kWarm : kWhite; }
 
 void Draw(const Values& values, const Sources& sources) {
     // 1.0 at 720p, 1.5 at 1080p, 3.0 at 4K.
@@ -317,6 +324,12 @@ void Draw(const Values& values, const Sources& sources) {
         row.Label("GPU", kLoadLabel);
         row.Value(Percent(values.gpu));
         row.Unit("%");
+        if (values.batteryTenths > 0) {
+            row.Divider();
+            row.Label("BAT", kLoadLabel);
+            row.Value(Number(values.batteryTenths / 10.0, 1), TemperatureColor(values.batteryTenths));
+            row.Unit(U"\u00B0C");
+        }
     } else {
         // The frame rate alone in a block at the top-left corner.
         const auto fps = Number(values.fps, 0), ms = Number(values.frameMs, 1);
@@ -328,6 +341,10 @@ void Draw(const Values& values, const Sources& sources) {
         row.Unit("FPS");
         row.Value(ms);
         row.Unit("ms");
+        if (values.batteryTenths > 0) {
+            row.Value(Number(values.batteryTenths / 10.0, 0), TemperatureColor(values.batteryTenths));
+            row.Unit(U"\u00B0C");
+        }
         const uint32_t used = std::min<uint32_t>(image.width, uint32_t(std::lround(row.X() + 4 * s)));
         // Background behind the text only, then crop to it.
         std::vector<uint32_t> block(size_t(used) * image.height, kBackground);
@@ -380,6 +397,7 @@ void Refresh(const Sources& sources) {
         Values values;
         values.fps = g.window.frames / seconds;
         values.frameMs = 1000.0 * seconds / g.window.frames;
+        values.batteryTenths = sources.batteryTenths;
         if (detailed && cpu > g.window.cpu)
             values.cpu = int(std::lround(std::min(100.0, (cpu - g.window.cpu) / (seconds * 1e9 * LogicalProcessors()) * 100.0)));
         // No completed timestamp in the window: unsupported or not started yet.

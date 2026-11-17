@@ -7,8 +7,9 @@
 // the Steam Deck's MangoHud bar. FPS: a corner block with the frame rate and
 // frame time. Detailed: a strip across the top with the upscaler and its
 // resolution, the backend with FPS, frame time and a frame-time graph, frame
-// generation's presented FPS, and the process CPU and GPU load. Values are
-// averaged over about half a second and the image is redrawn only then.
+// generation's presented FPS, the process CPU and GPU load, and on Android
+// the battery temperature (also in the FPS block). Values are averaged over
+// about half a second and the image is redrawn only then.
 // Presentation thread only.
 namespace ui::performance_overlay {
 inline constexpr uint32_t Off = 0, Fps = 1, Detailed = 2;
@@ -29,6 +30,7 @@ struct Sources {
     bool frameGeneration = false;    // a provider generates frames
     uint64_t presentedFrames = 0;    // its cumulative presents, generated frames included
     uint64_t gpuBusy = 0;            // gpu::gpu_busy::Total()
+    int batteryTenths = 0;           // battery temperature in 0.1 C (Android); 0 unknown
 };
 
 // Once per presented game frame while the overlay is on. True when the
