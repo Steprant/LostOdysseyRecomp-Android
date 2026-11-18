@@ -105,6 +105,7 @@
 #include "pass_profile.h"
 #include "render_batch_policy.h"
 #include "render_arena_policy.h"
+#include "scene_submit_policy.h"
 #include "resolve_copy_policy.h"
 #include "resolve_whatif.h"
 #include <os/log_file.h>
@@ -2204,6 +2205,12 @@ namespace gpu::renderer
             uint32_t descriptorBatchLimit = 500;
             uint32_t descriptorSplits = 0, textureSetSplits = 0, samplerVersionSplits = 0;
             uint32_t uploadSplits = 0, arenaSplits = 0;
+            // Steprant 2.4.6: heavy scenes in pieces (scene_submit_policy.h).
+            const gpu::scene_submit::Settings sceneSubmit = gpu::scene_submit::FromEnvironment();
+            gpu::scene_submit::Stats sceneSubmitStats;
+            uint32_t drawsThisBatch = 0, drawsPreviousFrame = 0;
+            uint64_t sceneSubmitTargetKey = ~0ull;
+            std::chrono::steady_clock::time_point sceneSubmitLogStart{};
             struct ScopedTimer
             {
                 double& acc;
@@ -5554,6 +5561,7 @@ void main()
                         timingQueries = Gpu().timingQueries.get();
                     }
                     if (!video::BeginGpuCommands(commandList)) return false;
+                    drawsThisBatch = 0; // Steprant 2.4.6
 #if defined(LO_GPU_PLUME) && defined(_WIN32)
                     if (!vulkan) static_cast<plume::D3D12CommandList*>(commandList)->captureRootBindingStats = render_timing::Enabled();
 #endif
@@ -10441,8 +10449,20 @@ void main()
                 const auto wrap = gpu::render_arena::EvaluateWrap(
                     gpuSlot, Gpu().arenaOffset, gpuSlots[(gpuSlot + 1) % kGpuSlots].arenaOffset);
                 const bool arenaLow = wrap.action == gpu::render_arena::WrapAction::FlushAndRecycleIncoming;
-                if (poolsFull || ringLow || arenaLow)
+                // Steprant 2.4.6: a heavy scene goes to the GPU in pieces, by the
+                // same split between draws (scene_submit_policy.h). The render
+                // target registers tell a pass boundary.
+                const uint64_t targetKey = (uint64_t(Reg(REG_RB_COLOR_INFO)) << 32) | Reg(REG_RB_DEPTH_INFO);
+                const bool targetChanged = targetKey != sceneSubmitTargetKey;
+                sceneSubmitTargetKey = targetKey;
+                gpu::scene_submit::Split pieceSplit = gpu::scene_submit::Split::None;
+                if (nativeVulkan && listOpen && !Gpu().srPrefixClosed && !Gpu().drawProfileActive &&
+                    debugCaptureDir.empty() && !fgUiBindingExpected && !fgUiCapture)
+                    pieceSplit = gpu::scene_submit::Due(sceneSubmit, drawsPreviousFrame, drawsThisBatch, targetChanged);
+                const bool pieceDue = pieceSplit != gpu::scene_submit::Split::None;
+                if (poolsFull || ringLow || arenaLow || pieceDue)
                 {
+                    const auto splitStart = std::chrono::steady_clock::now();
                     render_batch::CpuTimer<> nestedFlushTimer(cpuTimingEnabled);
                     if (cpuTimingEnabled) {
                         descriptorSplits += poolsFull;
@@ -10466,6 +10486,9 @@ void main()
                     }
                     if (!Begin()) return;
                     nestedFlushTimer.AddTo(tNestedFlush);
+                    if (pieceDue && !poolsFull && !ringLow && !arenaLow)
+                        sceneSubmitStats.Note(pieceSplit, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - splitStart).count()));
                 }
                 if (!Begin()) return;
 
@@ -14051,6 +14074,7 @@ void main()
                 if (video::GpuWorkStopped()) return;
  #endif
                 drawsThisFrame++;
+                drawsThisBatch++; // Steprant 2.4.6
 
                 recordProbe.Enter(record_timing::Phase::MvTrack);
                 if (motionDepthWrite) {
@@ -14933,6 +14957,23 @@ void main()
                         const std::string line = resolveWhatIf.TakeLine();
                         if (!line.empty()) LOG_INFO("{}", line);
                         resolveWhatIfStart = now;
+                    }
+                }
+                // Steprant 2.4.6: the scene pieces of the last 10 s, when any.
+                drawsPreviousFrame = drawsThisFrame;
+                sceneSubmitStats.EndFrame();
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (sceneSubmitLogStart == std::chrono::steady_clock::time_point{}) sceneSubmitLogStart = now;
+                    else if (now - sceneSubmitLogStart >= std::chrono::seconds(10)) {
+                        auto& st = sceneSubmitStats;
+                        if (st.Submits())
+                            LOG_INFO("renderer: scene pieces frames={} split_frames={} extra_submits={} at_target_change={} inside_pass={} "
+                                "split_ms={:.2f} piece_draws={} min_frame_draws={}",
+                                st.frames, st.splitFrames, st.Submits(), st.atTargetChange, st.insidePass,
+                                double(st.splitNs) / 1e6 / double(st.Submits()), sceneSubmit.pieceDraws, sceneSubmit.minFrameDraws);
+                        st = {};
+                        sceneSubmitLogStart = now;
                     }
                 }
                 ++frame; drawsThisFrame = 0; drops = {};

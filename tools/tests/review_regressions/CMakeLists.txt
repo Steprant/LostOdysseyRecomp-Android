@@ -68,6 +68,7 @@ lo_review_test(LoAudioBarrierTest audio_barrier_test.cpp) # 2.1.6: the audio wor
 lo_review_test(LoAudioLagRecoveryTest audio_lag_recovery_test.cpp)
 lo_review_test(LoGpuSyncStatsTest gpu_sync_stats_test.cpp)
 lo_review_test(LoDrawClassProfileTest draw_class_profile_test.cpp)
+lo_review_test(LoSceneSubmitPolicyTest scene_submit_policy_test.cpp) # Steprant 2.4.6
 if(NOT WIN32)
 endif()
 # plume's interface header includes X11 on Linux.
