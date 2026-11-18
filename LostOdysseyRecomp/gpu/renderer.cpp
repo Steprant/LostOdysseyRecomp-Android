@@ -819,7 +819,26 @@ namespace gpu::renderer
             }
             uint32_t vertexUploads = 0, vertexRevalidations = 0;
             size_t vertexBytesUploaded = 0;
+            // Steprant 2.4.2: created at the first readback instead of in Init.
+            // Only the opt-in resolve readback (LO_RESOLVE_READBACK), texture and
+            // resolve dumps, debug captures, frame samples and screenshots read
+            // back, each as copy, Flush, wait, map: a normal session never does,
+            // and the 128 MiB were allocated from the first frame (1,568 MiB of
+            // GPU memory then). VMA places a request of up to half its 256 MiB
+            // block size in a block, and nothing else uses the host-cached type
+            // a readback asks for: probably a 256 MiB block of its own
+            // (1,024 arena + 256 upload rings + 256 readback + 32). Same size
+            // and use once created.
             std::unique_ptr<RenderBuffer> readback;
+            RenderBuffer* Readback()
+            {
+                if (!readback) {
+                    readback = device->createBuffer(RenderBufferDesc::ReadbackBuffer(kReadbackSize));
+                    if (readback) LOG_INFO("renderer: readback buffer created at its first use ({} MiB)", kReadbackSize >> 20);
+                    else LOG_WARNING("renderer: readback buffer ({} MiB) could not be created", kReadbackSize >> 20);
+                }
+                return readback.get();
+            }
 
             std::unique_ptr<RenderPipelineLayout> pipelineLayout;
             RenderDescriptorSetBuilder setBuilders[6];
@@ -3074,8 +3093,6 @@ namespace gpu::renderer
                     return InitFailure("vertex_arena.device_address");
                 arenaMapped = static_cast<uint8_t*>(vertexArena->map());
                 if (!arenaMapped) return InitFailure("vertex_arena.map", gpu::render_arena::kVertexArenaSize);
-                readback = device->createBuffer(RenderBufferDesc::ReadbackBuffer(kReadbackSize));
-                if (!readback) return InitFailure("readback.create", kReadbackSize);
                 resolveReadback = getenv("LO_RESOLVE_READBACK") != nullptr;
                 if (const char* sync = getenv("LO_MODS_TEXTURE_SYNC"); sync && *sync && strcmp(sync, "0") != 0)
                     textureReplacementSync = true;
@@ -14715,6 +14732,7 @@ void main()
                 const uint32_t rowPitch = (tex.width * bpp + 255) & ~255u;
                 if (size_t(rowPitch) * tex.height > kReadbackSize)
                     return;
+                if (!Readback()) return;
                 if (!Begin()) return;
                 Transition(tex, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
                 commandList->copyTextureRegion(
@@ -14800,6 +14818,7 @@ void main()
                 const uint32_t rowPitch = (tex.width * bpp + 255) & ~255u;
                 if (size_t(rowPitch) * tex.height > kReadbackSize)
                     return;
+                if (!Readback()) return;
                 Transition(tex, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
                 commandList->copyTextureRegion(
                     RenderTextureCopyLocation::PlacedFootprint(readback.get(), tex.format == RenderFormat::R32_FLOAT ? RenderFormat::R32_FLOAT : tex.format, tex.width, tex.height, 1, rowPitch / bpp, 0),
@@ -15592,6 +15611,7 @@ void main()
                 uint32_t rowPitch = (copyWidth * hostBpp + 255) & ~255u;
                 if (size_t(rowPitch) * copyHeight > kReadbackSize)
                     return;
+                if (!Readback()) return;
                 Transition(*color, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
                 RenderBox box{ int32_t(x0), int32_t(y0), int32_t(x0 + copyWidth), int32_t(y0 + copyHeight), 0, 1 };
                 commandList->copyTextureRegion(
@@ -16828,6 +16848,7 @@ void main()
         const uint32_t rowPitch = (tex.width * bpp + 255) & ~255u;
         if (size_t(rowPitch) * tex.height > kReadbackSize)
             return false;
+        if (!g_renderer->Readback()) return false;
         if (!g_renderer->Begin()) return false;
         g_renderer->Transition(tex, RenderTextureLayout::COPY_SOURCE, RenderBarrierStage::COPY);
         g_renderer->commandList->copyTextureRegion(

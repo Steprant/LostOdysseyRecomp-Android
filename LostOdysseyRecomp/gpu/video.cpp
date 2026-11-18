@@ -1326,6 +1326,11 @@ namespace gpu::video
             if (now < nextCheck || !g_device) return;
             nextCheck = now + std::chrono::seconds(1);
             uint64_t used = 0, budget = 0, system = 0;
+            // Steprant 2.4.2: VMA's own view on every heap: memory blocks it
+            // holds and the allocations inside them. A request of up to half
+            // a block (128 MiB of 256) shares a block, so a lone one leaves
+            // the rest of its block empty.
+            uint64_t blockBytes = 0, allocationBytes = 0;
             if (g_vulkan) {
                 VmaAllocator allocator = static_cast<plume::VulkanDevice*>(g_device.get())->allocator;
                 if (!allocator) return;
@@ -1336,6 +1341,8 @@ namespace gpu::video
                 for (uint32_t i = 0; i < memory->memoryHeapCount; ++i) {
                     if (memory->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) { used += heaps[i].usage; budget += heaps[i].budget; }
                     else system += heaps[i].usage;
+                    blockBytes += heaps[i].statistics.blockBytes;
+                    allocationBytes += heaps[i].statistics.allocationBytes;
                 }
             }
 #ifdef _WIN32
@@ -1350,7 +1357,11 @@ namespace gpu::video
             else return;
             if ((used > logged ? used - logged : logged - used) < (256ull << 20)) return;
             logged = used;
-            LOG_NOTICE("video: GPU memory {} MiB of {} MiB budget, {} MiB in system memory", used >> 20, budget >> 20, system >> 20);
+            if (blockBytes)
+                LOG_NOTICE("video: GPU memory {} MiB of {} MiB budget, {} MiB in system memory (VMA blocks {} MiB, allocations {} MiB)",
+                    used >> 20, budget >> 20, system >> 20, blockBytes >> 20, allocationBytes >> 20);
+            else
+                LOG_NOTICE("video: GPU memory {} MiB of {} MiB budget, {} MiB in system memory", used >> 20, budget >> 20, system >> 20);
         }
 
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
