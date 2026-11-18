@@ -98,6 +98,7 @@ int main()
         frame.replayPassEndNs = 250'000; frame.replayPassEnds = 66;
         frame.replayRepeatedSetBinds = 4000;
         frame.frameGraphFilteredSetBinds = 3600; frame.frameGraphFilteredLayoutBinds = 450;
+        frame.frameGraphFilteredDrawState = 975;
         replay.Add(frame, true);
         replay.Add(frame, true);
         assert(replay.HasReplayTiming());
@@ -107,7 +108,7 @@ int main()
         assert(line.find(" draw=1.50/450 pipeline=0.00/0 sets=0.00/0 push=0.30/480 ") != std::string::npos);
         assert(line.find(" other=0.00/0 | driver_ms: draws=0.90 pass_begin=0.40/66.0 pass_end=0.25/66.0 | repeated_set_binds=4000") != std::string::npos);
         // Steprant 2.4.2: the binds the capture left out, per frame.
-        assert(line.find(" repeated_set_binds=4000 filtered_set_binds=3600 filtered_layout_binds=450") != std::string::npos);
+        assert(line.find(" repeated_set_binds=4000 filtered_set_binds=3600 filtered_layout_binds=450 filtered_draw_state=975") != std::string::npos);
         // Steprant 2.1.5: no parallel part without replays recorded in parallel.
         assert(line.find("parallel:") == std::string::npos);
         assert(!gpu::pass_profile::Summary().HasReplayTiming());
@@ -120,7 +121,7 @@ int main()
             parallel.Add(recorded, true);
             const std::string parallelLine = parallel.FormatReplay();
             std::printf("%s\n", parallelLine.c_str());
-            assert(parallelLine.find(" | repeated_set_binds=4000 filtered_set_binds=3600 filtered_layout_binds=450 | parallel: replays=1.0 chunks=6.0 helpers_ms=2.40 own=1.0/0.30 wait_ms=0.10") != std::string::npos);
+            assert(parallelLine.find(" | repeated_set_binds=4000 filtered_set_binds=3600 filtered_layout_binds=450 filtered_draw_state=975 | parallel: replays=1.0 chunks=6.0 helpers_ms=2.40 own=1.0/0.30 wait_ms=0.10") != std::string::npos);
         }
 
         Reporter timed, untimed;
