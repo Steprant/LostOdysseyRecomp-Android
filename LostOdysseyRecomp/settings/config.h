@@ -127,6 +127,8 @@ struct Config
 #endif
     uint32_t ambientOcclusion = 0; // 0 Off, 1 SSAO, 2 GTAO.
     uint32_t frameRate = 30;
+    bool androidFrameGeneration = false;
+    bool thermalResolution = true;
     uint32_t loadingTransitions = 2; // Loading pace: 0 Original, 2 Fast (default). Transition effects keep their normal speed.
     // Settings -> Graphics -> VSync: Off, On, or FreeSync / G-SYNC Compatible
     // (variableRefreshRate, which wins over vsync). Applied live.

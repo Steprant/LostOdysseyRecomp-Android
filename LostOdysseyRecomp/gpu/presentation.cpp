@@ -66,7 +66,7 @@ struct Presentation::Impl
         uint32_t width = 0, height = 0;
         RenderFormat format = RenderFormat::UNKNOWN;
     };
-    std::vector<Pass> passes[2];
+    std::vector<Pass> passes[3]; // SDR, HDR, generated SDR in the same batch.
     Pass gainPass;
     // Framebuffers of caller-owned targets (rotating swap chain images, scene
     // AA outputs) by texture and size; see ForgetTargets.
@@ -973,7 +973,7 @@ void Presentation::Draw(RenderCommandList *commands, RenderTexture *source, Rend
     const float x = scale == 1.0f ? std::floor((ow-width)*0.5f) : (ow-width)*0.5f;
     const float y = scale == 1.0f ? std::floor((oh-height)*0.5f) : (oh-height)*0.5f;
     size_t passIndex=0;
-    auto &passes=p.passes[hdrScene ? 1 : 0];
+    auto &passes=p.passes[options.generatedFrame ? 2 : hdrScene ? 1 : 0];
     RenderBuffer *ramp=p.UpdateGammaRamp(options.displayAdjust || options.brightnessPreview || options.hdrCalibration
         ? &options : nullptr);
     struct Parameters { float x,y,w,h,sw,sh;uint32_t aa,filter,expandRange,outputFlags;float outputScale,peakRatio;float calibrationRect[4]; };

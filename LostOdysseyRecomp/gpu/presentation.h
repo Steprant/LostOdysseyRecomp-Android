@@ -71,6 +71,8 @@ struct PresentationOptions
     // shader as a compute pass (Vulkan, RGBA8 swap chains). The target
     // finishes in GENERAL instead of COLOR_WRITE.
     bool storageTarget = false;
+    // Record the generated image beside the real one with separate bindings.
+    bool generatedFrame = false;
 };
 // Owned by the presentation thread. Resources stay alive until the present fence.
 class Presentation

@@ -1303,6 +1303,9 @@ namespace gpu::renderer
             std::shared_ptr<frame_generation::ProducerSnapshot> fgInputSnapshot;
             frame_generation::ResolveHandoffPool fgHandoffPool;
             bool fgCompositeEnabled = video::FrameGenerationInputCaptureEnabled();
+#if LO_PLATFORM_ANDROID
+            std::array<frame_generation::SnapshotStorage, 4> androidFgStorage;
+#endif
             uint64_t fgCompositeAttemptedFrame = ~0ull;
             std::shared_ptr<frame_generation::CompositeHandoff> fgCompositeHandoff;
             const uint64_t fgUiRequestedFrame = [] {
@@ -4562,18 +4565,41 @@ namespace gpu::renderer
 #elif LO_PLATFORM_MACOS
                     else sourceFormat = static_cast<plume::MetalTexture*>(promotion.inputs.color.texture)->desc.format;
 #endif
-                    auto snapshot = frame_generation::RecordProducerSnapshot(device, commandList,
-                        promotion.inputs, sourceFormat, promotion.scratch->texture.get(),
-                        promotion.scratch->format, {activePlan.output.width, activePlan.output.height},
-                        diagnosticSnapshot ? frame_generation::SnapshotPurpose::DiagnosticFiveImages :
-                            frame_generation::SnapshotPurpose::CompositedBackbuffer);
-                    if (snapshot) {
-                        snapshot->lineageOwner = fgHandoffPool.Owner();
-                        snapshot->resolveSourceAllocation = color->allocationSerial;
-                        snapshot->resolveSourceGeneration = color->fgWriteGeneration;
-                        if (diagnosticSnapshot) color->fgSnapshot = snapshot;
-                        Gpu().fgInputSnapshot = snapshot;
-                        fgInputSnapshot = std::move(snapshot);
+                    using frame_generation::SnapshotPurpose;
+                    auto purpose = diagnosticSnapshot ? SnapshotPurpose::DiagnosticFiveImages : SnapshotPurpose::CompositedBackbuffer;
+                    frame_generation::SnapshotStorage* storage = nullptr;
+                    bool captureReady = true;
+                    auto* scene = promotion.scratch.get();
+#if LO_PLATFORM_ANDROID
+                    if (!diagnosticSnapshot) {
+                        purpose = SnapshotPurpose::AndroidInterpolation;
+                        auto slot = std::find_if(androidFgStorage.begin(), androidFgStorage.end(),
+                            [](const auto& images) { return images.Available(); });
+                        if (slot != androidFgStorage.end()) storage = &*slot;
+                        // Keep the same SDR pixels that will receive the UI,
+                        // cropped out of the potentially padded render target.
+                        captureReady = storage && promotion.inputs.colorEncoding == temporal::ColorEncoding::Sdr &&
+                            color->format == RenderFormat::R8G8B8A8_UNORM &&
+                            color->width >= activePlan.output.width && color->height >= activePlan.output.height;
+                        if (captureReady) {
+                            scene = color;
+                            Transition(*scene, RenderTextureLayout::SHADER_READ, RenderBarrierStage::GRAPHICS);
+                        }
+                    }
+#endif
+                    if (captureReady) {
+                        auto snapshot = frame_generation::RecordProducerSnapshot(device, commandList,
+                            promotion.inputs, sourceFormat, scene->texture.get(),
+                            scene->format, {activePlan.output.width, activePlan.output.height},
+                            purpose, storage);
+                        if (snapshot) {
+                            snapshot->lineageOwner = fgHandoffPool.Owner();
+                            snapshot->resolveSourceAllocation = color->allocationSerial;
+                            snapshot->resolveSourceGeneration = color->fgWriteGeneration;
+                            if (diagnosticSnapshot) color->fgSnapshot = snapshot;
+                            Gpu().fgInputSnapshot = snapshot;
+                            fgInputSnapshot = std::move(snapshot);
+                        }
                     }
                     if (diagnosticSnapshot)
                         LOG_INFO("renderer: FG input snapshot frame={} recorded={} source={}:{} submitted_draws={} capture_draw={} ui=unavailable provider_ready=0",
@@ -11241,8 +11267,14 @@ void main()
                 // unless LO_SGSR2_OBJECT_MV=1.
                 static const bool sgsr2ObjectMotion = [] {
                     const char* value = getenv("LO_SGSR2_OBJECT_MV"); return value && strcmp(value, "1") == 0; }();
+                bool sgsr2CameraOnly = !sgsr2ObjectMotion;
+#if LO_PLATFORM_ANDROID
+                // A generated frame needs the moving geometry itself, even
+                // in a static camera view. Ordinary SGSR2 keeps its fast path.
+                sgsr2CameraOnly = sgsr2CameraOnly && !fgCompositeEnabled;
+#endif
                 const bool cameraMotionOnly = (activePlan.consumer == upscaling::TemporalConsumer::MetalFxSr && !metalFxObjectMotion) ||
-                    (activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr && !sgsr2ObjectMotion);
+                    (activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr && sgsr2CameraOnly);
                 const bool motionScene = motionOptions.enabled && !cameraMotionOnly && (!motionOptions.replay || motionReplay) && temporalActive && jitterAnchor && temporalViewport && depth &&
                     depth->allocationSerial == jitterAnchor->depthAllocation && rasterViewport.x == 0 && rasterViewport.y == 0 &&
                     rasterViewport.width == jitterAnchor->viewport.width && rasterViewport.height == jitterAnchor->viewport.height;
@@ -15109,6 +15141,9 @@ void main()
                 fgInputSnapshot.reset();
                 fgCompositeAttemptedFrame = ~0ull;
                 fgCompositeEnabled = enabled;
+#if LO_PLATFORM_ANDROID
+                if (!enabled) androidFgStorage = {};
+#endif
             }
             void InvalidateFgResolve(ResolvedSurface& rs)
             {

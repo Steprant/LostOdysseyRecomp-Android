@@ -194,7 +194,7 @@ namespace gpu::frame_plan
         }
         // Plan only the 3D input at a lower size. Output and its aspect were
         // selected above, so the display receives the same surface dimensions.
-        if (limited && !readback && config.upscaler == upscaling::Upscaler::Sgsr2 &&
+        if (config.thermalResolution && limited && !readback && config.upscaler == upscaling::Upscaler::Sgsr2 &&
             config.fsrQuality != upscaling::FsrQuality::NativeAA &&
             config.internalResolution > int(cinematic_power::kSceneHeight))
             config.internalResolution = int(cinematic_power::kSceneHeight);

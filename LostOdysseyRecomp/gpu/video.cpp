@@ -51,6 +51,9 @@
 #include "overlay_upload.h"
 #include "deadline_wait.h"
 #include "cinematic_power.h"
+#if LO_PLATFORM_ANDROID && defined(LO_GPU_PLUME)
+#include "android_frame_generation.h"
+#endif
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
 #include <modding/rebuild_progress.h>
@@ -753,6 +756,11 @@ namespace gpu::video
         std::optional<bool> g_hdrReportedActive;
         FgPresentBridge g_fgPresent;
         uint64_t g_fgPresentSerial = 0;
+#if LO_PLATFORM_ANDROID
+        std::unique_ptr<android_fg::Generator> g_androidFg;
+        std::unique_ptr<plume::RenderCommandSemaphore> g_androidFgAcquire;
+        bool g_androidFgCapture = false;
+#endif
         // For the GPU-stopped dialog (device_loss_hint.h): when the renderer
         // went live, whether a 3D game frame was presented since, and whether
         // settings.ini (not LO_GRAPHICS_API) chose the Vulkan that runs.
@@ -1428,6 +1436,9 @@ namespace gpu::video
         {
             g_presentPending = false;
             LogGpuMemoryTrend();
+#if LO_PLATFORM_ANDROID
+            if (g_androidFg) g_androidFg->AfterFence();
+#endif
 #if defined(LO_ENABLE_VULKAN_FSR_FG) && defined(_WIN32)
             if (g_fsrVulkanFg) g_fsrVulkanFg->AfterHostDrain();
 #endif
@@ -2510,6 +2521,11 @@ namespace gpu::video
         // Renderer shutdown above established a completed/lost-device teardown
         // boundary; a failed ordinary wait alone never releases these leases.
         g_fgPresent = FgPresentBridge{}; g_fgPresentSerial = 0;
+#if LO_PLATFORM_ANDROID
+        g_androidFg.reset();
+        g_androidFgAcquire.reset();
+        g_androidFgCapture = false;
+#endif
         g_presentation.reset();
         g_hdrSwapchain = g_hdrSceneEnabled = false;
         g_hdrSwapchainRefused.reset();
@@ -4425,13 +4441,29 @@ namespace gpu::video
             g_metalFxWidth = g_metalFxHeight = 0;
         }
 #endif
+        const auto frameConfig = settings::GetConfig();
+#if LO_PLATFORM_ANDROID
+        if (g_androidFg && !frameConfig.androidFrameGeneration) {
+            if (!WaitForPresentGpu()) return false;
+            g_androidFg.reset();
+            g_androidFgAcquire.reset();
+        }
+        const bool androidFgRequested = g_vulkan && frameConfig.androidFrameGeneration && !frameConfig.hdr &&
+            frameConfig.upscaler == upscaling::Upscaler::Sgsr2 && (!g_androidFg || !g_androidFg->Unavailable());
+        const uint32_t refresh = g_displayRefreshHz.load(std::memory_order_relaxed);
+        const bool androidFgOutputReady = androidFgRequested && refresh >= 59 && refresh <= 61;
+#endif
         {
             PresentScope reconcile(g_presentProgress, PresentStage::Reconcile);
             UpdateHdrOutput();
             if (!ReconcileHdrSwapchain()) return false;
             // Shared by real game frames and paused host overlays. Saving a new
             // cap applies here before any swapchain acquire, even while paused.
-            gpu::SetFrameRateTarget(settings::GetConfig().frameRate);
+#if LO_PLATFORM_ANDROID
+            gpu::SetFrameRateTarget(androidFgOutputReady ? android_fg::kSourceFps : frameConfig.frameRate);
+#else
+            gpu::SetFrameRateTarget(frameConfig.frameRate);
+#endif
 #if defined(_WIN32) && defined(LO_ENABLE_D3D12_FG)
             if (!ReconcileD3D12FrameGeneration()) return false;
 #endif
@@ -4444,12 +4476,20 @@ namespace gpu::video
         }
         const auto nativeTarget = gpu::GetFrameRateTarget();
 #if LO_PLATFORM_ANDROID
+        // A FIFO swapchain at 60 Hz displays the pair on successive refreshes.
+        // Keep the normal path if the system declines the 60 Hz surface hint.
+        const bool captureMobile = androidFgOutputReady && nativeTarget == android_fg::kSourceFps && !loading::Active();
+        if (g_androidFgCapture != captureMobile) {
+            g_androidFgCapture = captureMobile;
+            renderer::SetFrameGenerationInputCaptureEnabled(captureMobile);
+            if (!captureMobile && g_androidFg) g_androidFg->Interrupt();
+        }
         // Declare the game frame rate on the phone surface (RuntimeActivity
         // 0x8005): a 120 Hz panel can then run at a matching rate for 30/60
         // FPS content instead of compositing four identical refreshes.
         {
             static uint32_t hinted = ~0u;
-            const uint32_t wanted = nativeTarget;
+            const uint32_t wanted = androidFgRequested ? android_fg::kOutputFps : nativeTarget;
             if (wanted != hinted && SDL_SendAndroidMessage(0x8005, int(wanted))) {
                 hinted = wanted;
                 LOG_INFO("video output: display frame rate hint {} FPS", wanted);
@@ -4502,6 +4542,7 @@ namespace gpu::video
             nativePolicy.nativeVsyncBaseline, forceImmediate, syncConfig.variableRefreshRate);
 #if LO_PLATFORM_ANDROID
         nativeVsync = nativeVsync || nativePolicy.immediateUnavailable;
+        if (androidFgOutputReady && !forceImmediate) nativeVsync = true;
 #endif
 #endif
         if (nativeVsync != nativePolicy.nativeVsyncRequested) {
@@ -5009,6 +5050,9 @@ namespace gpu::video
         // The generated frame goes through the host swap chain too.
         if (g_metalFg && g_metalFg->Available()) return {true, g_completedPresentCount};
 #endif
+#if defined(LO_GPU_PLUME) && LO_PLATFORM_ANDROID
+        if (g_androidFg && g_androidFg->Active()) return {true, g_completedPresentCount};
+#endif
         return {};
     }
 
@@ -5174,7 +5218,7 @@ namespace gpu::video
     // Wait for swapchain images since the last TakeAcquireWaitMs (P6 pacing).
     static std::atomic<uint64_t> g_lastAcquireWaitUs{0};
 
-    static bool AcquirePresentTexture(uint32_t* index)
+    static bool AcquirePresentTexture(uint32_t* index, plume::RenderCommandSemaphore* second = nullptr)
     {
         PresentScope progress(g_presentProgress, PresentStage::Acquire);
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
@@ -5188,7 +5232,7 @@ namespace gpu::video
         } acquireTimer;
 #endif
         g_presentProgress.Image(presentation_progress::NoImage);
-        if (!loading::Active() || !g_vulkan) {
+        if ((!loading::Active() && !second) || !g_vulkan) {
             const bool acquired = g_swapChain->acquireTexture(g_acquireSemaphore.get(), index);
             if (acquired) g_presentProgress.Image(*index);
             return acquired;
@@ -5200,7 +5244,7 @@ namespace gpu::video
         const plume::WindowPixelContext pixels;
 #endif
         auto* swap = static_cast<plume::VulkanSwapChain*>(g_swapChain.get());
-        auto* semaphore = static_cast<plume::VulkanCommandSemaphore*>(g_acquireSemaphore.get());
+        auto* semaphore = static_cast<plume::VulkanCommandSemaphore*>(second ? second : g_acquireSemaphore.get());
         const auto result = vkAcquireNextImageKHR(swap->commandQueue->device->vk, swap->vk,
             0, semaphore->vk, VK_NULL_HANDLE, index);
         if (result == VK_ERROR_OUT_OF_DATE_KHR) swap->surfaceOutOfDate = true;
@@ -5667,6 +5711,20 @@ namespace gpu::video
                         g_lastSceneHeight = sourceHeight;
                     }
                 }
+#if LO_PLATFORM_ANDROID
+                bool prepareGenerated = false;
+                if (g_androidFgCapture && g_swapChain->isVsyncEnabled() && g_swapChain->getTextureCount() >= 3 &&
+                    g_presentation && !hasSettings && !drawCinematicBars && !hdrScene && !g_hdrSwapchain && !capture) {
+                    frame_generation::CompositeHandoff inputs;
+                    renderer::AcquireFgCompositeInputs(physicalAddress & 0x1FFFFFFF, inputs);
+                    if (!g_androidFg) g_androidFg = std::make_unique<android_fg::Generator>();
+                    prepareGenerated = g_androidFg->Prepare(*g_device, inputs, {sourceWidth, sourceHeight}, now);
+                    if (prepareGenerated && !g_androidFgAcquire)
+                        g_androidFgAcquire = g_device->createCommandSemaphore();
+                } else if (g_androidFg) {
+                    g_androidFg->Interrupt();
+                }
+#endif
 #if (defined(_WIN32) && (defined(LO_ENABLE_STREAMLINE_FG) || defined(LO_ENABLE_D3D12_FG) || defined(LO_ENABLE_VULKAN_FSR_FG))) || (defined(__APPLE__) && defined(LO_ENABLE_METALFX_FG))
                 frame_generation::CompositeHandoff composite;
                 double fgProducerWaitMs = 0.0;
@@ -5848,6 +5906,30 @@ namespace gpu::video
 #endif
                 g_captureCopy.d3dFenceValue = d3dSignal;
                 PreparePresentImage(backBuffer);
+#if LO_PLATFORM_ANDROID
+                // The second acquire is opportunistic. Both images share the
+                // normal submission fence; there is no half-frame CPU wait.
+                uint32_t generatedIndex = 0;
+                const bool generated = prepareGenerated && g_androidFgAcquire &&
+                    AcquirePresentTexture(&generatedIndex, g_androidFgAcquire.get());
+                if (generated) {
+                    auto* synthetic = g_androidFg->Record(*g_commandList, source);
+                    auto* target = g_swapChain->getTexture(generatedIndex);
+                    auto options = presentationOptions;
+                    options.antialiasing = Antialiasing::Off;
+                    options.scalingFilter = ScalingFilter::Bilinear;
+                    options.generatedFrame = true;
+                    g_presentation->Draw(g_commandList.get(), synthetic, target, sourceWidth, sourceHeight,
+                        g_swapChain->getWidth(), g_swapChain->getHeight(), options);
+                    DrawTitleHint(target);
+                    DrawPreparationBar(target);
+                    DrawAchievementToast(target);
+                    if (performanceOverlay)
+                        DrawPerformanceOverlay(target, presentationConfig.performanceOverlay, sourcePlan,
+                            sourceWidth, sourceHeight, now);
+                    PreparePresentImage(target);
+                }
+#endif
                 if (presentTiming) EndPresentTiming();
                 if (!EndGpuCommands(g_commandList.get())) return;
 
@@ -5856,14 +5938,35 @@ namespace gpu::video
                 plume::RenderCommandSemaphore* signalSemaphore = PresentSemaphore(imageIndex);
                 uint64_t submissionSerial = 0; int32_t submitResult = 0;
                 FgSubmitStart();
+#if LO_PLATFORM_ANDROID
+                auto* generatedSignal = generated ? PresentSemaphore(generatedIndex) : nullptr;
+                plume::RenderCommandSemaphore* waits[] = {waitSemaphore, g_androidFgAcquire.get()};
+                plume::RenderCommandSemaphore* signals[] = {signalSemaphore, generatedSignal};
+                const uint32_t semaphoreCount = generated ? 2 : 1;
+                const bool submitted = SubmitPresentationBatch(lists, 1, waits, semaphoreCount, signals, semaphoreCount,
+                    g_fence.get(), &submissionSerial, &submitResult);
+#else
                 const bool submitted = SubmitPresentationBatch(lists, 1, &waitSemaphore, 1, &signalSemaphore, 1,
                     g_fence.get(), &submissionSerial, &submitResult);
+#endif
                 FgHostSubmitted(submitted, submissionSerial, submitResult);
                 if (!submitted) { LOG_ERROR("video: GPU presentation submit failed raw_result={}", submitResult); ReadPresentCapture(captureResult, false, false, 0); return; }
                 if (presentTiming) g_presentTiming.pending = g_presentTiming.recording;
                 g_fgPresent.Submitted(g_deviceEpoch.load(), submissionSerial);
+#if LO_PLATFORM_ANDROID
+                // Interpolation is between the last displayed real frame and
+                // this one. Queue the intermediate first, then the original.
+                const bool generatedPresented = generated && PresentSwapchainImage(generatedIndex, &generatedSignal, 1);
+                if (generatedPresented) { ++g_completedPresentCount; gpu::present_clock::NotePresented(); }
+#endif
                 FgPresentStart();
                 const bool presented = PresentSwapchainImage(imageIndex, &signalSemaphore, 1);
+#if LO_PLATFORM_ANDROID
+                if (g_androidFg) {
+                    if (presented) g_androidFg->Presented(generatedPresented);
+                    else g_androidFg->Interrupt();
+                }
+#endif
                 FgPresented(presented);
                 if (!presented) {
                     g_fgPresent.CancelAll(frame_generation::HandoffCancel::DisplayChange);

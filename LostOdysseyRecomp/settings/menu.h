@@ -199,8 +199,9 @@ enum class GraphicsRow : int
     HdrCalibration = 34, // opens the HDR peak page; shown with HDR on
     Brightness = 35, // opens the brightness page
     Sgsr1 = 36,
-    Save = 37,
-    Count = 38,
+    ThermalResolution = 37,
+    Save = 38,
+    Count = 39,
 };
 inline constexpr int MenuTabWidth = 640 / MenuTabCount;
 // Mods page (System → Mods): a list page in the tab layout. A row with a detail

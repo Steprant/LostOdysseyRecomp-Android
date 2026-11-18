@@ -50,6 +50,22 @@ int main() {
     Check(fs::create_directory(scratch), "unique isolated scratch directory");
     fs::current_path(scratch);
     Check(!settings::GetConfig().variableRefreshRate, "legacy/missing preference defaults off");
+    Check(!settings::Read().androidFrameGeneration && settings::Read().thermalResolution,
+        "old settings keep Android FG off and the cinematic thermal limit on");
+    Write("android_frame_generation=2\nthermal_resolution=2\n");
+    Check(!settings::Read().androidFrameGeneration && settings::Read().thermalResolution,
+        "invalid Android graphics switches retain defaults");
+    for (bool generate : {false, true}) for (bool thermal : {false, true}) {
+        auto config = settings::GetConfig();
+        config.androidFrameGeneration = generate;
+        config.thermalResolution = thermal;
+        config.frameRate = 60;
+        Check(settings::SaveConfig(config), "Android graphics switches save");
+        const auto disk = settings::Read();
+        Check(disk.androidFrameGeneration == generate && disk.thermalResolution == thermal && disk.frameRate == 60,
+            "Android switches round trip independently of each other and the native cap");
+    }
+    Write("");
     Check(settings::GetConfig().loadingTransitions == 2 && gpu::loading::mode.load() == 2,
         "missing loading preference publishes Fast");
     for (auto mode : {0u,2u}) {

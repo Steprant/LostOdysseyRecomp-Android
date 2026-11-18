@@ -295,6 +295,10 @@ Config Read()
         }
         else if (key == "frame_rate")
             value.frameRate = number;
+        else if (key == "android_frame_generation" && number <= 1)
+            value.androidFrameGeneration = number == 1;
+        else if (key == "thermal_resolution" && number <= 1)
+            value.thermalResolution = number == 1;
         else if (key == "loading_transitions")
             value.loadingTransitions = number;
         else if (key == "hdr" && number <= 1)
@@ -481,6 +485,8 @@ static bool WriteConfig(const Config &value)
            << "\ngpu_device=" << value.gpuDevice
            << "\ndebug_language=" << value.debugLanguage
            << "\nantialiasing=" << value.antialiasing << "\nframe_rate=" << value.frameRate
+           << "\nandroid_frame_generation=" << value.androidFrameGeneration
+           << "\nthermal_resolution=" << value.thermalResolution
            << "\nloading_transitions=" << value.loadingTransitions
            << "\nshadow_resolution=" << value.shadowResolution
            << "\nambient_occlusion=" << value.ambientOcclusion

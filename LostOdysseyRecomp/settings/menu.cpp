@@ -1230,10 +1230,10 @@ bool GraphicsRowHidden(int r)
     if (r == int(GraphicsRow::HdrCalibration)) r = int(GraphicsRow::HdrPeak);
 #if LO_PLATFORM_ANDROID
     // Android owns the native surface; the renderer derives aspect from its drawable.
-    // NGX and frame generation have no Android providers in this build.
+    // The Android frame generator has a fixed 2x multiplier.
     if (r == int(GraphicsRow::Backend) || r == int(GraphicsRow::Gpu) || r == int(GraphicsRow::DisplayMode) ||
         r == int(GraphicsRow::Display) || r == int(GraphicsRow::AspectRatio) || r == int(GraphicsRow::OutputResolution) ||
-        r == int(GraphicsRow::VariableRefreshRate) || r == int(GraphicsRow::FrameGeneration) ||
+        r == int(GraphicsRow::VariableRefreshRate) ||
         r == int(GraphicsRow::FrameGenerationMultiplier) || r == int(GraphicsRow::DlssModel))
         return true;
     if (r == int(GraphicsRow::DlssQuality))
@@ -1249,6 +1249,8 @@ bool GraphicsRowHidden(int r)
     if (r == int(GraphicsRow::ScalingQuality) || r == int(GraphicsRow::Sgsr1))
         if (edit.upscaler == gpu::upscaling::Upscaler::Sgsr2 || edit.upscaler == gpu::upscaling::Upscaler::Fsr)
             return true;
+#else
+    if (r == int(GraphicsRow::ThermalResolution)) return true;
 #endif
     // A single adapter or display leaves nothing to choose.
     if (r == int(GraphicsRow::Gpu))
@@ -1274,6 +1276,7 @@ bool GraphicsRowHidden(int r)
            (r == int(GraphicsRow::FrameGenerationMultiplier) && edit.frameGenerationProvider != framegen::Provider::Dlss) ||
            ((r == int(GraphicsRow::HdrPaperWhite) || r == int(GraphicsRow::HdrPeak)) && !edit.hdr);
 }
+#if !LO_PLATFORM_ANDROID
 std::vector<framegen::Provider> FgProviders()
 {
     std::vector<framegen::Provider> providers{framegen::Provider::Off};
@@ -1282,8 +1285,12 @@ std::vector<framegen::Provider> FgProviders()
             providers.push_back(provider);
     return providers;
 }
+#endif
 std::wstring FgNotice()
 {
+#if LO_PLATFORM_ANDROID
+    return {};
+#else
     const auto running = gpu::video::GetFrameGenerationStatus();
     if (gpu::video::SelectedBackend() == GraphicsBackend::D3D12 &&
         running.sessionProvider == framegen::Provider::Dlss &&
@@ -1312,6 +1319,7 @@ std::wstring FgNotice()
     if (running.environmentOverride)
         text += Tr(L" The diagnostic override controls FG.", L" 影格生成由診斷覆寫控制。");
     return text;
+#endif
 }
 static_assert(int(GraphicsRow::Save) + 1 == int(GraphicsRow::Count));
 // Gameplay and Audio fit their visible rows; Graphics and System can scroll.
@@ -1693,6 +1701,8 @@ void Publish(uint8_t *base, uint32_t config)
         placeGraphics(GraphicsRow::RgbRange, makeChoices(L"RGB Range", L"RGB 範圍",
                    {Tr(L"Off", L"關"), Tr(L"Expanded", L"擴展")}, edit.expandRgbRange ? 1 : 0));
         placeGraphics(GraphicsRow::Sgsr1, makeChoices(L"SGSR1", L"SGSR1", onOff(), edit.sgsr1 ? 0 : 1));
+        placeGraphics(GraphicsRow::ThermalResolution, makeChoices(L"Automatic thermal resolution", L"高溫自動降解析度",
+            onOff(), edit.thermalResolution ? 0 : 1));
         std::vector<std::wstring> frameRates;
         for (const auto fps : gpu::frame_rate::kNativeRates)
             frameRates.push_back(std::to_wstring(fps) + L" FPS");
@@ -1713,6 +1723,10 @@ void Publish(uint8_t *base, uint32_t config)
 #endif
         placeGraphics(GraphicsRow::PerformanceOverlay, makeChoices(L"Performance overlay", L"效能資訊",
             {Tr(L"Off", L"關"), L"FPS", Tr(L"Detailed", L"詳細")}, std::min(edit.performanceOverlay, 2u)));
+#if LO_PLATFORM_ANDROID
+        placeGraphics(GraphicsRow::FrameGeneration, makeChoices(L"Frame generation", L"影格生成",
+            onOff(), edit.androidFrameGeneration ? 0 : 1));
+#else
         std::vector<std::wstring> providers;
         uint32_t selected = 0;
         for (auto provider : FgProviders()) {
@@ -1724,6 +1738,7 @@ void Publish(uint8_t *base, uint32_t config)
         auto frameGeneration = makeChoices(L"Frame generation", L"影格生成", std::move(providers), selected);
         frameGeneration.hidden = GraphicsRowHidden(int(GraphicsRow::FrameGeneration));
         placeGraphics(GraphicsRow::FrameGeneration, std::move(frameGeneration));
+#endif
         std::vector<std::wstring> multipliers;
         for (uint32_t multiplier = 2; multiplier <= framegen::kMaxMultiplier; ++multiplier)
             multipliers.push_back(std::to_wstring(multiplier) + L"×");
@@ -1941,6 +1956,10 @@ void Publish(uint8_t *base, uint32_t config)
             next.help = Tr(L"Shadow-map resolution multiplier. Higher values need more GPU memory and rendering time. Applies after saving.",
                            L"陰影貼圖解析度倍數。較高倍數需要更多 GPU 記憶體與渲染時間。儲存後套用。");
             break;
+        case GraphicsRow::ThermalResolution:
+            next.help = Tr(L"Caps hot SGSR2 cutscenes at 720p and restores your resolution afterward.",
+                           L"高溫時將 SGSR2 過場限制在 720p，之後恢復設定的解析度。");
+            break;
         case GraphicsRow::DynamicShadows:
             next.help = Tr(L"Character and object shadows. Low keeps only the largest few; Off removes them. Both can raise the frame rate. Applies after saving.",
                            L"角色與物件的陰影。「低」只保留畫面上最大的幾個，關閉則沒有陰影；兩者都可提升影格率。儲存後套用。");
@@ -2089,6 +2108,10 @@ void Publish(uint8_t *base, uint32_t config)
         case GraphicsRow::FrameGeneration:
         case GraphicsRow::FrameGenerationMultiplier:
         {
+#if LO_PLATFORM_ANDROID
+            next.help = Tr(L"Experimental 30 to 60 FPS. Requires SGSR2 and a 60 Hz SDR display.",
+                           L"實驗性 30 至 60 FPS。需要 SGSR2 與 60 Hz SDR 螢幕。");
+#else
             const auto compiled = [](GraphicsBackend backend, framegen::Provider provider) {
                 return gpu::frame_generation::CompiledProvider(backend, provider);
             };
@@ -2124,6 +2147,7 @@ void Publish(uint8_t *base, uint32_t config)
             else
                 next.help = Tr(L"FG works independently of upscaling. FSR uses a fixed 2× multiplier.",
                                L"影格生成可獨立於超解析度使用。FSR 固定為 2×。");
+#endif
             break;
         }
         case GraphicsRow::Hdr:
@@ -4013,6 +4037,9 @@ PPC_FUNC(sub_822F19B0)
                 edit.internalResolution = graphics_menu::RenderResolutions[
                     cycle(graphics_menu::RenderResolutionChoice(edit), uint32_t(std::size(graphics_menu::RenderResolutions)))];
                 break;
+            case GraphicsRow::ThermalResolution:
+                edit.thermalResolution = !edit.thermalResolution;
+                break;
             case GraphicsRow::ShadowResolution:
                 edit.shadowResolution = graphics_menu::ShadowResolutions[
                     cycle(graphics_menu::ShadowResolutionChoice(edit), uint32_t(std::size(graphics_menu::ShadowResolutions)))];
@@ -4109,12 +4136,16 @@ PPC_FUNC(sub_822F19B0)
                 break;
             case GraphicsRow::FrameGeneration:
             {
+#if LO_PLATFORM_ANDROID
+                edit.androidFrameGeneration = !edit.androidFrameGeneration;
+#else
                 const auto providers = FgProviders();
                 auto found = std::find(providers.begin(), providers.end(), edit.frameGenerationProvider);
                 edit.frameGenerationProvider = providers[cycle(uint32_t(found - providers.begin()), uint32_t(providers.size()))];
                 edit.frameGenerationMode = framegen::Mode::Fixed;
                 edit.frameGenerationTargetFps = 0;
                 if (edit.frameGenerationProvider == framegen::Provider::Fsr || edit.frameGenerationProvider == framegen::Provider::MetalFx) edit.frameGenerationMultiplier = 2;
+#endif
                 break;
             }
             case GraphicsRow::FrameGenerationMultiplier:

@@ -67,12 +67,15 @@ struct CompositeHandoff {
             !p.sourceColor.region.texture && !p.sourceColor.lifetime &&
             !p.motionInvalidity.region.texture && !p.motionInvalidity.lifetime &&
             !p.sceneColorCandidate.region.texture && !p.sceneColorCandidate.lifetime;
+        const bool androidInputs = p.purpose == SnapshotPurpose::AndroidInterpolation &&
+            !input.color.texture && p.motionInvalidity.Matches(input.motionInvalidity) &&
+            p.sceneColorCandidate.Complete();
         return CompositePlanSupported(plan) &&
             p.ui == UiSeparation::Unavailable &&
             !p.lineageCanceled && !p.producerDiscarded && !p.producerWaitFailed &&
             !resolveDiscarded && !resolveWaitFailed &&
             p.inputsQualifiedAtCapture &&
-            (diagnosticInputs || compositedInputs) &&
+            (diagnosticInputs || compositedInputs || androidInputs) &&
             input.CompleteForFrameGeneration() &&
             std::isfinite(input.cameraRaster.width) && input.cameraRaster.width > 0.0 &&
             std::isfinite(input.cameraRaster.height) && input.cameraRaster.height > 0.0 &&
