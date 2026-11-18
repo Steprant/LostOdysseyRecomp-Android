@@ -52,6 +52,26 @@
 // original. The CI build checks the result against the generated function
 // (tools/audio_barrier_equivalence.py).
 //
+// Steprant 2.4.5: two orders the guest protocol itself allows could stop
+// both workers for good, and the waits above made the first likelier:
+//   - the lost 0: the closing 0 lasts only until the fast worker comes back
+//     and sets its byte for the next round. A waiter asleep (or preempted)
+//     in that window never reads 0 and waits for a round it is not in,
+//     while the other waits for its byte;
+//   - the double close: two workers read the full word at the same time;
+//     the first closes and already sets its next byte, which the second
+//     one's 0 then erases.
+// On a PC test with back-to-back rounds both happen within 1,000-2,000
+// rounds, also with the guest's plain spin. Fixes, each an order the guest
+// code can produce:
+//   - a participant's byte is written only by itself and cleared only by a
+//     close, so a waiter that reads its own byte as 0 knows its round was
+//     closed and leaves as on reading 0 (missed_closes);
+//   - the close stores 0 only while the word is still full (compare and
+//     exchange); otherwise another participant closed first (late_closes),
+//     as if both 0 stores had landed before the next flag.
+// One thread alone ends exactly as before (the CI equivalence check).
+//
 // LO_AUDIO_BARRIER=0 runs the original loop; LO_AUDIO_BARRIER_SPIN_NS,
 // _WFE_US and _SLEEP_US (futex timeout) tune the phases. On by default on
 // arm64 only.
@@ -95,6 +115,9 @@ struct Stats
 {
     std::atomic<uint64_t> calls{0}, waits{0}, waitNs{0}, over50us{0}, over1ms{0};
     std::atomic<uint64_t> sleeps{0}, timeouts{0}, wakes{0}, maxNs{0};
+    // Steprant 2.4.5: rounds left on the own byte reading 0 (each one a
+    // stop of both workers before), and closes another participant made first.
+    std::atomic<uint64_t> missedCloses{0}, lateCloses{0};
 };
 inline Stats g_stats;
 
@@ -167,11 +190,24 @@ inline void Notify(Slot& slot, Stats& st)
 #endif
 }
 
-// Waits until the raw (guest big-endian) 64-bit word is 0 or expectedRaw and
-// returns the value that ended the wait.
-inline uint64_t WaitForWord(const uint64_t* word, uint64_t expectedRaw, Slot& slot, const Settings& s, Stats& st)
+// The caller's own flag byte in the raw word (guest byte i is raw byte i), or
+// 0 when it lies outside the word.
+inline uint64_t OwnMask(uint32_t processor)
 {
-    const auto done = [&](uint64_t v) { return v == 0 || v == expectedRaw; };
+    if (processor >= 8) return 0;
+    uint8_t bytes[8] = {};
+    bytes[processor] = 0xFF;
+    uint64_t mask;
+    __builtin_memcpy(&mask, bytes, 8);
+    return mask;
+}
+
+// Waits until the raw (guest big-endian) 64-bit word is 0 or expectedRaw, or
+// (2.4.5) the caller's own byte under ownMask reads 0, and returns the value
+// that ended the wait.
+inline uint64_t WaitForWord(const uint64_t* word, uint64_t expectedRaw, Slot& slot, const Settings& s, Stats& st, uint64_t ownMask = 0)
+{
+    const auto done = [&](uint64_t v) { return v == 0 || v == expectedRaw || (ownMask != 0 && (v & ownMask) == 0); };
     uint64_t v = Load(word);
     if (done(v)) return v;
     st.waits.fetch_add(1, std::memory_order_relaxed);
@@ -222,10 +258,24 @@ inline void StoreFlag(uint8_t* byte, Slot& slot, Stats& st)
     __atomic_store_n(byte, uint8_t(1), __ATOMIC_SEQ_CST);
     Notify(slot, st);
 }
-inline void CloseRound(uint64_t* word, Slot& slot, Stats& st)
+// Steprant 2.4.5: 0 only over the full word; false when another participant
+// closed first.
+inline bool CloseRound(uint64_t* word, uint64_t fullRaw, Slot& slot, Stats& st)
 {
-    __atomic_store_n(word, uint64_t(0), __ATOMIC_SEQ_CST);
+    uint64_t expected = fullRaw;
+    if (!__atomic_compare_exchange_n(word, &expected, uint64_t(0), false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        st.lateCloses.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     Notify(slot, st);
+    return true;
+}
+
+// The end of a wait: close a full word, or note a round left on the own byte.
+inline void Finish(uint64_t* word, uint64_t seen, uint64_t expectedRaw, Slot& slot, Stats& st)
+{
+    if (seen != 0 && seen == expectedRaw) CloseRound(word, expectedRaw, slot, st);
+    else if (seen != 0) st.missedCloses.fetch_add(1, std::memory_order_relaxed);
 }
 
 #if defined(PPC_FUNC)
@@ -266,8 +316,9 @@ inline void Run(PPCContext& __restrict ctx, uint8_t* base, const Settings& s, St
     ctx.r9.u64 = expected & ~(uint64_t(0xFF) << 56);
     ctx.r10.u64 = expected;
     auto* word = reinterpret_cast<uint64_t*>(base + flags);
-    const uint64_t seen = WaitForWord(word, __builtin_bswap64(expected), slot, s, st);
-    if (seen != 0) CloseRound(word, slot, st);
+    const uint64_t expectedRaw = __builtin_bswap64(expected);
+    const uint64_t seen = WaitForWord(word, expectedRaw, slot, s, st, OwnMask(processor));
+    Finish(word, seen, expectedRaw, slot, st);
     finish(true);
 }
 #endif
