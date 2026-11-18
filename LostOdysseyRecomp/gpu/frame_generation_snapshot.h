@@ -11,7 +11,7 @@
 
 namespace gpu::frame_generation {
 
-enum class SnapshotPurpose : uint8_t { DiagnosticFiveImages, CompositedBackbuffer, AndroidInterpolation };
+enum class SnapshotPurpose : uint8_t { DiagnosticFiveImages, CompositedBackbuffer, AndroidPrediction };
 
 // The diagnostic captures five images; the composited-backbuffer path owns only
 // the depth and motion images that Streamline reads. Pixels become stable only
@@ -72,7 +72,7 @@ inline std::shared_ptr<ProducerSnapshot> RecordProducerSnapshot(
         sceneFormat == plume::RenderFormat::UNKNOWN ||
         !sceneCandidate || !sceneExtent.width || !sceneExtent.height ||
         (purpose != SnapshotPurpose::DiagnosticFiveImages && purpose != SnapshotPurpose::CompositedBackbuffer &&
-         purpose != SnapshotPurpose::AndroidInterpolation) ||
+         purpose != SnapshotPurpose::AndroidPrediction) ||
         (storage && !storage->Available()))
         return {};
 
@@ -96,9 +96,9 @@ inline std::shared_ptr<ProducerSnapshot> RecordProducerSnapshot(
         sourceExtent, sourceExtent, sourceExtent, sourceExtent, sceneExtent};
 
     const bool diagnostic = purpose == SnapshotPurpose::DiagnosticFiveImages;
-    const bool sceneAndMask = diagnostic || purpose == SnapshotPurpose::AndroidInterpolation;
-    const auto selected = [diagnostic, sceneAndMask](size_t i) {
-        return diagnostic || i == 1 || i == 2 || (sceneAndMask && i >= 3);
+    const bool keepScene = diagnostic || purpose == SnapshotPurpose::AndroidPrediction;
+    const auto selected = [diagnostic, keepScene](size_t i) {
+        return diagnostic || i == 1 || i == 2 || (keepScene && i == 4);
     };
     // Complete all selected allocations before recording any copy. A failure
     // leaves no partially recorded capture in the producer batch.
@@ -131,16 +131,14 @@ inline std::shared_ptr<ProducerSnapshot> RecordProducerSnapshot(
     if (diagnostic) snapshot->sourceColor = lease(0);
     snapshot->depth = lease(1);
     snapshot->motion = lease(2);
-    if (sceneAndMask) {
-        snapshot->motionInvalidity = lease(3);
-        snapshot->sceneColorCandidate = lease(4);
-    }
+    if (diagnostic) snapshot->motionInvalidity = lease(3);
+    if (keepScene) snapshot->sceneColorCandidate = lease(4);
     // No borrowed pointer may escape the producer slot. The composited path
     // has already qualified color and invalidity but does not consume them.
     snapshot->inputs.color = diagnostic ? snapshot->sourceColor.region : temporal::TextureRegion{};
     snapshot->inputs.depth = snapshot->depth.region;
     snapshot->inputs.motion = snapshot->motion.region;
-    snapshot->inputs.motionInvalidity = sceneAndMask ? snapshot->motionInvalidity.region : temporal::TextureRegion{};
+    snapshot->inputs.motionInvalidity = diagnostic ? snapshot->motionInvalidity.region : temporal::TextureRegion{};
     // These optional views have no owned copies; their borrowed pointers and
     // provenance must not escape the producer slot through this snapshot.
     snapshot->inputs.materialInstability = {};
@@ -156,7 +154,7 @@ inline std::shared_ptr<ProducerSnapshot> RecordProducerSnapshot(
         commands->copyTextureRegion(
             plume::RenderTextureCopyLocation::Subresource(copies[i].get()),
             plume::RenderTextureCopyLocation::Subresource(originals[i]), 0, 0, 0,
-            purpose == SnapshotPurpose::AndroidInterpolation && i == 4 ? &sceneBox : nullptr);
+            purpose == SnapshotPurpose::AndroidPrediction && i == 4 ? &sceneBox : nullptr);
         commands->barriers(plume::RenderBarrierStage::ALL,
             plume::RenderTextureBarrier(originals[i], plume::RenderTextureLayout::SHADER_READ));
         commands->barriers(plume::RenderBarrierStage::ALL,

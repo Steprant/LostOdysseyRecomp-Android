@@ -67,8 +67,8 @@ struct CompositeHandoff {
             !p.sourceColor.region.texture && !p.sourceColor.lifetime &&
             !p.motionInvalidity.region.texture && !p.motionInvalidity.lifetime &&
             !p.sceneColorCandidate.region.texture && !p.sceneColorCandidate.lifetime;
-        const bool androidInputs = p.purpose == SnapshotPurpose::AndroidInterpolation &&
-            !input.color.texture && p.motionInvalidity.Matches(input.motionInvalidity) &&
+        const bool androidInputs = p.purpose == SnapshotPurpose::AndroidPrediction &&
+            !input.color.texture && !input.motionInvalidity.texture && !p.motionInvalidity.region.texture &&
             p.sceneColorCandidate.Complete();
         return CompositePlanSupported(plan) &&
             p.ui == UiSeparation::Unavailable &&

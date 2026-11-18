@@ -4572,7 +4572,7 @@ namespace gpu::renderer
                     auto* scene = promotion.scratch.get();
 #if LO_PLATFORM_ANDROID
                     if (!diagnosticSnapshot) {
-                        purpose = SnapshotPurpose::AndroidInterpolation;
+                        purpose = SnapshotPurpose::AndroidPrediction;
                         auto slot = std::find_if(androidFgStorage.begin(), androidFgStorage.end(),
                             [](const auto& images) { return images.Available(); });
                         if (slot != androidFgStorage.end()) storage = &*slot;
@@ -11267,14 +11267,8 @@ void main()
                 // unless LO_SGSR2_OBJECT_MV=1.
                 static const bool sgsr2ObjectMotion = [] {
                     const char* value = getenv("LO_SGSR2_OBJECT_MV"); return value && strcmp(value, "1") == 0; }();
-                bool sgsr2CameraOnly = !sgsr2ObjectMotion;
-#if LO_PLATFORM_ANDROID
-                // A generated frame needs the moving geometry itself, even
-                // in a static camera view. Ordinary SGSR2 keeps its fast path.
-                sgsr2CameraOnly = sgsr2CameraOnly && !fgCompositeEnabled;
-#endif
                 const bool cameraMotionOnly = (activePlan.consumer == upscaling::TemporalConsumer::MetalFxSr && !metalFxObjectMotion) ||
-                    (activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr && sgsr2CameraOnly);
+                    (activePlan.consumer == upscaling::TemporalConsumer::Sgsr2Sr && !sgsr2ObjectMotion);
                 const bool motionScene = motionOptions.enabled && !cameraMotionOnly && (!motionOptions.replay || motionReplay) && temporalActive && jitterAnchor && temporalViewport && depth &&
                     depth->allocationSerial == jitterAnchor->depthAllocation && rasterViewport.x == 0 && rasterViewport.y == 0 &&
                     rasterViewport.width == jitterAnchor->viewport.width && rasterViewport.height == jitterAnchor->viewport.height;
@@ -15136,14 +15130,16 @@ void main()
             }
             void SetFgCompositeEnabled(bool enabled)
             {
+#if LO_PLATFORM_ANDROID
+                // Cooldown can end during the same scene. Reuse idle slots
+                // without allocating the same textures again on the retry.
+                if (!enabled && !settings::GetConfig().androidFrameGeneration) androidFgStorage = {};
+#endif
                 if (fgCompositeEnabled == enabled) return;
                 CancelFgSnapshots(frame_generation::HandoffCancel::DisplayChange);
                 fgInputSnapshot.reset();
                 fgCompositeAttemptedFrame = ~0ull;
                 fgCompositeEnabled = enabled;
-#if LO_PLATFORM_ANDROID
-                if (!enabled) androidFgStorage = {};
-#endif
             }
             void InvalidateFgResolve(ResolvedSurface& rs)
             {

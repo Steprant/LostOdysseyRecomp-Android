@@ -1,15 +1,12 @@
 #pragma once
 
+#include "android_frame_generation_budget.h"
 #include "frame_generation_composite.h"
-#include <chrono>
+
+#include <future>
 
 namespace gpu::android_fg
 {
-using Clock = std::chrono::steady_clock;
-
-inline constexpr uint32_t kSourceFps = 30;
-inline constexpr uint32_t kOutputFps = 60;
-
 class Generator
 {
     using Snapshot = std::shared_ptr<frame_generation::ProducerSnapshot>;
@@ -17,23 +14,29 @@ class Generator
         Snapshot images;
         Clock::time_point time;
     };
+    struct Programs {
+        std::unique_ptr<plume::RenderPipelineLayout> layout;
+        std::unique_ptr<plume::RenderSampler> sampler;
+        std::unique_ptr<plume::RenderDescriptorSet> descriptors;
+        std::array<std::unique_ptr<plume::RenderPipeline>, 2> pipelines;
+    };
     Sample last;
-    // These leases outlive submission, even if the producer moves to a new
-    // scene or frame generation is turned off before the present fence.
+    // These leases remain owned through the optional submission's fence.
     Snapshot currentInput, previousInput;
-    std::unique_ptr<plume::RenderPipelineLayout> layout;
-    std::unique_ptr<plume::RenderSampler> sampler;
-    std::unique_ptr<plume::RenderDescriptorSet> descriptors;
-    std::array<std::unique_ptr<plume::RenderPipeline>, 3> pipelines;
+    Programs programs;
+    std::future<Programs> warming;
     std::unique_ptr<plume::RenderTexture> field, output;
     resolution::Size fieldSize{}, outputSize{};
+    float prediction = 0.5f;
     bool failed = false;
     bool active = false;
 
-    bool CreatePipelines(plume::RenderDevice& device);
-    bool EnsureImages(plume::RenderDevice& device, resolution::Size extent, resolution::Size render);
+    static Programs CreatePipelines(plume::RenderDevice& device);
+    bool EnsureImages(plume::RenderDevice& device, resolution::Size extent);
 
 public:
+    bool Warmup(plume::RenderDevice& device);
+    bool Warming() const;
     bool Prepare(plume::RenderDevice& device, const frame_generation::CompositeHandoff& capture,
         resolution::Size extent, Clock::time_point now);
     plume::RenderTexture* Record(plume::RenderCommandList& commands, plume::RenderTexture* original);
