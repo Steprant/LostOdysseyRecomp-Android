@@ -4,7 +4,8 @@ name: Steprant release
 # that the draft exists and that its APK digest matches the expected SHA-256,
 # then sets the title and the notes file from the repository, publishes it
 # and marks it latest. Run by hand (workflow_dispatch); a published release is
-# only updated (title and notes), never re-created.
+# only updated (title and notes), never re-created. retire_tag, when given,
+# turns a release the new one replaces back into a draft (nothing is deleted).
 on:
   workflow_dispatch:
     inputs:
@@ -24,6 +25,10 @@ on:
         description: Expected SHA-256 of the attached APK
         required: true
         type: string
+      retire_tag:
+        description: Published release this one replaces, turned back into a draft (optional)
+        required: false
+        type: string
 permissions:
   contents: write
 jobs:
@@ -42,6 +47,7 @@ jobs:
           TITLE: ${{ inputs.title }}
           NOTES: ${{ inputs.notes }}
           SUM: ${{ inputs.apk_sha256 }}
+          RETIRE: ${{ inputs.retire_tag }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9.]+-steprant\.[0-9]{8}-[A-Za-z0-9-]+$ ]] || { echo "::error::invalid tag"; exit 1; }
@@ -54,3 +60,9 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
             -f name="$TITLE" -F body=@"$NOTES" -F draft=false -f make_latest=true \
             -q '{draft, prerelease, name, tag_name, html_url}'
+          if [[ -n "$RETIRE" && "$RETIRE" != "$TAG" ]]; then
+            [[ "$RETIRE" =~ ^v[0-9.]+-steprant\.[0-9]{8}-[A-Za-z0-9-]+$ ]] || { echo "::error::invalid retire_tag"; exit 1; }
+            old=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.tag_name == \"$RETIRE\") | .id" | head -n 1)
+            [[ -n "$old" ]] || { echo "::error::no release with tag $RETIRE"; exit 1; }
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$old" -F draft=true -q '{draft, name, tag_name}'
+          fi

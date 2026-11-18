@@ -2,36 +2,36 @@
 
 <img src="assets/steprant-android-logo.webp" alt="Lost Odyssey Recomp Android — Steprant logo" width="360">
 
-# Lost Odyssey Recomp — Steprant Android 2.4.8
+# Lost Odyssey Recomp — Steprant Android 2.5
 
-**Android 2.4.8, the stable version: optimized as far as possible without lowering visual quality. Crowded scenes up to 28% faster, 22% less battery draw, audio without dropouts.**
+**Android 2.5, the stable version: optimized as far as possible without lowering visual quality. Crowded scenes up to 28% faster, 22% less battery draw, audio without dropouts.**
 
-[![Download Android 2.4.8 APK](https://img.shields.io/badge/Download-Android_2.4.8_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.4.8-steprant.20261118-Stable/LostOdyssey-Steprant-v2.4.8-Stable-20261118.apk)
+[![Download Android 2.5 APK](https://img.shields.io/badge/Download-Android_2.5_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.5-steprant.20261118-Release/LostOdyssey-Steprant-v2.5-Release-20261118.apk)
 
-**[Download APK 2.4.8](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.4.8-steprant.20261118-Stable/LostOdyssey-Steprant-v2.4.8-Stable-20261118.apk) · [GitHub release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.4.8-steprant.20261118-Stable) · [Release notes](docs/notes/steprant-2.4.8-release.md) · [Android guide](docs/STEPRANT_ANDROID.md)**
+**[Download APK 2.5](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.5-steprant.20261118-Release/LostOdyssey-Steprant-v2.5-Release-20261118.apk) · [GitHub release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.5-steprant.20261118-Release) · [Release notes](docs/notes/steprant-2.5-release.md) · [Android guide](docs/STEPRANT_ANDROID.md)**
 
 ![Android ARM64](https://img.shields.io/badge/Android-8.0%2B_ARM64-3DDC84?logo=android&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/Graphics-Vulkan-AC162C)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 2.4.8 is this fork's version, separate from upstream's release numbering.
+An independent Android edition maintained by **Steprant**, based on the official **v1.1.0** release of [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp) by **Frank / freefrank and the original community**. Steprant 2.5 is this fork's version, separate from upstream's release numbering.
 
 </div>
 
-## Steprant Android 2.4.8 — stable
+## Steprant Android 2.5 — stable
 
-2.4.8 is the stable version of Steprant Android. It was optimized as far as we could take it **without lowering visual quality**: same render resolution, upscaler, shadows, effects, draw order and shader operations as 2.1. Every gain comes from doing the same work with less waiting and less overhead, never from drawing less. Measured on a Xiaomi 14 (Adreno 750, 30 FPS); results depend on device, driver, scene and settings. The [release notes](docs/notes/steprant-2.4.8-release.md) list every change and the sessions behind the numbers.
+2.5 is the stable version of Steprant Android, built from the code tested on the phone as 2.4.8. It was optimized as far as we could take it **without lowering visual quality**: same render resolution, upscaler, shadows, effects, draw order and shader operations as 2.1. The gains come from doing the same work with less waiting, less spinning and less overhead, not from drawing less; the one deliberate exception is a thermal safeguard that renders hot cutscenes at 720p before SGSR2 when the battery reaches 41.5 °C. It collects six days of work after 2.1, tested build by build from 2.1.1 to 2.4.8. Measured on a Xiaomi 14 (Adreno 750, 30 FPS); results depend on device, driver, scene and settings. The [release notes](docs/notes/steprant-2.5-release.md) list every change and the sessions behind the numbers.
 
 > [!IMPORTANT]
-> **Snapdragon (Adreno): play 2.4.8 with the Mr. Purple T30 GPU driver (PurpleVK 26.3).** 2.4.8 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup.
+> **Snapdragon (Adreno): play 2.5 with the Mr. Purple T30 GPU driver (PurpleVK 26.3).** 2.5 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup.
 >
 > 1. In the game, open **CTRL → GPU driver**.
 > 2. Tap **Download recommended: Mr. Purple T30** and restart the game.
 > 3. The first start after the change prepares shaders for about 50 seconds, once; from the next start it is ready.
 
-### Measured improvements: 2.1 → 2.4.8
+### Measured improvements: 2.1 → 2.5
 
-| What was measured | 2.1 | 2.4.8 | Change |
+| What was measured | 2.1 | 2.5 | Change |
 | :--- | ---: | ---: | ---: |
 | Frame rate in crowded scenes (3,000–4,000 draws per frame) (1) | ~20 FPS | 24.5–25.6 FPS | **+23 to +28%** |
 | Frame time in crowded scenes (1) | ~50 ms | 39.1–40.8 ms | **−18 to −22%** |
@@ -43,26 +43,26 @@ An independent Android edition maintained by **Steprant**, based on the official
 | Audio callback stalls of 50 ms or more | 16 in 25 minutes | 0 in 20 minutes | **−100%** |
 | XMA audio decode errors | 11 in 8.5 minutes | 0 in 546,000 decodes | **−100%** |
 
-(1) 2.1: split-screen scenes with two cameras; 2.4.8: the crowded station entrance. Same draw counts, different scenes. (2) Unplugged, screen included; different sessions and scenes (other 2.1 sessions: 6.1–6.5 W, −27 to −31%).
+(1) 2.1: split-screen scenes with two cameras; 2.5: the crowded station entrance. Same draw counts, different scenes. (2) Unplugged, screen included; different sessions and scenes (other 2.1 sessions: 6.1–6.5 W, −27 to −31%).
 
-**Unchanged, said plainly:** normal play was already locked at 30 FPS in 2.1 and stays there (frames over 50 ms per minute 3.8 → 3.8, **0%**; p99 40.7 → 40.5 ms, **−0.5%**). Peak battery temperature **−0.7 °C** over a session four times longer, with no CPU throttling in two hours. Peak GPU memory **+9%** (2,336 → 2,544 MiB, two-hour session).
 
 ### What is new since 2.1
 
-| Area | In 2.4.8 |
+| Area | In 2.5 |
 | :--- | :--- |
 | **Crowded scenes** | Heavy frames go to the GPU in pieces within the same GPU slot, without waiting in the middle of a frame, so the GPU starts while the rest is still being recorded. Same commands, same order, same picture. |
 | **Per-draw work** | Repeated binds and state (descriptor sets, layouts, framebuffer, viewport, scissor, index buffer) left out of the frame-graph capture (−65% commands at the station); shared index storage bound once; only edited constant blocks restored. |
-| **Game code** | Registers as function locals where provably safe, native `memcpy`/`memset`, profile-guided build with register promotion; the game's main thread no longer spins on zero-timeout polls. |
-| **Audio** | Audio workers sleep instead of spinning and never lose a turn; XMA frames assembled by bytes; better pacing, resync and dialogue mix. |
-| **Memory and stability** | GPU memory in 64 MiB blocks; readback buffer created on first use; fixed a crash after the battle with Mack. |
-| **Interface** | Battery temperature in the performance overlay; quit prompt fixes from upstream. |
+| **Heat and CPU** | The game's main thread no longer spins on zero-timeout polls (Numara shipyard −28% W, −25% CPU); threads waiting for the GPU, the idle command thread and the XMA decoder sleep until there is work. |
+| **Game code** | Registers as function locals where provably safe (save/restore call sites −99%), native `memcpy`/`memset`, profile-guided build with register promotion. |
+| **Audio** | Audio workers sleep instead of spinning and never lose a turn; elastic audio reserve; XMA frames assembled by bytes; the original audio mix is back. |
+| **Memory and stability** | The game survives the background (foreground service); GPU memory in 64 MiB blocks; readback buffer created on first use; old textures released; fixed a crash after the battle with Mack. |
+| **Interface and Tester** | Battery temperature in the performance overlay; quit prompt fixes from upstream; Tester with watts, °C per minute and profiling only in short bursts. |
 
 Everything from 2.1 is still there: frame graph, SGSR2 + SMAA (default 900p, SGSR2 Quality, shadows ×2, 30 FPS), four swap chain images, audio catch-up, TV/HDMI mode ([TV guide](docs/ANDROID_TV_HDMI.md)), gameplay extras and the Tester ([Tester guide](docs/ANDROID_TESTER.md)).
 
-**Known in 2.4.8:** the most crowded scenes run at about 24–25 FPS (CPU-bound GPU command thread, about 10 µs per draw); hitches in pre-rendered movies; short pauses at map changes while the game loads; about 50 s of shader preparation at the first start after a driver change.
+**Known in 2.5:** the most crowded scenes run at about 24–25 FPS (CPU-bound GPU command thread, about 10 µs per draw); hitches in pre-rendered movies; short pauses at map changes while the game loads; about 50 s of shader preparation at the first start after a driver change.
 
-**Install:** Android 8.0+, ARM64 and Vulkan. Launcher **Lost Odyssey Steprant**, package `io.github.freefrank.lostodyssey.steprant`. 2.4.8 installs over 2.1 and every earlier Steprant build (same package and signing key) and keeps saves, settings and the shader cache; it coexists with the official app.
+**Install:** Android 8.0+, ARM64 and Vulkan. Launcher **Lost Odyssey Steprant**, package `io.github.freefrank.lostodyssey.steprant`. 2.5 installs over 2.1 and every earlier Steprant build (same package and signing key) and keeps saves, settings and the shader cache; it coexists with the official app.
 
 [Installation](docs/STEPRANT_ANDROID.md#installation) · [All Steprant releases](https://github.com/Steprant/LostOdysseyRecomp-Android/releases) · [Changelog](CHANGELOG.md) · [2.1 release notes](docs/notes/steprant-2.1-release.md) · [2.0 release notes](docs/notes/steprant-2.0-release.md) · [1.8 release notes](docs/notes/steprant-1.8-release.md)
 
@@ -70,7 +70,7 @@ Supply supported game data from your own discs. Game assets, executables, privat
 
 Thanks to **Frank / freefrank**, the upstream contributors and the original community for Lost Odyssey Recomp and its platform support, and to **Mr. Purple** for the PurpleVK Turnip builds. [Official project](https://github.com/freefrank/LostOdysseyRecomp) · [Official downloads](https://github.com/freefrank/LostOdysseyRecomp/releases/latest) · [Upstream Discord](https://discord.gg/z2yPct6z2w) · [Support Frank](https://ko-fi.com/dotslash).
 
-> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the **Steprant APK 2.4.8** download above for this Android edition.
+> The reference below is retained from the original project. Desktop/platform features and download links in that section describe **upstream**. Use the **Steprant APK 2.5** download above for this Android edition.
 
 ## Contents
 

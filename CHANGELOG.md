@@ -4,18 +4,19 @@ Brief release highlights, newest first. Dates are UTC. Technical validation is r
 
 按新到旧记录简短更新，日期采用 UTC。技术验证见[开发状态](docs/STATUS.md)，后续计划见[路线图](docs/ROADMAP.zh-CN.md)。
 
-## [v2.4.8-steprant.20261118-Stable](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.4.8-steprant.20261118-Stable) — Steprant Android 2.4.8 (stable)
+## [v2.5-steprant.20261118-Release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.5-steprant.20261118-Release) — Steprant Android 2.5 (stable)
 
 ### English
 
-The stable version: optimized as far as possible without lowering visual quality. Every change since 2.1 and the measurements behind it are in the [2.4.8 release notes](docs/notes/steprant-2.4.8-release.md).
+The stable version, built from the code tested as 2.4.8: optimized as far as possible without lowering visual quality. Every change since 2.1 (2.1.1 to 2.4.8) and the measurements behind it are in the [2.5 release notes](docs/notes/steprant-2.5-release.md).
 
 - Crowded scenes (3,000–4,000 draws): +23 to +28% frame rate, −96% frames over 50 ms; heavy frames go to the GPU in pieces without mid-frame waits.
 - Less Vulkan work per draw: repeated binds and state left out of the frame-graph capture (−65% commands at the station).
 - Battery draw on the phone screen −22% (5.75 → 4.47 W); CPU −11 to −20%; GPU occupancy −6 to −10%.
 - Audio: no empty queues, no stalls over 50 ms, no XMA errors (−100% each); audio workers sleep instead of spinning.
-- Recompiled code with registers as locals and native memcpy/memset; the main thread no longer spins on zero-timeout polls; GPU memory in 64 MiB blocks; crash after the battle with Mack fixed.
-- Unchanged: normal play stays at 30 FPS; peak GPU memory +9%. Known: crowded scenes at about 24–25 FPS, hitches in pre-rendered movies.
+- The main thread no longer spins on zero-timeout polls (shipyard −28% W); threads waiting for the GPU, the idle command thread and the XMA decoder sleep until there is work.
+- Recompiled code with registers as locals (save/restore call sites −99%) and native memcpy/memset; original audio mix back; elastic audio reserve; the game survives the background; GPU memory in 64 MiB blocks; crash after the battle with Mack fixed.
+- Known: crowded scenes at about 24–25 FPS, hitches in pre-rendered movies.
 
 ## [v2.1-steprant.20261112-Release](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/tag/v2.1-steprant.20261112-Release) — Steprant Android 2.1
 
