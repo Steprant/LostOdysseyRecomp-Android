@@ -25,6 +25,7 @@ on:
     paths:
       - .github/workflows/android-apk.yml
       - packaging/android/**
+      - tools/patches/plume-lostodyssey.patch
       - thirdparty/libadrenotools/**
       - thirdparty/signalsmith*/**
       - LostOdysseyRecomp/apu/**
@@ -308,6 +309,7 @@ jobs:
             # 2.4.7 (18/11): scene pieces in the same GPU slot, without
             # waits, and an automatic A/B of the three modes; versionCode 2040007.
             steprant/v2.4.7) version=2.4.7 ;;
+            # 2.4.8: fixed same-slot submission and lower per-draw CPU cost at full quality.
             steprant/v2.4.8) version=2.4.8 ;;
             *) version= ;;
           esac
