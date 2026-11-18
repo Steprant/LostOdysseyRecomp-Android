@@ -7,3 +7,31 @@ diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
      typedef ANativeWindow* RenderWindow;
  #elif defined(PLUME_SDL_VULKAN_ENABLED)
      typedef SDL_Window *RenderWindow;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -8567,6 +8567,24 @@ namespace plume {
+         allocatorInfo.pVulkanFunctions = &vmaFunctions;
+         allocatorInfo.instance = renderInterface->instance;
+         allocatorInfo.vulkanApiVersion = renderInterface->appInfo.apiVersion;
++        // Steprant 2.4.5: Vulkan memory on the phone is system RAM, taken
++        // when allocated. With VMA's 256 MiB blocks a request of up to 128 MiB
++        // shares a block, and the last block of each memory type is mostly
++        // empty. 64 MiB blocks: a request over 32 MiB gets memory of its exact
++        // size (the two 96 MiB upload rings 192 MiB instead of a 256 MiB
++        // block) and the empty tails shrink. LO_VMA_BLOCK_MB sets the size in
++        // MiB; 0 keeps VMA's.
++#if defined(__ANDROID__)
++        {
++            VkDeviceSize blockMb = 64;
++            if (const char *value = getenv("LO_VMA_BLOCK_MB"); (value != nullptr) && (*value != '\0')) {
++                char *end = nullptr;
++                const unsigned long parsed = strtoul(value, &end, 10);
++                if ((end != nullptr) && (*end == '\0') && (parsed <= 1024)) blockMb = VkDeviceSize(parsed);
++            }
++            if (blockMb != 0) allocatorInfo.preferredLargeHeapBlockSize = blockMb << 20;
++        }
++#endif
+ 
+         res = vmaCreateAllocator(&allocatorInfo, &allocator);
+         if (res != VK_SUCCESS) {

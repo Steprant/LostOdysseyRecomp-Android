@@ -3094,6 +3094,9 @@ namespace gpu::renderer
                 arenaMapped = static_cast<uint8_t*>(vertexArena->map());
                 if (!arenaMapped) return InitFailure("vertex_arena.map", gpu::render_arena::kVertexArenaSize);
                 resolveReadback = getenv("LO_RESOLVE_READBACK") != nullptr;
+                // Steprant 2.4.5: the resolve readback reads back every frame;
+                // its buffer is ready before the first one, as before 2.4.2.
+                if (resolveReadback && !Readback()) return InitFailure("readback.create", kReadbackSize);
                 if (const char* sync = getenv("LO_MODS_TEXTURE_SYNC"); sync && *sync && strcmp(sync, "0") != 0)
                     textureReplacementSync = true;
                 if (const char* path = getenv("LO_TEXTURE_FINGERPRINT_LOG"); path && *path && !textureFingerprintLog) {
