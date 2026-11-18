@@ -19,6 +19,14 @@
 // must bind again the pipeline, descriptor set, push constants, viewport
 // and scissor its draws use. Equal bytes, and the replays must have been
 // split into several chunks.
+//
+// Steprant 2.4.2: the capture leaves out set binds analyze() finds repeated
+// and layout binds of the layout in effect. The frames bind sets again where
+// they are bound, at a second index above the sampled one, and switch
+// between two compatible layouts. Every configuration must make exactly the
+// direct recording's descriptor set binds in the driver, the unfiltered frame
+// graph must find the same dead stores, and the filter must have left binds
+// out.
 #include <plume_render_interface.h>
 #include <stdafx.h>
 #include <gpu/shader/dxc_compiler.h>
@@ -81,7 +89,9 @@ std::unique_ptr<RenderShader> Compile(RenderDevice* device, const char* source, 
 
 // Records and runs the frames; returns the bytes of every target of every
 // frame, or empty on a failure.
-std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& parallelReplays, uint64_t& chunks)
+struct Counts { uint64_t deadStores = 0, parallelReplays = 0, chunks = 0, descriptorBinds = 0, filteredSets = 0, filteredLayouts = 0; };
+
+std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
 {
     auto api = CreateVulkanInterface();
     if (!api) return {};
@@ -109,12 +119,17 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
     readbacks[kColors] = device->createBuffer(RenderBufferDesc::ReadbackBuffer(kSize * kSize * 4));
     const RenderTexture* depthColor[] = {colors[0].get()};
     auto depthFb = device->createFramebuffer(RenderFramebufferDesc(depthColor, 1, depth.get()));
+    // Two sets (the shaders sample set 0), and a second layout of the same
+    // definition: compatible, but a layout change for Plume.
     RenderPipelineLayoutBuilder layoutBuilder;
     layoutBuilder.begin(false, false);
     layoutBuilder.addPushConstant(0, 0, sizeof(Push), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
     layoutBuilder.addDescriptorSet(setBuilder);
+    layoutBuilder.addDescriptorSet(setBuilder);
     layoutBuilder.end();
     auto layout = layoutBuilder.create(device.get());
+    auto otherLayout = layoutBuilder.create(device.get());
+    if (!otherLayout) return {};
     auto vs = Compile(device.get(), kVs, "vs_6_0");
     auto colorPs = Compile(device.get(), kColorPs, "ps_6_0");
     auto samplePs = Compile(device.get(), kSamplePs, "ps_6_0");
@@ -143,7 +158,7 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
     if (!colorPipeline || !samplePipeline || !depthPipeline) return {};
 
     std::vector<uint8_t> out;
-    deadStores = parallelReplays = chunks = 0;
+    counts = Counts{};
     for (uint32_t seed = 1; seed <= seeds; ++seed) {
         std::mt19937 rng(seed * 7919u);
         std::array<RenderTextureLayout, kColors> layoutOf{};
@@ -182,6 +197,23 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
         };
         auto randomColor = [&](float* c) { for (int i = 0; i < 4; ++i) c[i] = float(51 * (rng() % 6)) / 255.0f; };
         auto attached = [&](int t) { return (boundIndex == t) || (boundIndex == 3 && t == 0); };
+
+        // Binds as the renderer makes them: the layout and the sets again
+        // before draws, mostly unchanged.
+        const RenderPipelineLayout* currentLayout = layout.get();
+        auto rebindLayout = [&]() {
+            if (rng() % 6 == 0) currentLayout = (currentLayout == layout.get()) ? otherLayout.get() : layout.get();
+            list->setGraphicsPipelineLayout(currentLayout);
+        };
+        auto bindUnused = [&]() {
+            // Set 1 is not read: any set that is not an attachment is valid there.
+            for (int tries = 0; tries < 3; ++tries) {
+                const int t = int(rng() % kColors);
+                if (attached(t) || layoutOf[t] != RenderTextureLayout::SHADER_READ) continue;
+                list->setGraphicsDescriptorSet(sets[t].get(), 1);
+                return;
+            }
+        };
 
         list->setPassProfiling(true);
         list->begin();
@@ -223,6 +255,8 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
                 randomRect(push.rect); randomColor(push.color);
                 push.depth = float(rng() % 8) / 8.0f;
                 list->setPipeline(boundIndex == 3 ? depthPipeline.get() : colorPipeline.get());
+                if (rng() % 2) rebindLayout();
+                if (rng() % 3 == 0) bindUnused();
                 list->setGraphicsPushConstants(0, &push);
                 list->drawInstanced(6, 1, 0, 0);
             } else if (kind < 9) {
@@ -235,7 +269,13 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
                 Push push{};
                 randomRect(push.rect); randomColor(push.color);
                 list->setPipeline(samplePipeline.get());
-                list->setGraphicsDescriptorSet(sets[source].get(), 0);
+                rebindLayout();
+                if (rng() % 2) bindUnused();
+                const uint32_t binds = 1 + rng() % 3;
+                for (uint32_t b = 0; b < binds; ++b) {
+                    list->setGraphicsDescriptorSet(sets[source].get(), 0);
+                    if (rng() % 3 == 0) bindUnused();
+                }
                 list->setGraphicsPushConstants(0, &push);
                 list->drawInstanced(6, 1, 0, 0);
             } else if (kind < 10) {
@@ -275,9 +315,12 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, uint64_t& deadStores, uint64_t& p
         queue->waitForCommandFence(fence.get());
         RenderPassProfile profile;
         if (list->takePassProfile(profile)) {
-            deadStores += profile.frameGraphDeadStores;
-            parallelReplays += profile.parallelReplays;
-            chunks += profile.parallelChunks;
+            counts.deadStores += profile.frameGraphDeadStores;
+            counts.parallelReplays += profile.parallelReplays;
+            counts.chunks += profile.parallelChunks;
+            counts.descriptorBinds += profile.descriptorBinds;
+            counts.filteredSets += profile.frameGraphFilteredSetBinds;
+            counts.filteredLayouts += profile.frameGraphFilteredLayoutBinds;
         }
         for (auto& readback : readbacks) {
             const auto* bytes = static_cast<const uint8_t*>(readback->map());
@@ -297,6 +340,8 @@ int main()
     const Config configs[] = {
         {"direct", {{"LO_VK_FRAME_GRAPH", "0"}}},
         {"frame graph, poisoned discards", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}}},
+        // Steprant 2.4.2: compared with the one above (same dead stores).
+        {"frame graph, poisoned, every bind captured", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_FRAME_GRAPH_SET_FILTER", "0"}}},
         {"frame graph, poisoned, no deferral", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_DEFER_COPY", "0"}}},
         {"frame graph, poisoned, full render area", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_RENDER_AREA", "0"}}},
         {"frame graph, parallel recording, poisoned", {{"LO_VK_FRAME_GRAPH", "1"}, {"LO_VK_FRAME_GRAPH_POISON", "1"}, {"LO_VK_PARALLEL_RECORD", "1"},
@@ -305,6 +350,7 @@ int main()
             {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "3"}, {"LO_VK_PARALLEL_RECORD_THREADS", "3"}}},
     };
     std::vector<std::vector<uint8_t>> results;
+    uint64_t directBinds = 0, filteredDeadStores = 0;
     int failed = 0;
     for (const auto& config : configs) {
         int pipe[2];
@@ -314,14 +360,17 @@ int main()
         if (child == 0) {
             ::close(pipe[0]);
             for (const auto& [key, value] : config.env) setenv(key, value, 1);
-            uint64_t dead = 0, parallelReplays = 0, chunks = 0;
-            const auto bytes = RunFrames(seeds, dead, parallelReplays, chunks);
-            std::printf("[%s] %u frames, %llu dead stores, %llu replays recorded in parallel, %llu chunks\n", config.name, seeds,
-                (unsigned long long)dead, (unsigned long long)parallelReplays, (unsigned long long)chunks);
+            Counts counts;
+            const auto bytes = RunFrames(seeds, counts);
+            std::printf("[%s] %u frames, %llu dead stores, %llu replays recorded in parallel, %llu chunks, %llu set binds in the driver, "
+                "%llu set and %llu layout binds left out\n", config.name, seeds,
+                (unsigned long long)counts.deadStores, (unsigned long long)counts.parallelReplays, (unsigned long long)counts.chunks,
+                (unsigned long long)counts.descriptorBinds, (unsigned long long)counts.filteredSets, (unsigned long long)counts.filteredLayouts);
             std::fflush(stdout);
             const char* parallel = std::getenv("LO_VK_PARALLEL_RECORD");
-            const bool split = parallelReplays == seeds && chunks >= parallelReplays * 4;
-            const uint64_t header[3] = {bytes.size(), dead, (parallel && std::strcmp(parallel, "1") == 0 && !split) ? 1u : 0u};
+            const bool split = counts.parallelReplays == seeds && counts.chunks >= counts.parallelReplays * 4;
+            const uint64_t header[6] = {bytes.size(), counts.deadStores, (parallel && std::strcmp(parallel, "1") == 0 && !split) ? 1u : 0u,
+                counts.descriptorBinds, counts.filteredSets, counts.filteredLayouts};
             ssize_t ignored = ::write(pipe[1], header, sizeof(header));
             for (size_t done = 0; done < bytes.size();) {
                 const ssize_t n = ::write(pipe[1], bytes.data() + done, bytes.size() - done);
@@ -333,7 +382,7 @@ int main()
             _exit(bytes.empty() ? 77 : 0);
         }
         ::close(pipe[1]);
-        uint64_t header[3] = {};
+        uint64_t header[6] = {};
         std::vector<uint8_t> bytes;
         if (::read(pipe[0], header, sizeof(header)) == ssize_t(sizeof(header))) {
             bytes.resize(header[0]);
@@ -359,7 +408,26 @@ int main()
             }
             if (header[1] == 0) { std::printf("FAIL [%s]: no dead store to test\n", config.name); ++failed; }
             if (header[2] != 0) { std::printf("FAIL [%s]: the replays were not split into chunks\n", config.name); ++failed; }
+            // Steprant 2.4.2: the same set binds reach the driver as in the
+            // direct recording, and the filter left binds out where it is on.
+            if (header[3] != directBinds) {
+                std::printf("FAIL [%s]: %llu set binds in the driver, the direct recording made %llu\n", config.name,
+                    (unsigned long long)header[3], (unsigned long long)directBinds);
+                ++failed;
+            }
+            const bool filtered = std::strstr(config.name, "every bind captured") == nullptr;
+            if (filtered && (header[4] == 0 || header[5] == 0)) { std::printf("FAIL [%s]: no bind left out\n", config.name); ++failed; }
+            if (!filtered && (header[4] != 0 || header[5] != 0)) { std::printf("FAIL [%s]: binds left out with the filter off\n", config.name); ++failed; }
+            if (!filtered && header[1] != filteredDeadStores) {
+                std::printf("FAIL [%s]: %llu dead stores, %llu with the filter\n", config.name,
+                    (unsigned long long)header[1], (unsigned long long)filteredDeadStores);
+                ++failed;
+            }
+        } else {
+            directBinds = header[3];
+            if (directBinds == 0) { std::printf("FAIL [%s]: no set bind reached the driver\n", config.name); ++failed; }
         }
+        if (results.size() == 1) filteredDeadStores = header[1];
         results.push_back(std::move(bytes));
     }
     if (failed) { std::printf("FAIL: %d configuration(s)\n", failed); return 1; }

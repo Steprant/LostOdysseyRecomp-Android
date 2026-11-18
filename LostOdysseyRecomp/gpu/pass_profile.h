@@ -89,6 +89,7 @@ public:
     uint64_t replayNs[kReplayKinds] = {}, replayCmds[kReplayKinds] = {};
     uint64_t replayAnalyzeNs = 0, replayDriverDrawNs = 0, replayPassBeginNs = 0, replayPassEndNs = 0;
     uint64_t replayPassBegins = 0, replayPassEnds = 0, replayRepeatedSetBinds = 0;
+    uint64_t frameGraphFilteredSetBinds = 0, frameGraphFilteredLayoutBinds = 0; // Steprant 2.4.2
     // Steprant 2.1.5: replays recorded in parallel (plume parallel_record).
     uint64_t parallelReplays = 0, parallelChunks = 0, parallelOwnChunks = 0;
     uint64_t parallelRecordNs = 0, parallelOwnNs = 0, parallelWaitNs = 0;
@@ -130,6 +131,8 @@ public:
         replayPassBegins += profile.replayPassBegins;
         replayPassEnds += profile.replayPassEnds;
         replayRepeatedSetBinds += profile.replayRepeatedSetBinds;
+        frameGraphFilteredSetBinds += profile.frameGraphFilteredSetBinds;
+        frameGraphFilteredLayoutBinds += profile.frameGraphFilteredLayoutBinds;
         parallelReplays += profile.parallelReplays;
         parallelChunks += profile.parallelChunks;
         parallelOwnChunks += profile.parallelOwnChunks;
@@ -326,6 +329,10 @@ public:
         std::snprintf(buffer, sizeof(buffer), " | driver_ms: draws=%.2f pass_begin=%.2f/%.1f pass_end=%.2f/%.1f | repeated_set_binds=%.0f",
             ms(replayDriverDrawNs), ms(replayPassBeginNs), double(replayPassBegins) / f, ms(replayPassEndNs), double(replayPassEnds) / f,
             double(replayRepeatedSetBinds) / f);
+        line += buffer;
+        // Steprant 2.4.2: binds the capture left out (not replayed, not analysed).
+        std::snprintf(buffer, sizeof(buffer), " filtered_set_binds=%.0f filtered_layout_binds=%.0f",
+            double(frameGraphFilteredSetBinds) / f, double(frameGraphFilteredLayoutBinds) / f);
         line += buffer;
         if (parallelReplays != 0)
         {
