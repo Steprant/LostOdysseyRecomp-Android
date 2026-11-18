@@ -393,12 +393,14 @@ std::string TakeImportLine(double seconds)
         const uint64_t abMax = ab.maxNs.exchange(0, std::memory_order_relaxed);
         // Steprant 2.4.5: counts in the window. missed_closes: rounds left on
         // the own byte reading 0, each one a stop of both workers before;
-        // late_closes: second closes that would have erased a flag.
+        // late_closes: second closes that would have erased a flag (2.4.6:
+        // double_closes, the harmless ones that found the word already 0).
         const uint64_t abMissed = ab.missedCloses.exchange(0, std::memory_order_relaxed);
         const uint64_t abLate = ab.lateCloses.exchange(0, std::memory_order_relaxed);
-        out += fmt::format(" | audio_barrier: calls_per_s={:.0f} waits_per_s={:.0f} wait_ms_per_s={:.2f} over_50us_per_s={:.0f} over_1ms_per_s={:.1f} sleeps_per_s={:.0f} timeouts_per_s={:.0f} wakes_per_s={:.0f} max_us={} missed_closes={} late_closes={}{}",
+        const uint64_t abDouble = ab.doubleCloses.exchange(0, std::memory_order_relaxed); // 2.4.6: harmless
+        out += fmt::format(" | audio_barrier: calls_per_s={:.0f} waits_per_s={:.0f} wait_ms_per_s={:.2f} over_50us_per_s={:.0f} over_1ms_per_s={:.1f} sleeps_per_s={:.0f} timeouts_per_s={:.0f} wakes_per_s={:.0f} max_us={} missed_closes={} late_closes={} double_closes={}{}",
             abCalls / span, abWaits / span, abWaitNs / span / 1e6, abOver50 / span, abOver1ms / span, abSleeps / span,
-            abTimeouts / span, abWakes / span, abMax / 1000, abMissed, abLate, audio_barrier::Config().enabled ? "" : " (off)");
+            abTimeouts / span, abWakes / span, abMax / 1000, abMissed, abLate, abDouble, audio_barrier::Config().enabled ? "" : " (off)");
     }
     out += " | threads:";
     for (size_t i = 0; i < threads.size() && i < 10; ++i)

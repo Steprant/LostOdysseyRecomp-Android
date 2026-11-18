@@ -117,7 +117,10 @@ struct Stats
     std::atomic<uint64_t> sleeps{0}, timeouts{0}, wakes{0}, maxNs{0};
     // Steprant 2.4.5: rounds left on the own byte reading 0 (each one a
     // stop of both workers before), and closes another participant made first.
-    std::atomic<uint64_t> missedCloses{0}, lateCloses{0};
+    // 2.4.6: lateCloses only when the word already held a next-round flag
+    // (the 0 would have erased it); doubleCloses when it was already 0, the
+    // usual case of two workers reading the full word together (harmless).
+    std::atomic<uint64_t> missedCloses{0}, lateCloses{0}, doubleCloses{0};
 };
 inline Stats g_stats;
 
@@ -264,7 +267,7 @@ inline bool CloseRound(uint64_t* word, uint64_t fullRaw, Slot& slot, Stats& st)
 {
     uint64_t expected = fullRaw;
     if (!__atomic_compare_exchange_n(word, &expected, uint64_t(0), false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-        st.lateCloses.fetch_add(1, std::memory_order_relaxed);
+        (expected != 0 ? st.lateCloses : st.doubleCloses).fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     Notify(slot, st);

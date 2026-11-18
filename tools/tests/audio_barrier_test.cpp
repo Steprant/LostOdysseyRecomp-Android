@@ -183,10 +183,11 @@ int main()
             Check(ahead.load() == 0, "a thread left a round before every participant arrived");
             Check(word == 0, "the last round left the word set");
             Check(!shape.futexOnly || st.timeouts.load() == 0, "a protocol write needed the timeout");
-            std::printf("audio barrier back to back (%s): %d rounds of %d threads in %lld ms, %llu waits, %llu sleeps, %llu missed closes, %llu late closes\n",
+            std::printf("audio barrier back to back (%s): %d rounds of %d threads in %lld ms, %llu waits, %llu sleeps, %llu missed closes, %llu late closes, %llu double closes\n",
                 shape.futexOnly ? "futex only" : "default phases", shape.rounds, shape.threads, (long long)Ms(start),
                 (unsigned long long)st.waits.load(), (unsigned long long)st.sleeps.load(),
-                (unsigned long long)st.missedCloses.load(), (unsigned long long)st.lateCloses.load());
+                (unsigned long long)st.missedCloses.load(), (unsigned long long)st.lateCloses.load(),
+                (unsigned long long)st.doubleCloses.load());
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "audio barrier test failed: %s (after %u checks)\n", e.what(), checks);
