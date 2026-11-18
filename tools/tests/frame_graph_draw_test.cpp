@@ -30,6 +30,7 @@
 #include <plume_render_interface.h>
 #include <stdafx.h>
 #include <gpu/shader/dxc_compiler.h>
+#include <gpu/geometry_prepare.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -89,7 +90,7 @@ std::unique_ptr<RenderShader> Compile(RenderDevice* device, const char* source, 
 
 // Records and runs the frames; returns the bytes of every target of every
 // frame, or empty on a failure.
-struct Counts { uint64_t deadStores = 0, parallelReplays = 0, chunks = 0, descriptorBinds = 0, filteredSets = 0, filteredLayouts = 0; };
+struct Counts { uint64_t deadStores = 0, parallelReplays = 0, chunks = 0, descriptorBinds = 0, filteredSets = 0, filteredLayouts = 0, indexBinds = 0, filteredDrawState = 0; };
 
 std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
 {
@@ -157,6 +158,25 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
     auto depthPipeline = pipeline(colorPs.get(), true);
     if (!colorPipeline || !samplePipeline || !depthPipeline) return {};
 
+    // Two buffers and two different six-index slices in each. Direct recording
+    // uses the original slice view. The graph uses whole-buffer views and
+    // firstIndex, including negative baseVertex offsets for both buffers.
+    constexpr uint32_t indices[2][12] = {
+        {1,2,3,4,5,6, 1,2,3,1,2,3},
+        {5,6,7,5,6,7, 2,3,4,5,6,7}
+    };
+    std::array<std::unique_ptr<RenderBuffer>, 2> indexBuffers;
+    for (unsigned i = 0; i < indexBuffers.size(); ++i) {
+        indexBuffers[i] = device->createBuffer(RenderBufferDesc::UploadBuffer(sizeof(indices[i]), RenderBufferFlag::INDEX));
+        if (!indexBuffers[i]) return {};
+        auto* mapped = indexBuffers[i]->map();
+        if (!mapped) return {};
+        std::memcpy(mapped, indices[i], sizeof(indices[i]));
+        indexBuffers[i]->unmap();
+    }
+    const char* graph = std::getenv("LO_VK_FRAME_GRAPH");
+    const bool commonView = graph && std::strcmp(graph, "0") != 0;
+
     std::vector<uint8_t> out;
     counts = Counts{};
     for (uint32_t seed = 1; seed <= seeds; ++seed) {
@@ -189,6 +209,20 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
             const RenderRect scissor(0, 0, kSize, kSize);
             list->setViewports(&viewport, 1);
             list->setScissors(&scissor, 1);
+        };
+        unsigned drawNumber = seed;
+        auto draw = [&]() {
+            if ((++drawNumber % 5) == 0) {
+                list->drawInstanced(6, 1, 0, 0);
+                return;
+            }
+            const unsigned buffer = (drawNumber / 4) % 2;
+            const uint32_t sliceOffset = (drawNumber % 2) * 6u * sizeof(uint32_t);
+            const auto range = gpu::geometry_prepare::IndexRangeForDraw(sliceOffset, 6,
+                commonView ? sizeof(indices[buffer]) : 0);
+            const RenderIndexBufferView view(indexBuffers[buffer]->at(range.byteOffset), range.byteSize, RenderFormat::R32_UINT);
+            list->setIndexBuffer(&view);
+            list->drawIndexedInstanced(6, 1, range.firstIndex, -int32_t(buffer + 1), 0);
         };
         auto randomRect = [&](float* r) {
             const int x0 = int(rng() % kSize), y0 = int(rng() % kSize);
@@ -258,7 +292,7 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
                 if (rng() % 2) rebindLayout();
                 if (rng() % 3 == 0) bindUnused();
                 list->setGraphicsPushConstants(0, &push);
-                list->drawInstanced(6, 1, 0, 0);
+                draw();
             } else if (kind < 9) {
                 // Sample another target, mirrored.
                 if (boundIndex < 0) bind(int(rng() % 3));
@@ -277,7 +311,7 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
                     if (rng() % 3 == 0) bindUnused();
                 }
                 list->setGraphicsPushConstants(0, &push);
-                list->drawInstanced(6, 1, 0, 0);
+                draw();
             } else if (kind < 10) {
                 // A copy between two targets that are not bound.
                 const int src = int(rng() % kColors);
@@ -321,6 +355,8 @@ std::vector<uint8_t> RunFrames(uint32_t seeds, Counts& counts)
             counts.descriptorBinds += profile.descriptorBinds;
             counts.filteredSets += profile.frameGraphFilteredSetBinds;
             counts.filteredLayouts += profile.frameGraphFilteredLayoutBinds;
+            counts.indexBinds += profile.indexBinds;
+            counts.filteredDrawState += profile.frameGraphFilteredDrawState;
         }
         for (auto& readback : readbacks) {
             const auto* bytes = static_cast<const uint8_t*>(readback->map());
@@ -350,7 +386,7 @@ int main()
             {"LO_VK_PARALLEL_RECORD_MIN", "1"}, {"LO_VK_PARALLEL_RECORD_CHUNK", "3"}, {"LO_VK_PARALLEL_RECORD_THREADS", "3"}}},
     };
     std::vector<std::vector<uint8_t>> results;
-    uint64_t directBinds = 0, filteredDeadStores = 0;
+    uint64_t directBinds = 0, directIndexBinds = 0, filteredDeadStores = 0;
     int failed = 0;
     for (const auto& config : configs) {
         int pipe[2];
@@ -363,14 +399,15 @@ int main()
             Counts counts;
             const auto bytes = RunFrames(seeds, counts);
             std::printf("[%s] %u frames, %llu dead stores, %llu replays recorded in parallel, %llu chunks, %llu set binds in the driver, "
-                "%llu set and %llu layout binds left out\n", config.name, seeds,
+                "%llu set and %llu layout binds left out, %llu index binds, %llu redundant draw states filtered\n", config.name, seeds,
                 (unsigned long long)counts.deadStores, (unsigned long long)counts.parallelReplays, (unsigned long long)counts.chunks,
-                (unsigned long long)counts.descriptorBinds, (unsigned long long)counts.filteredSets, (unsigned long long)counts.filteredLayouts);
+                (unsigned long long)counts.descriptorBinds, (unsigned long long)counts.filteredSets, (unsigned long long)counts.filteredLayouts,
+                (unsigned long long)counts.indexBinds, (unsigned long long)counts.filteredDrawState);
             std::fflush(stdout);
             const char* parallel = std::getenv("LO_VK_PARALLEL_RECORD");
             const bool split = counts.parallelReplays == seeds && counts.chunks >= counts.parallelReplays * 4;
-            const uint64_t header[6] = {bytes.size(), counts.deadStores, (parallel && std::strcmp(parallel, "1") == 0 && !split) ? 1u : 0u,
-                counts.descriptorBinds, counts.filteredSets, counts.filteredLayouts};
+            const uint64_t header[8] = {bytes.size(), counts.deadStores, (parallel && std::strcmp(parallel, "1") == 0 && !split) ? 1u : 0u,
+                counts.descriptorBinds, counts.filteredSets, counts.filteredLayouts, counts.indexBinds, counts.filteredDrawState};
             ssize_t ignored = ::write(pipe[1], header, sizeof(header));
             for (size_t done = 0; done < bytes.size();) {
                 const ssize_t n = ::write(pipe[1], bytes.data() + done, bytes.size() - done);
@@ -382,7 +419,7 @@ int main()
             _exit(bytes.empty() ? 77 : 0);
         }
         ::close(pipe[1]);
-        uint64_t header[6] = {};
+        uint64_t header[8] = {};
         std::vector<uint8_t> bytes;
         if (::read(pipe[0], header, sizeof(header)) == ssize_t(sizeof(header))) {
             bytes.resize(header[0]);
@@ -418,6 +455,10 @@ int main()
             const bool filtered = std::strstr(config.name, "every bind captured") == nullptr;
             if (filtered && (header[4] == 0 || header[5] == 0)) { std::printf("FAIL [%s]: no bind left out\n", config.name); ++failed; }
             if (!filtered && (header[4] != 0 || header[5] != 0)) { std::printf("FAIL [%s]: binds left out with the filter off\n", config.name); ++failed; }
+            if (filtered ? (header[7] == 0 || header[6] >= directIndexBinds) : (header[7] != 0 || header[6] != directIndexBinds)) {
+                std::printf("FAIL [%s]: unexpected index bind / filtered draw-state counts\n", config.name);
+                ++failed;
+            }
             if (!filtered && header[1] != filteredDeadStores) {
                 std::printf("FAIL [%s]: %llu dead stores, %llu with the filter\n", config.name,
                     (unsigned long long)header[1], (unsigned long long)filteredDeadStores);
@@ -425,6 +466,7 @@ int main()
             }
         } else {
             directBinds = header[3];
+            directIndexBinds = header[6];
             if (directBinds == 0) { std::printf("FAIL [%s]: no set bind reached the driver\n", config.name); ++failed; }
         }
         if (results.size() == 1) filteredDeadStores = header[1];

@@ -13,6 +13,23 @@
 
 namespace gpu::geometry_prepare
 {
+    struct IndexDrawRange {
+        uint64_t byteOffset;
+        uint32_t byteSize;
+        uint32_t firstIndex;
+    };
+
+    // A Vulkan indexed draw reads element firstIndex from the bound buffer.
+    // Keep the whole arena/ring bound when the complete R32 slice fits in it.
+    // Other backends and non-representable slices retain their original view.
+    constexpr IndexDrawRange IndexRangeForDraw(uint64_t offset, uint32_t count, uint32_t bufferBytes)
+    {
+        const uint64_t bytes = uint64_t(count) * sizeof(uint32_t);
+        if (bufferBytes && offset % sizeof(uint32_t) == 0 && offset <= bufferBytes && bytes <= bufferBytes - offset)
+            return {0, bufferBytes, uint32_t(offset / sizeof(uint32_t))};
+        return {offset, uint32_t(bytes), 0};
+    }
+
     // Shared QuadList expansion used by the guest draw and its motion replay.
     inline void ExpandQuadList(std::vector<uint32_t>& indices, std::vector<uint32_t>& primitiveScratch,
         bool& useIndices, uint32_t indexCount)

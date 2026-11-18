@@ -25,11 +25,9 @@
 // twice that anyway. Only before the scene goes to the upscaler, on Vulkan,
 // without draw profiling or debug captures.
 //
-// Test build 2.4.7: by default the mode rotates every 10 s (SameSlot,
-// SlotSwitch, Off) and each window logs its heavy frames, so one session at a
-// crowded place compares the three. LO_SCENE_SUBMIT_MODE=same|switch|off|ab
-// fixes it; LO_SCENE_SUBMIT_DRAWS=<n> sets the piece (0 off),
-// LO_SCENE_SUBMIT_MIN=<n> the previous-frame draws.
+// Production uses SameSlot. LO_SCENE_SUBMIT_MODE=ab restores the diagnostic
+// rotation; same, switch and off select fixed modes. LO_SCENE_SUBMIT_DRAWS
+// sets the piece size (0 disables it), LO_SCENE_SUBMIT_MIN the frame threshold.
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -52,7 +50,7 @@ namespace gpu::scene_submit
     {
         uint32_t pieceDraws = 768;
         uint32_t minFrameDraws = 1800;
-        bool rotate = true;          // A/B: SameSlot, SlotSwitch, Off in turn
+        bool rotate = false;          // A/B: SameSlot, SlotSwitch, Off in turn
         Mode fixed = Mode::SameSlot; // when not rotating
     };
 
@@ -74,7 +72,7 @@ namespace gpu::scene_submit
             if (!std::strcmp(mode, "same")) { s.rotate = false; s.fixed = Mode::SameSlot; }
             else if (!std::strcmp(mode, "switch")) { s.rotate = false; s.fixed = Mode::SlotSwitch; }
             else if (!std::strcmp(mode, "off")) { s.rotate = false; s.fixed = Mode::Off; }
-            // "ab" or anything else: rotate
+            else if (!std::strcmp(mode, "ab")) s.rotate = true;
         }
         if (s.pieceDraws == 0) { s.rotate = false; s.fixed = Mode::Off; }
         return s;

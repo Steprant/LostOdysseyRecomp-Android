@@ -43,19 +43,19 @@ int main()
     Check(FromValues("-3", "99999999").pieceDraws == 768, "negative value keeps the default");
     Check(FromValues("4294967295", nullptr).pieceDraws == 768, "out of range keeps the default");
 
-    // 2.4.7 modes: the test build rotates SameSlot, SlotSwitch, Off per window.
-    Check(s.rotate && s.fixed == Mode::SameSlot, "rotation by default");
-    Check(ModeForWindow(s, 0) == Mode::SameSlot && ModeForWindow(s, 1) == Mode::SlotSwitch &&
-        ModeForWindow(s, 2) == Mode::Off && ModeForWindow(s, 3) == Mode::SameSlot, "rotation order");
-    Check(ModeForWindow(s, 3000000002ull) == Mode::Off, "rotation over many windows");
+    Check(!s.rotate && ModeForWindow(s, 1) == Mode::SameSlot, "production stays on the same slot");
+    const Settings ab = FromValues(nullptr, nullptr, "ab");
+    Check(ab.rotate && ModeForWindow(ab, 0) == Mode::SameSlot && ModeForWindow(ab, 1) == Mode::SlotSwitch &&
+        ModeForWindow(ab, 2) == Mode::Off && ModeForWindow(ab, 3) == Mode::SameSlot, "explicit rotation order");
+    Check(ModeForWindow(ab, 3000000002ull) == Mode::Off, "rotation over many windows");
     const Settings same = FromValues(nullptr, nullptr, "same");
     Check(!same.rotate && ModeForWindow(same, 1) == Mode::SameSlot && ModeForWindow(same, 2) == Mode::SameSlot, "fixed same");
     const Settings sw = FromValues(nullptr, nullptr, "switch");
     Check(!sw.rotate && ModeForWindow(sw, 0) == Mode::SlotSwitch, "fixed switch");
     const Settings offMode = FromValues(nullptr, nullptr, "off");
     Check(!offMode.rotate && ModeForWindow(offMode, 0) == Mode::Off && offMode.pieceDraws == 768, "fixed off");
-    Check(FromValues(nullptr, nullptr, "ab").rotate && FromValues(nullptr, nullptr, "").rotate &&
-        FromValues(nullptr, nullptr, "nonsense").rotate, "ab, empty and unknown rotate");
+    Check(!FromValues(nullptr, nullptr, "").rotate && !FromValues(nullptr, nullptr, "nonsense").rotate,
+        "empty and unknown keep the production policy");
     Check(!off.rotate && ModeForWindow(off, 0) == Mode::Off && ModeForWindow(off, 1) == Mode::Off, "0 draws: always off");
     Check(ModeForWindow(FromValues("0", nullptr, "same"), 0) == Mode::Off, "0 draws beat a mode");
     Check(!std::strcmp(Name(Mode::SameSlot), "same") && !std::strcmp(Name(Mode::SlotSwitch), "switch") &&

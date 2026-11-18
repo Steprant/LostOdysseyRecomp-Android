@@ -10,6 +10,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 PRELUDE = r'''
 #include "gpu/occlusion_queries.h"
+#include "gpu/geometry_prepare.h"
+#include "gpu/render_arena_policy.h"
 #include <cstdio>
 #include <stdexcept>
 using namespace gpu;
@@ -27,6 +29,9 @@ struct Fixture {
     bool skipReadOnlyDepthDraws=true, useIndices=false;
     uint32_t indexCount=6;
     int32_t baseVertex=2;
+    struct { int get() const { return 1; } } vertexArena;
+    static constexpr uint32_t kUploadRingSize=96u<<20;
+    bool nativeVulkan=true;
     int preparedIndexBuffer=1;
     uint64_t preparedIndexOffset=0;
     std::vector<uint32_t> indices=std::vector<uint32_t>(6);
@@ -57,6 +62,7 @@ struct Fixture {
         // early return in the production mode gate must fail these invariants.
         ++edramHandoffs; ++pendingClearChecks;
         const uint32_t before=recorded;
+        /* PREPARED_GEOMETRY */
         /* PRODUCTION_DRAW_EMISSION */
         ++afterDrawBookkeeping;
         if(occlusion.Active() && recorded!=before) occlusion.DrawMeasured({1,0,1.0});
@@ -152,10 +158,16 @@ def main():
                 raise RuntimeError("Native draw elision moved ahead of renderer preparation")
         if "return;" in emission:
             raise RuntimeError("Native draw elision must not return before bookkeeping")
+    geometry = ""
+    if "drawPreparedGeometry()" in emission:
+        start = source.index("                const auto drawPreparedGeometry =")
+        end = source.index("\n                };", start) + len("\n                };")
+        geometry = source[start:end]
     a.out.mkdir(parents=True, exist_ok=True)
     cpp = a.out / "read_only_depth_draw.cpp"
     exe = a.out / "read_only_depth_draw"
     cpp.write_text(PRELUDE.replace("/* PRODUCTION_MODE_GATE */", gate)
+                   .replace("/* PREPARED_GEOMETRY */", geometry)
                    .replace("/* PRODUCTION_DRAW_EMISSION */", emission) + TESTS, encoding="utf-8")
     cmd = [a.cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers", "-I", str(ROOT / "LostOdysseyRecomp"), str(cpp), "-o", str(exe)]
     if a.sanitize:

@@ -2846,7 +2846,7 @@ namespace gpu::renderer
             uint64_t constantSnapshotVersion[2]{};
             uint64_t constantMmioEpoch[2]{}; // sync period of the last zero-register MMIO check
             uint32_t drawConstants[2][256 * 4]{};
-            bool drawConstantsModified[2]{true, true};
+            uint64_t drawConstantOverrides[2]{UINT64_MAX, UINT64_MAX};
 
             // version: content version when data is the unmodified snapshot,
             // else 0. A matching version skips the compare.
@@ -10847,17 +10847,8 @@ void main()
                             changedBlocks = ~0ull;
                         }
                     }
-                    if (drawConstantsModified[bank]) {
-                        std::memcpy(drawConstants[bank], snapshot.values, sizeof(drawConstants[bank]));
-                        drawConstantsModified[bank] = false;
-                    } else {
-                        // An unmodified copy equals the snapshot outside the changed blocks.
-                        constexpr size_t kBlock = ConstantBankSnapshot::kBlockWords;
-                        for (uint64_t blocks = changedBlocks; blocks; blocks &= blocks - 1) {
-                            const size_t first = size_t(std::countr_zero(blocks)) * kBlock;
-                            std::memcpy(drawConstants[bank] + first, snapshot.values + first, kBlock * sizeof(uint32_t));
-                        }
-                    }
+                    RestoreDrawConstantBlocks(drawConstants[bank], snapshot, changedBlocks | drawConstantOverrides[bank]);
+                    drawConstantOverrides[bank] = 0;
                     constantGeneration[bank] = constantSnapshotVersion[bank];
                 }
                 // Player DoF/bloom settings edit the tone-map draw's constant copy.
@@ -10875,7 +10866,8 @@ void main()
                                 std::bit_cast<float>(psConstants[5 * 4 + component]) * scale);
                     }
                     if (!post.bloom) psConstants[7 * 4] = 0;
-                    if (post.depthOfFieldPercent < 100 || !post.bloom) drawConstantsModified[1] = true;
+                    if (post.depthOfFieldPercent < 100 || !post.bloom)
+                        drawConstantOverrides[1] |= ConstantVectorBlock(5) | ConstantVectorBlock(7);
                 }
                 // WP5: the shadow projection (VS 99c2) rebuilds each pixel's
                 // position as linearDepth * (ndcX*c2 + ndcY*c3 + c4) + c5. On the
@@ -11361,8 +11353,9 @@ void main()
                 }
                 // Jitter writes the draw's constant copy; the next draw restores it.
                 if (drawJitter.applied) {
-                    drawConstantsModified[0] = true;
-                    if (drawJitter.shadowCompensated) drawConstantsModified[1] = true;
+                    // Four consecutive VP rows can cross one block boundary.
+                    drawConstantOverrides[0] |= ConstantVectorBlock(drawJitter.slot) | ConstantVectorBlock(drawJitter.slot + 3);
+                    if (drawJitter.shadowCompensated) drawConstantOverrides[1] |= ConstantVectorBlock(4);
                 }
                 if (temporalActive && drawJitter.applied) {
                     if (!actualRasterJitterCaptured) {
@@ -12574,9 +12567,9 @@ void main()
                 render_batch::CpuTimer<> tIndex0(cpuTimingEnabled);
 
                 uint64_t vsOffset = UploadUnchanged(0, vsConstants, sizeof(vsConstants),
-                    drawConstantsModified[0] ? 0 : constantGeneration[0]);
+                    drawConstantOverrides[0] ? 0 : constantGeneration[0]);
                 uint64_t psOffset = UploadUnchanged(1, psConstants, sizeof(psConstants),
-                    drawConstantsModified[1] ? 0 : constantGeneration[1]);
+                    drawConstantOverrides[1] ? 0 : constantGeneration[1]);
                 uint64_t sharedOffset = UploadUnchanged(2, &shared, sizeof(shared));
                 if (vsOffset == UINT64_MAX || psOffset == UINT64_MAX || sharedOffset == UINT64_MAX)
                 {
@@ -13028,6 +13021,19 @@ void main()
                 recordProbe.Enter(record_timing::Phase::Trace);
                 // Expanded rect-list indices already include the offset.
                 int32_t baseVertex = info.primitiveType == 8 && rectListExpansion ? 0 : int32_t(Reg(REG_VGT_INDX_OFFSET));
+                const auto drawPreparedGeometry = [&] {
+                    if (!useIndices) {
+                        commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                        return;
+                    }
+                    const uint32_t bufferBytes = preparedIndexBuffer == vertexArena.get()
+                        ? uint32_t(gpu::render_arena::kVertexArenaSize) : kUploadRingSize;
+                    const auto range = geometry_prepare::IndexRangeForDraw(preparedIndexOffset, indexCount,
+                        nativeVulkan ? bufferBytes : 0);
+                    const RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, range.byteOffset), range.byteSize, RenderFormat::R32_UINT);
+                    commandList->setIndexBuffer(&view);
+                    commandList->drawIndexedInstanced(indexCount, 1, range.firstIndex, baseVertex, 0);
+                };
                 static uint32_t drawLogs = 0;
                 if (psTraceRemaining && ps && key.ps == psTraceHash)
                 {
@@ -13184,16 +13190,7 @@ void main()
                 if (skipReadOnlyDepthDraws && modeControl == 5 &&
                     (Reg(REG_RB_DEPTHCONTROL) & 5u) == 0 && !occlusion.Active())
                     ++readOnlyDepthDrawsSkipped;
-                else if (useIndices)
-                {
-                    RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset), uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                    commandList->setIndexBuffer(&view);
-                    commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                }
-                else
-                {
-                    commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
-                }
+                else drawPreparedGeometry();
                 recordProbe.Enter(record_timing::Phase::Occlusion);
                 // A counted draw leaves its variant bound: the next draw binds and
                 // pushes its own, and nothing later in this draw's recording runs
@@ -13422,12 +13419,7 @@ void main()
                                 commandList->setViewports(&rasterViewport, 1);
                                 commandList->setScissors(&scissor, 1);
                                 commandList->setPipeline(hdrPipeline.get());
-                                if (useIndices) {
-                                    RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset),
-                                        uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                                    commandList->setIndexBuffer(&view);
-                                    commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                                } else commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                                drawPreparedGeometry();
                                 color->hdrValid = true;
                                 if (tone) {
                                     color->hdrValidWidth = uint32_t(rasterViewport.width);
@@ -13507,12 +13499,7 @@ void main()
                                     commandList->setViewports(&rasterViewport, 1);
                                     commandList->setScissors(&scissor, 1);
                                     commandList->setPipeline(replay);
-                                    if (useIndices) {
-                                        RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset),
-                                            uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                                        commandList->setIndexBuffer(&view);
-                                        commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                                    } else commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                                    drawPreparedGeometry();
                                 }
                                 // The following renderer paths rely on the guest state.
                                 commandList->barriers(RenderBarrierStage::GRAPHICS,
@@ -14824,13 +14811,7 @@ void main()
                         commandList->setViewports(&stretched, 1);
                         RenderRect fullRect{ 0, 0, int32_t(target->width), int32_t(mappedRows) };
                         commandList->setScissors(&fullRect, 1);
-                        if (useIndices) {
-                            // Expanded rect list: replay its encoded corners.
-                            RenderIndexBufferView view(RenderBufferReference(preparedIndexBuffer, preparedIndexOffset),
-                                uint32_t(indices.size() * 4), RenderFormat::R32_UINT);
-                            commandList->setIndexBuffer(&view);
-                            commandList->drawIndexedInstanced(indexCount, 1, 0, baseVertex, 0);
-                        } else commandList->drawInstanced(indexCount, 1, uint32_t(baseVertex), 0);
+                        drawPreparedGeometry();
 #if defined(LO_GPU_PLUME)
                         if (key.colorMask & 7) HandleFsrAlphaRgbWriter(*target,
                             "color_clear_rect", drawsThisFrame, key.vs, key.ps, key.blend, key.colorMask);
