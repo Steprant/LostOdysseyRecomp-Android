@@ -346,6 +346,39 @@ namespace apu::xma
             return result;
         }
 
+        // Steprant 2.4.2: ORs `count` bits, read MSB first from `source` at bit
+        // `sourceBit`, into `target` at bit `targetBit`: the same bytes as
+        // `count` one-bit ReadBits calls ORed in one at a time. Bits up to the
+        // first whole target byte and after the last go one at a time; each
+        // whole target byte in between comes from at most two adjacent source
+        // bytes, both holding copied bits, so nothing past the run is read.
+        // The bit loop cost 1-2 ns a bit: a 2 KB packet is 16,384 bits.
+        // LO_XMA_BIT_COPY=0 keeps the bit loop (A/B).
+        void OrBits(const uint8_t* source, uint32_t sourceBit, uint8_t* target, uint32_t targetBit, uint32_t count)
+        {
+            auto one = [&] {
+                const uint32_t bit = (source[sourceBit / 8] >> (7 - sourceBit % 8)) & 1;
+                target[targetBit / 8] |= uint8_t(bit << (7 - targetBit % 8));
+                ++sourceBit; ++targetBit; --count;
+            };
+            while (count && (targetBit & 7)) one();
+            const uint32_t bytes = count / 8;
+            const uint32_t shift = sourceBit & 7;
+            const uint8_t* s = source + sourceBit / 8;
+            uint8_t* t = target + targetBit / 8;
+            if (shift == 0)
+                for (uint32_t i = 0; i < bytes; ++i) t[i] |= s[i];
+            else
+                for (uint32_t i = 0; i < bytes; ++i) t[i] |= uint8_t((s[i] << shift) | (s[i + 1] >> (8 - shift)));
+            sourceBit += bytes * 8; targetBit += bytes * 8; count -= bytes * 8;
+            while (count) one();
+        }
+
+        bool g_bitCopy = [] {
+            const char* value = getenv("LO_XMA_BIT_COPY");
+            return !(value && strcmp(value, "0") == 0);
+        }();
+
         bool PrepareDecoder(Context& ctx, const ContextData& data)
         {
             const int channels = data.isStereo() ? 2 : 1;
@@ -416,6 +449,9 @@ namespace apu::xma
                     ctx.frameCrossedPacket = false;
                 }
                 uint32_t count = std::min(ctx.frameBits - ctx.copiedBits, kBitsPerPacket - offset);
+                if (g_bitCopy)
+                    OrBits(packet, offset, ctx.compressed.data() + 1, ctx.copiedBits, count);
+                else
                 for (uint32_t i = 0; i < count; ++i)
                 {
                     const uint32_t bit = ReadBits(packet, offset+i, 1);

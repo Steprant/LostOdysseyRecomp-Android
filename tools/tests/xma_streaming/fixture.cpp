@@ -223,8 +223,56 @@ void PersistentFailureRecovers() {
     std::printf("persistent failure: %zu of %zu frames tried, %d flushes, ring write %u\n",
         result.frames.size(),s.frames.size(),flushes,result.context.outputWriteOffset());
 }
+// Steprant 2.4.2: OrBits writes exactly what the one-bit loop wrote, for
+// every source and target alignment, over target bytes already holding
+// bits, and reads only the source bytes of the run (the source is sized to
+// end at its last copied bit, so the sanitizer build sees any read past it).
+void OrBitsMatchesBitLoop() {
+    std::mt19937 rng(2442);
+    unsigned cases=0;
+    for(uint32_t sourceBit=0;sourceBit<24;++sourceBit)
+        for(uint32_t targetBit=0;targetBit<24;++targetBit)
+            for(uint32_t count=0;count<=160;++count) {
+                const size_t sourceBytes=std::max<size_t>(1,(sourceBit+count+7)/8);
+                std::vector<uint8_t> source(sourceBytes);
+                for(auto& b:source) b=uint8_t(rng());
+                std::vector<uint8_t> expected(48),actual;
+                for(auto& b:expected) b=uint8_t(rng()&rng());
+                actual=expected;
+                for(uint32_t i=0;i<count;++i) {
+                    const uint32_t bit=ReadBits(source.data(),sourceBit+i,1), at=targetBit+i;
+                    expected[at/8]|=uint8_t(bit<<(7-at%8));
+                }
+                OrBits(source.data(),sourceBit,actual.data(),targetBit,count);
+                if(actual!=expected) Check(false,"OrBits differs from the bit loop");
+                ++cases;
+            }
+    // Whole packets: every in-packet offset with the longest runs.
+    std::vector<uint8_t> packet(kBytesPerPacket);
+    for(auto& b:packet) b=uint8_t(rng());
+    for(uint32_t offset=0;offset<kBitsPerPacket;offset+=1+rng()%97)
+        for(uint32_t targetBit:{0u,1u,7u,15u,4000u}) {
+            const uint32_t count=std::min<uint32_t>(kBitsPerPacket-offset,32760-targetBit);
+            std::vector<uint8_t> expected(4096,0),actual(4096,0);
+            for(uint32_t i=0;i<count;++i) {
+                const uint32_t bit=ReadBits(packet.data(),offset+i,1), at=targetBit+i;
+                expected[at/8]|=uint8_t(bit<<(7-at%8));
+            }
+            OrBits(packet.data(),offset,actual.data(),targetBit,count);
+            if(actual!=expected) Check(false,"OrBits differs from the bit loop on a packet");
+            ++cases;
+        }
+    Check(cases>0,"bit copy cases ran");
+    std::printf("bit copy: %u cases identical to the bit loop\n",cases);
+}
 }
 int main() {
+    OrBitsMatchesBitLoop();
+    // Every stream test below runs with the byte copy and again with the
+    // bit loop it replaced (LO_XMA_BIT_COPY=0).
+    for(bool bitCopy:{true,false}) {
+    g_bitCopy=bitCopy;
+    std::printf("assembly: %s\n",bitCopy?"byte copy":"bit loop");
     WaitingForRefill();
     BudgetedWorkMatchesSingleHold();
     IsolatedFailureKeepsFrames();
@@ -241,5 +289,7 @@ int main() {
         for(unsigned f=0;f<20;++f) lengths.push_back(600+rng()%7000);
         Run(lengths,1+rng()%8,1+rng()%3,n%2);
     }
+    }
+    g_bitCopy=true;
     std::printf("PASS: %u XMA streaming checks\n",checks);
 }
