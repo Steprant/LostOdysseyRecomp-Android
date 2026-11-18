@@ -34,7 +34,7 @@ permissions:
 jobs:
   pin-test-build:
     name: Preserve Steprant test build commit
-    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2' || github.ref == 'refs/heads/steprant/v2.0.3' || github.ref == 'refs/heads/steprant/v2.0.4' || github.ref == 'refs/heads/steprant/v2.0.5' || github.ref == 'refs/heads/steprant/v2.0.6' || github.ref == 'refs/heads/steprant/v2.0.7' || github.ref == 'refs/heads/steprant/v2.0.8' || github.ref == 'refs/heads/steprant/v2.1' || github.ref == 'refs/heads/steprant/v2.1.1' || github.ref == 'refs/heads/steprant/v2.1.2' || github.ref == 'refs/heads/steprant/v2.1.3' || github.ref == 'refs/heads/steprant/v2.1.4' || github.ref == 'refs/heads/steprant/v2.1.5' || github.ref == 'refs/heads/steprant/v2.1.6' || github.ref == 'refs/heads/steprant/v2.2' || github.ref == 'refs/heads/steprant/v2.2.1' || github.ref == 'refs/heads/steprant/v2.4' || github.ref == 'refs/heads/steprant/v2.4.2' || github.ref == 'refs/heads/steprant/v2.4.5'
+    if: github.ref == 'refs/heads/steprant/v2.0-dev' || github.ref == 'refs/heads/steprant/v2.0' || github.ref == 'refs/heads/steprant/v2.0.2' || github.ref == 'refs/heads/steprant/v2.0.3' || github.ref == 'refs/heads/steprant/v2.0.4' || github.ref == 'refs/heads/steprant/v2.0.5' || github.ref == 'refs/heads/steprant/v2.0.6' || github.ref == 'refs/heads/steprant/v2.0.7' || github.ref == 'refs/heads/steprant/v2.0.8' || github.ref == 'refs/heads/steprant/v2.1' || github.ref == 'refs/heads/steprant/v2.1.1' || github.ref == 'refs/heads/steprant/v2.1.2' || github.ref == 'refs/heads/steprant/v2.1.3' || github.ref == 'refs/heads/steprant/v2.1.4' || github.ref == 'refs/heads/steprant/v2.1.5' || github.ref == 'refs/heads/steprant/v2.1.6' || github.ref == 'refs/heads/steprant/v2.2' || github.ref == 'refs/heads/steprant/v2.2.1' || github.ref == 'refs/heads/steprant/v2.4' || github.ref == 'refs/heads/steprant/v2.4.2' || github.ref == 'refs/heads/steprant/v2.4.5' || github.ref == 'refs/heads/steprant/v2.4.6'
     permissions:
       contents: write
     runs-on: ubuntu-22.04
@@ -66,6 +66,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.4 ]] && version=2.4
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.4.2 ]] && version=2.4.2
           [[ "$GITHUB_REF" == refs/heads/steprant/v2.4.5 ]] && version=2.4.5
+          [[ "$GITHUB_REF" == refs/heads/steprant/v2.4.6 ]] && version=2.4.6
           pin="steprant/build-$version-$GITHUB_RUN_ID"
           if actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$pin" -q .object.sha 2>ref-error.txt); then
             [[ "$actual" == "$GITHUB_SHA" ]] || { echo "::error::Build ref points to another commit"; exit 1; }
@@ -298,6 +299,9 @@ jobs:
             # 2.4.5 (18/11): 2.4.2 with the audio barrier fix, 64 MiB VMA blocks
             # on Android and three upstream fixes; versionCode 2040005.
             steprant/v2.4.5) version=2.4.5 ;;
+            # 2.4.6 (18/11): heavy scenes submitted to the GPU in pieces;
+            # versionCode 2040006.
+            steprant/v2.4.6) version=2.4.6 ;;
             *) version= ;;
           esac
           # The developer page (A/B switches) is compiled out: the 1.9 logs
