@@ -4,7 +4,9 @@
 
 # Lost Odyssey Recomp — Steprant Android 2.5
 
-**Android 2.5, the stable version: optimized as far as possible without lowering visual quality. Crowded scenes up to 28% faster, 22% less battery draw, audio without dropouts.**
+**Lost Odyssey on Android with Qualcomm SGSR2 + SMAA, a Vulkan frame graph and ARM64 PGO.** Steprant 2.5 Stable improves frame pacing and XMA audio, adjusts resolution in hot real-time cutscenes and supports independent TV/HDMI output.
+
+In Xiaomi 14 tests against 2.1, **FPS rose by up to 28% in crowded scenes**, **power draw fell by 22%** and **no audio dropouts were recorded**. [Progress by version](#progress-by-version)
 
 [![Download Android 2.5 APK](https://img.shields.io/badge/Download-Android_2.5_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Steprant/LostOdysseyRecomp-Android/releases/download/v2.5-steprant.20261118-Release/LostOdyssey-Steprant-v2.5-Release-20261118.apk)
 
@@ -20,7 +22,7 @@ An independent Android edition maintained by **Steprant**, based on the official
 
 ## Steprant Android 2.5 — stable
 
-2.5 is the stable version of Steprant Android, built from the code tested on the phone as 2.4.8. It was optimized as far as we could take it **without lowering visual quality**: same render resolution, upscaler, shadows, effects, draw order and shader operations as 2.1. The gains come from doing the same work with less waiting, less spinning and less overhead, not from drawing less; the one deliberate exception is a thermal safeguard that renders hot cutscenes at 720p before SGSR2 when the battery reaches 41.5 °C. It collects six days of work after 2.1, tested build by build from 2.1.1 to 2.4.8. Measured on a Xiaomi 14 (Adreno 750, 30 FPS); results depend on device, driver, scene and settings. The [release notes](docs/notes/steprant-2.5-release.md) list every change and the sessions behind the numbers.
+Steprant 2.5 is the stable release of the code tested as 2.4.8. Fresh installs default to **900p, SGSR2 Quality with SMAA, 2× shadows and 30 FPS**. The renderer keeps the gameplay image settings, draw order and shader operations used in 2.1. In real-time cutscenes, the thermal safeguard renders the 3D scene at 720p when the battery reaches 41.5 °C and restores the selected resolution below 40.5 °C. [2.5 release notes](docs/notes/steprant-2.5-release.md)
 
 > [!IMPORTANT]
 > **Snapdragon (Adreno): play 2.5 with the Mr. Purple T30 GPU driver (PurpleVK 26.3).** 2.5 is tuned, tested and measured with this driver; the system driver and older Turnip builds are not the supported setup.
@@ -28,6 +30,30 @@ An independent Android edition maintained by **Steprant**, based on the official
 > 1. In the game, open **CTRL → GPU driver**.
 > 2. Tap **Download recommended: Mr. Purple T30** and restart the game.
 > 3. The first start after the change prepares shaders for about 50 seconds, once; from the next start it is ready.
+
+### Android techniques
+
+- **Image quality.** Qualcomm SGSR2 reconstructs detail from jitter, depth and camera motion. SMAA smooths edges in Quality mode and covers cutscenes when SGSR2 cannot run. SGSR1 provides spatial upscaling.
+- **Vulkan rendering.** Plume's frame graph records large command lists in parallel, submits heavy frames in ordered batches and skips redundant state changes and unread stores. It uses exact render areas, deferred EDRAM resolves, compact 8-bit and 10-bit targets and Adreno LRZ for early depth rejection.
+- **Frame pacing.** A four-image swapchain, display refresh matching and off-thread menu rendering reduce presentation and menu stalls.
+- **ARM64 and power.** XenonRecomp statically recompiles the PowerPC game code. ARMv8.2-A with LSE atomics, profile-guided optimization (PGO), register promotion and native `memcpy`/`memset` reduce CPU work. Event-driven CPU and GPU waits reduce polling.
+- **Audio and video.** XMA decoding, elastic audio buffering and audio resync keep the original mix in sync. Android MediaCodec supports experimental H.264 replacement videos.
+- **Android and TV.** Independent HDMI output supports 720p and 1080p mode requests. A foreground service helps keep the app available when switching away, and the Tester logs frame pacing, CPU and GPU load, battery draw and temperature. [TV guide](docs/ANDROID_TV_HDMI.md) · [Tester guide](docs/ANDROID_TESTER.md)
+
+### Progress by version
+
+Gameplay measurements come from a Xiaomi 14 (Snapdragon 8 Gen 3, Adreno 750). The 1.1 baseline includes early Steprant builds and 1.7 tests. A long frame takes more than 50 ms.
+
+| Version | What changed | Measured progress |
+| :--- | :--- | :--- |
+| **1.1 baseline** | Early Android builds and 1.7 tests | **18.2** long frames/min in the city and **20.7** outdoors. |
+| **[1.8](docs/notes/steprant-1.8-release.md)** | SGSR2 + SMAA, Adreno LRZ, compact render targets and depth-only draws kept in the scene pass | Long frames fell to **6.2/min in the city (−66%)** and **10.0/min outdoors (−52%)**. **40% fewer render passes** and **50% less memory per pixel** on 8-bit targets. |
+| **[2.0](docs/notes/steprant-2.0-release.md)** | Vulkan frame graph, exact render areas and elimination of unread stores | **4–9% less GPU time per frame** and **9–18% less render-pass memory traffic** versus 1.9. |
+| **[2.1](docs/notes/steprant-2.1-release.md)** | Four-image swapchain, SMAA fallback and audio resync | **3.7 long frames/min** in normal play, down **80–82%** from the early samples. GPU time per frame was **30–33% lower** with SGSR2 than in the early native 1080p setup. |
+| **2.1.5** | The game thread uses signal-driven waits to cut polling | Numara shipyard drew **28% less battery power** and used **25% less CPU** versus 2.1.4 on the same map. |
+| **2.2** | Register promotion and native memory routines | Register save/restore call sites fell from **19,238 to 178 (−99%)** in generated code versus 2.1.6. |
+| **2.4.8** | Ordered submission of heavy frames in batches and fewer Vulkan state changes per draw | At the station, **7–13% shorter frame times** in matched draw-count ranges and **55% fewer long frames** versus 2.4.5. |
+| **[2.5 Stable](docs/notes/steprant-2.5-release.md)** | The tested 2.4.8 optimizations in the stable release, including the Vulkan, CPU, thermal and audio work | Versus 2.1, **23–28% higher FPS** and **96% fewer long frames** in heavy scenes, **22% lower phone power draw** and **zero observed audio dropouts**. See the comparison below for test conditions. |
 
 ### Measured improvements: 2.1 → 2.5
 
@@ -43,7 +69,7 @@ An independent Android edition maintained by **Steprant**, based on the official
 | Audio callback stalls of 50 ms or more | 16 in 25 minutes | 0 in 20 minutes | **−100%** |
 | XMA audio decode errors | 11 in 8.5 minutes | 0 in 546,000 decodes | **−100%** |
 
-(1) 2.1: split-screen scenes with two cameras; 2.5: the crowded station entrance. Same draw counts, different scenes. (2) Unplugged, screen included; different sessions and scenes (other 2.1 sessions: 6.1–6.5 W, −27 to −31%).
+(1) The heavy-scene samples compare overlapping draw counts from 2.1 split-screen scenes and the 2.5 station entrance. (2) Power draw includes the phone screen and was measured unplugged across different sessions and scenes. Other 2.1 sessions measured 6.1–6.5 W, a 27–31% drop to 4.47 W.
 
 
 ### What is new since 2.1
@@ -58,7 +84,7 @@ An independent Android edition maintained by **Steprant**, based on the official
 | **Memory and stability** | The game survives the background (foreground service); GPU memory in 64 MiB blocks; readback buffer created on first use; old textures released; fixed a crash after the battle with Mack. |
 | **Interface and Tester** | Battery temperature in the performance overlay; quit prompt fixes from upstream; Tester with watts, °C per minute and profiling only in short bursts. |
 
-Everything from 2.1 is still there: frame graph, SGSR2 + SMAA (default 900p, SGSR2 Quality, shadows ×2, 30 FPS), four swap chain images, audio catch-up, TV/HDMI mode ([TV guide](docs/ANDROID_TV_HDMI.md)), gameplay extras and the Tester ([Tester guide](docs/ANDROID_TESTER.md)).
+Gameplay extras include fast-forward, adjustable encounter rates and EXP/SP boosts, plus save points that restore party HP and MP.
 
 **Known in 2.5:** the most crowded scenes run at about 24–25 FPS (CPU-bound GPU command thread, about 10 µs per draw); hitches in pre-rendered movies; short pauses at map changes while the game loads; about 50 s of shader preparation at the first start after a driver change.
 
