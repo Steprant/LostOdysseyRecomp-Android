@@ -1,7 +1,8 @@
-// Steprant 2.4.6: when a heavy scene is submitted in pieces.
+// Steprant 2.4.6-2.4.7: when a heavy scene is submitted in pieces, and how.
 #include <gpu/scene_submit_policy.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 using namespace gpu::scene_submit;
 
@@ -42,13 +43,32 @@ int main()
     Check(FromValues("-3", "99999999").pieceDraws == 768, "negative value keeps the default");
     Check(FromValues("4294967295", nullptr).pieceDraws == 768, "out of range keeps the default");
 
+    // 2.4.7 modes: the test build rotates SameSlot, SlotSwitch, Off per window.
+    Check(s.rotate && s.fixed == Mode::SameSlot, "rotation by default");
+    Check(ModeForWindow(s, 0) == Mode::SameSlot && ModeForWindow(s, 1) == Mode::SlotSwitch &&
+        ModeForWindow(s, 2) == Mode::Off && ModeForWindow(s, 3) == Mode::SameSlot, "rotation order");
+    Check(ModeForWindow(s, 3000000002ull) == Mode::Off, "rotation over many windows");
+    const Settings same = FromValues(nullptr, nullptr, "same");
+    Check(!same.rotate && ModeForWindow(same, 1) == Mode::SameSlot && ModeForWindow(same, 2) == Mode::SameSlot, "fixed same");
+    const Settings sw = FromValues(nullptr, nullptr, "switch");
+    Check(!sw.rotate && ModeForWindow(sw, 0) == Mode::SlotSwitch, "fixed switch");
+    const Settings offMode = FromValues(nullptr, nullptr, "off");
+    Check(!offMode.rotate && ModeForWindow(offMode, 0) == Mode::Off && offMode.pieceDraws == 768, "fixed off");
+    Check(FromValues(nullptr, nullptr, "ab").rotate && FromValues(nullptr, nullptr, "").rotate &&
+        FromValues(nullptr, nullptr, "nonsense").rotate, "ab, empty and unknown rotate");
+    Check(!off.rotate && ModeForWindow(off, 0) == Mode::Off && ModeForWindow(off, 1) == Mode::Off, "0 draws: always off");
+    Check(ModeForWindow(FromValues("0", nullptr, "same"), 0) == Mode::Off, "0 draws beat a mode");
+    Check(!std::strcmp(Name(Mode::SameSlot), "same") && !std::strcmp(Name(Mode::SlotSwitch), "switch") &&
+        !std::strcmp(Name(Mode::Off), "off"), "names");
+
     // Statistics.
     Stats st;
-    st.Note(Split::None, 5); st.EndFrame();
-    st.Note(Split::AtTargetChange, 1000); st.Note(Split::InsidePass, 2000); st.EndFrame();
-    st.EndFrame();
+    st.Note(Split::None, 5); st.EndFrame(false, 16000000);
+    st.Note(Split::AtTargetChange, 1000); st.Note(Split::InsidePass, 2000); st.EndFrame(true, 40000000);
+    st.EndFrame(true, 30000000);
     Check(st.frames == 3 && st.splitFrames == 1, "frames and split frames");
     Check(st.Submits() == 2 && st.atTargetChange == 1 && st.insidePass == 1 && st.splitNs == 3000, "submits and time");
+    Check(st.heavyFrames == 2 && st.heavyFrameNs == 70000000, "heavy frames and their time");
 
     std::printf("scene submit policy test: %d checks passed\n", checks);
     return 0;

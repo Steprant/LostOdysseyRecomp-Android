@@ -2100,6 +2100,38 @@ namespace gpu::video
     }
 #endif
 
+    bool SubmitRendererPiece(const plume::RenderCommandList* list, int32_t& rawResult)
+    {
+        rawResult = submission::VulkanState::InvalidState;
+        if (GpuWorkStopped()) { rawResult = g_submissionState.Failure(); return false; }
+        auto* queueHolder = ActiveSubmissionQueue();
+        if (!g_vulkan || !queueHolder || !list) { StopGpuWork(submission::VulkanState::InvalidState); return false; }
+        auto* queue = static_cast<plume::VulkanCommandQueue*>(queueHolder);
+        std::vector<VkCommandBuffer> commandBuffers;
+        static_cast<const plume::VulkanCommandList*>(list)->appendSubmitBuffers(commandBuffers);
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = uint32_t(commandBuffers.size());
+        submit.pCommandBuffers = commandBuffers.data();
+        uint64_t acceptedSerial = 0;
+        int32_t result = 0;
+        bool submitted;
+        {
+            PresentScope progress(g_presentProgress, PresentStage::SubmitQueueLock);
+            const std::scoped_lock lock(*queue->queue->mutex);
+            progress.Set(PresentStage::SubmitNative);
+            submitted = g_submissionState.SubmitBatch(
+                [] { return int32_t(submission::VulkanState::Success); },
+                [&] { return int32_t(vkQueueSubmit(queue->queue->vk, 1, &submit, VK_NULL_HANDLE)); },
+                acceptedSerial, result);
+        }
+        rawResult = result;
+        if (!submitted) {
+            LOG_ERROR("video: Vulkan scene piece submission stopped raw_vk={}", result);
+            StopGpuWork(result);
+        }
+        return submitted;
+    }
+
     bool SubmitRendererBatch(const plume::RenderCommandList* const* lists, uint32_t count,
         plume::RenderCommandFence* fence, uint64_t& submissionSerial, int32_t& rawResult,
         bool* executionMayBeInFlight)

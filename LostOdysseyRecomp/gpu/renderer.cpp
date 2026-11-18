@@ -106,6 +106,7 @@
 #include "render_batch_policy.h"
 #include "render_arena_policy.h"
 #include "scene_submit_policy.h"
+#include <debug/frame_timing.h>
 #include "resolve_copy_policy.h"
 #include "resolve_whatif.h"
 #include <os/log_file.h>
@@ -643,8 +644,22 @@ namespace gpu::renderer
             };
 #endif
             using SamplerPalette = sampling::Palette<RenderSampler, RenderDescriptorSet>;
+            // Steprant 2.4.7: a list a slot submitted as a scene piece before its
+            // fenced submission, and the query pool of its GPU interval.
+            struct PieceList {
+                std::unique_ptr<RenderCommandList> list;
+                std::unique_ptr<RenderQueryPool> timing;
+                bool timed = false; // timing holds this batch's interval
+            };
             struct GpuSlot {
                 std::unique_ptr<RenderCommandList> list;
+                // Steprant 2.4.7: pieces submitted before the fenced submission,
+                // kept until the fence; their lists are then reused. listTiming
+                // is the open list's own interval query when it started as a
+                // piece (the first list of a batch uses timingQueries).
+                std::vector<PieceList> submittedPieces, freePieces;
+                std::unique_ptr<RenderQueryPool> listTiming;
+                bool listTimingOpen = false, slotTimingClosed = false;
                 // The prefix is list. An NGX recording error must never place
                 // vendor commands in the guest continuation batch.
                 std::unique_ptr<RenderCommandList> srIsolated;
@@ -2205,12 +2220,14 @@ namespace gpu::renderer
             uint32_t descriptorBatchLimit = 500;
             uint32_t descriptorSplits = 0, textureSetSplits = 0, samplerVersionSplits = 0;
             uint32_t uploadSplits = 0, arenaSplits = 0;
-            // Steprant 2.4.6: heavy scenes in pieces (scene_submit_policy.h).
+            // Steprant 2.4.6-2.4.7: heavy scenes in pieces (scene_submit_policy.h).
             const gpu::scene_submit::Settings sceneSubmit = gpu::scene_submit::FromEnvironment();
             gpu::scene_submit::Stats sceneSubmitStats;
+            gpu::scene_submit::Mode sceneSubmitMode = gpu::scene_submit::ModeForWindow(sceneSubmit, 0);
+            uint64_t sceneSubmitWindow = 0, sceneSubmitFenceUs = 0;
             uint32_t drawsThisBatch = 0, drawsPreviousFrame = 0;
             uint64_t sceneSubmitTargetKey = ~0ull;
-            std::chrono::steady_clock::time_point sceneSubmitLogStart{};
+            std::chrono::steady_clock::time_point sceneSubmitLogStart{}, sceneSubmitFrameEnd{};
             struct ScopedTimer
             {
                 double& acc;
@@ -5433,7 +5450,22 @@ void main()
                         if (results) gpuTiming.AddBatch(results[0], results[1]);
                         else gpuTiming.AddUnavailableBatch();
                     }
+                    // Steprant 2.4.7: the later scene pieces, in submission order.
+                    const auto addPiece = [&](RenderQueryPool* pool) {
+                        pool->queryResults();
+                        const auto* piece = pool->getResults();
+                        if (piece) gpu_busy::AddBatch(piece[0], piece[1], s.previousTimingEnd);
+                        if (render_timing::Enabled() && piece) gpuTiming.AddBatch(piece[0], piece[1]);
+                    };
+                    for (auto& p : s.submittedPieces)
+                        if (p.timed && p.timing) addPiece(p.timing.get());
+                    if (s.listTimingOpen && s.listTiming) addPiece(s.listTiming.get());
                 } else if (render_timing::Enabled()) gpuTiming.AddUnavailableBatch();
+                // Steprant 2.4.7: the slot's scene pieces completed with it; their
+                // lists and queries serve the next pieces.
+                for (auto& p : s.submittedPieces) { p.timed = false; s.freePieces.push_back(std::move(p)); }
+                s.submittedPieces.clear();
+                s.listTimingOpen = false;
                 s.drawProbe.ReadCompleted();
 #if defined(LO_GPU_PLUME)
                 for (size_t captureIndex = 0; captureIndex < s.fsrAlphaCaptures.size(); ++captureIndex)
@@ -5562,6 +5594,7 @@ void main()
                     }
                     if (!video::BeginGpuCommands(commandList)) return false;
                     drawsThisBatch = 0; // Steprant 2.4.6
+                    Gpu().listTimingOpen = Gpu().slotTimingClosed = false; // 2.4.7
 #if defined(LO_GPU_PLUME) && defined(_WIN32)
                     if (!vulkan) static_cast<plume::D3D12CommandList*>(commandList)->captureRootBindingStats = render_timing::Enabled();
 #endif
@@ -5617,6 +5650,61 @@ void main()
                 if (motionReplay) motionReplay->FlushQueued(commandList);
             }
 
+            // Steprant 2.4.7 (scene_submit_policy.h, SameSlot): the open list goes
+            // to the GPU now, without a fence, and recording goes on in a new list
+            // of the same slot: same upload ring, descriptor pools, arena half and
+            // occlusion pools, nothing recycled, nothing waited for. The slot's
+            // fence, signalled by its later fenced submission, covers every earlier
+            // piece (queue submission order). Only between draws and before the
+            // scene reaches the upscaler (the caller checks). False with listOpen
+            // still set: no list for the rest, nothing changed.
+            bool SubmitScenePiece()
+            {
+                auto& g = Gpu();
+                PieceList next;
+                if (!g.freePieces.empty()) {
+                    next = std::move(g.freePieces.back());
+                    g.freePieces.pop_back();
+                } else {
+                    next.list = queue->createCommandList();
+                    if (!next.list) return false;
+                    next.list->setParallelRecording(true);
+                }
+                if (g.timed && !next.timing && device->getCapabilities().queryPools) {
+                    next.timing = device->createQueryPool(2);
+                    if (next.timing && next.timing->getCount() != 2) next.timing.reset();
+                }
+                FlushMotionReplayQueue();
+                consecutiveResolveCopies.Invalidate();
+                if (g.timed) {
+                    if (g.listTimingOpen) commandList->writeTimestamp(g.listTiming.get(), 1);
+                    else if (!g.slotTimingClosed) commandList->writeTimestamp(timingQueries, 1);
+                }
+                g.slotTimingClosed = true;
+                int32_t rawResult = 0;
+                if (!video::EndGpuCommands(commandList) || !video::SubmitRendererPiece(commandList, rawResult)) {
+                    ReleaseOcclusionWaiters();
+                    listOpen = false;
+                    return false;
+                }
+                g.submittedPieces.push_back(PieceList{std::move(g.list), std::move(g.listTiming), g.timed && g.listTimingOpen});
+                g.list = std::move(next.list);
+                g.listTiming = std::move(next.timing);
+                g.listTimingOpen = false;
+                BindGpuSlot();
+                if (!video::BeginGpuCommands(commandList)) {
+                    listOpen = false;
+                    return false;
+                }
+                drawsThisBatch = 0;
+                if (g.timed && g.listTiming) {
+                    commandList->resetQueryPool(g.listTiming.get(), 0, 2);
+                    commandList->writeTimestamp(g.listTiming.get(), 0);
+                    g.listTimingOpen = true;
+                }
+                return true;
+            }
+
             bool Flush()
             {
                 FlushMotionReplayQueue();
@@ -5657,7 +5745,12 @@ void main()
                 if (!listOpen) return true;
                 if (motionReplay) motionReplay->SealTimings(commandList);
                 if (!Gpu().srPrefixClosed) Gpu().drawProbe.End(commandList);
-                if (Gpu().timed) commandList->writeTimestamp(timingQueries, 1);
+                // Steprant 2.4.7: after scene pieces the end goes to the open
+                // list's own interval (the slot's closed with the first piece).
+                if (Gpu().timed) {
+                    if (Gpu().listTimingOpen) commandList->writeTimestamp(Gpu().listTiming.get(), 1);
+                    else if (!Gpu().slotTimingClosed) commandList->writeTimestamp(timingQueries, 1);
+                }
                 if (Gpu().drawProfileActive)
                     // Every query of the pool must be written for its readback.
                     for (uint32_t i = uint32_t(Gpu().drawProfileRecords.size()) + 1; i <= draw_profile::MaxDrawsPerList; ++i)
@@ -10456,10 +10549,20 @@ void main()
                 const bool targetChanged = targetKey != sceneSubmitTargetKey;
                 sceneSubmitTargetKey = targetKey;
                 gpu::scene_submit::Split pieceSplit = gpu::scene_submit::Split::None;
-                if (nativeVulkan && listOpen && !Gpu().srPrefixClosed && !Gpu().drawProfileActive &&
-                    debugCaptureDir.empty() && !fgUiBindingExpected && !fgUiCapture)
+                if (sceneSubmitMode != gpu::scene_submit::Mode::Off && nativeVulkan && listOpen && !Gpu().srPrefixClosed &&
+                    !Gpu().drawProfileActive && debugCaptureDir.empty() && !fgUiBindingExpected && !fgUiCapture)
                     pieceSplit = gpu::scene_submit::Due(sceneSubmit, drawsPreviousFrame, drawsThisBatch, targetChanged);
-                const bool pieceDue = pieceSplit != gpu::scene_submit::Split::None;
+                // 2.4.7: in the same slot, unless the slot must be recycled anyway.
+                if (pieceSplit != gpu::scene_submit::Split::None && sceneSubmitMode == gpu::scene_submit::Mode::SameSlot &&
+                    !poolsFull && !ringLow && !arenaLow) {
+                    const auto pieceStart = std::chrono::steady_clock::now();
+                    if (SubmitScenePiece())
+                        sceneSubmitStats.Note(pieceSplit, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - pieceStart).count()));
+                    else if (!listOpen) return;
+                    pieceSplit = gpu::scene_submit::Split::None;
+                }
+                const bool pieceDue = pieceSplit != gpu::scene_submit::Split::None; // 2.4.6: on the other slot
                 if (poolsFull || ringLow || arenaLow || pieceDue)
                 {
                     const auto splitStart = std::chrono::steady_clock::now();
@@ -14959,21 +15062,37 @@ void main()
                         resolveWhatIfStart = now;
                     }
                 }
-                // Steprant 2.4.6: the scene pieces of the last 10 s, when any.
-                drawsPreviousFrame = drawsThisFrame;
-                sceneSubmitStats.EndFrame();
+                // Steprant 2.4.6-2.4.7: each 10 s window with heavy frames logs
+                // its mode, frame time and waits; the mode rotates per window
+                // in the A/B test build (scene_submit_policy.h).
                 {
                     const auto now = std::chrono::steady_clock::now();
-                    if (sceneSubmitLogStart == std::chrono::steady_clock::time_point{}) sceneSubmitLogStart = now;
-                    else if (now - sceneSubmitLogStart >= std::chrono::seconds(10)) {
+                    const bool heavy = drawsPreviousFrame >= sceneSubmit.minFrameDraws;
+                    const uint64_t frameNs = sceneSubmitFrameEnd == std::chrono::steady_clock::time_point{} ? 0 :
+                        uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - sceneSubmitFrameEnd).count());
+                    sceneSubmitFrameEnd = now;
+                    sceneSubmitStats.EndFrame(heavy && frameNs, frameNs);
+                    drawsPreviousFrame = drawsThisFrame;
+                    if (sceneSubmitLogStart == std::chrono::steady_clock::time_point{}) {
+                        sceneSubmitLogStart = now;
+                        sceneSubmitFenceUs = frame_timing::TotalGpuFenceWaitUs();
+                    } else if (now - sceneSubmitLogStart >= std::chrono::seconds(10)) {
                         auto& st = sceneSubmitStats;
-                        if (st.Submits())
-                            LOG_INFO("renderer: scene pieces frames={} split_frames={} extra_submits={} at_target_change={} inside_pass={} "
+                        const uint64_t fenceUs = frame_timing::TotalGpuFenceWaitUs();
+                        if (st.heavyFrames)
+                            LOG_INFO("renderer: scene pieces window={} mode={} frames={} heavy_frames={} heavy_frame_ms={:.1f} "
+                                "fence_wait_ms_per_frame={:.1f} split_frames={} extra_submits={} at_target_change={} inside_pass={} "
                                 "split_ms={:.2f} piece_draws={} min_frame_draws={}",
-                                st.frames, st.splitFrames, st.Submits(), st.atTargetChange, st.insidePass,
-                                double(st.splitNs) / 1e6 / double(st.Submits()), sceneSubmit.pieceDraws, sceneSubmit.minFrameDraws);
+                                sceneSubmitWindow, gpu::scene_submit::Name(sceneSubmitMode), st.frames, st.heavyFrames,
+                                double(st.heavyFrameNs) / 1e6 / double(st.heavyFrames),
+                                double(fenceUs - sceneSubmitFenceUs) / 1e3 / double(std::max<uint64_t>(st.frames, 1)),
+                                st.splitFrames, st.Submits(), st.atTargetChange, st.insidePass,
+                                st.Submits() ? double(st.splitNs) / 1e6 / double(st.Submits()) : 0.0,
+                                sceneSubmit.pieceDraws, sceneSubmit.minFrameDraws);
                         st = {};
                         sceneSubmitLogStart = now;
+                        sceneSubmitFenceUs = fenceUs;
+                        sceneSubmitMode = gpu::scene_submit::ModeForWindow(sceneSubmit, ++sceneSubmitWindow);
                     }
                 }
                 ++frame; drawsThisFrame = 0; drops = {};

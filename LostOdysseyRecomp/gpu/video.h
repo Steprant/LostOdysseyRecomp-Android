@@ -72,6 +72,10 @@ namespace gpu::video
     // Native queue submission. The serial advances only after the backend's
     // checked submission and fence signal succeed. D3D12 may execute commands
     // before a later Signal failure; that case requires retaining their uses.
+    // Steprant 2.4.7: an earlier list of a renderer slot, submitted without a
+    // fence while the slot records on. The slot's next fenced submission
+    // covers it (queue submission order). Vulkan only.
+    bool SubmitRendererPiece(const plume::RenderCommandList* list, int32_t& rawResult);
     bool SubmitRendererBatch(const plume::RenderCommandList* const* lists, uint32_t count,
         plume::RenderCommandFence* fence, uint64_t& submissionSerial, int32_t& rawResult,
         bool* executionMayBeInFlight = nullptr);

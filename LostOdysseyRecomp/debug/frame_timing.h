@@ -9,6 +9,8 @@ bool Active();
 // Wall time a thread spent waiting on a GPU fence (video::WaitForGpuFence),
 // charged to the frame being presented.
 void AddGpuFenceWait(double milliseconds);
+// Steprant 2.4.7: microseconds of all GPU fence waits so far.
+uint64_t TotalGpuFenceWaitUs();
 // Wall time the command processor spent in PM4 WAIT_REG_MEM (the guest's
 // command stream waiting on a register or memory value, e.g. its vblank or
 // interrupt-handler handshakes).

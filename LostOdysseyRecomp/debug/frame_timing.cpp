@@ -39,8 +39,13 @@ double cpIdleMs = 0;
 double cpPresentIdleMs = 0;
 }
 void CpIdle(double milliseconds) { if (Active()) { cpIdleMs += milliseconds; cpPresentIdleMs += milliseconds; } }
+// Steprant 2.4.7: every GPU fence wait of the process, whatever Active() says
+// (the renderer's scene piece windows read it).
+static std::atomic<uint64_t> totalGpuFenceWaitUs{0};
+uint64_t TotalGpuFenceWaitUs() { return totalGpuFenceWaitUs.load(std::memory_order_relaxed); }
 void AddGpuFenceWait(double milliseconds)
 {
+    if (milliseconds > 0) totalGpuFenceWaitUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
     if (milliseconds > 0 && Active()) gpuFenceWaitUs.fetch_add(uint64_t(milliseconds * 1000.0), std::memory_order_relaxed);
 }
 void AddPresentAcquire(double milliseconds)
