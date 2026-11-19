@@ -53,6 +53,7 @@
 #include "cinematic_power.h"
 #if LO_PLATFORM_ANDROID && defined(LO_GPU_PLUME)
 #include "android_frame_generation.h"
+#include "android_frame_presenter.h"
 #endif
 #include "frame_plan.h"
 #include "pipeline_prepare_progress.h"
@@ -757,21 +758,124 @@ namespace gpu::video
         FgPresentBridge g_fgPresent;
         uint64_t g_fgPresentSerial = 0;
 #if LO_PLATFORM_ANDROID
+        struct AndroidOutputJob {
+            plume::VulkanCommandQueue* queue = nullptr;
+            VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+            VkFence fence = VK_NULL_HANDLE;
+            VkSemaphore signal = VK_NULL_HANDLE;
+            uint32_t image = 0;
+            VkPresentTimeGOOGLE timing{};
+            android_fg::Clock::time_point submitted{}, slot{};
+            ::diagnostics::android_tester::PresentOrigin origin{};
+            bool independent = false;
+        };
+
+        struct AndroidOutputResult {
+            VkResult fence = VK_NOT_READY, present = VK_NOT_READY;
+            android_fg::Clock::duration gpuWait{}, presentWall{};
+            bool late = false;
+            bool Accepted() const { return present == VK_SUCCESS || present == VK_SUBOPTIMAL_KHR; }
+        };
+
+        uint64_t AndroidPresentThreadCpuNs()
+        {
+            timespec t{};
+            return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) == 0 ?
+                uint64_t(t.tv_sec) * 1000000000ull + uint64_t(t.tv_nsec) : 0;
+        }
+
+        VkResult QueueAndroidImage(plume::VulkanCommandQueue& queue, VkSwapchainKHR swapchain,
+            uint32_t index, uint32_t waitCount, const VkSemaphore* waits,
+            const VkPresentTimeGOOGLE* timing, android_fg::Clock::time_point* called = nullptr)
+        {
+            VkPresentTimesInfoGOOGLE times{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
+            times.swapchainCount = 1;
+            times.pTimes = timing;
+            VkPresentInfoKHR info{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            info.pNext = timing && timing->presentID ? &times : nullptr;
+            info.waitSemaphoreCount = waitCount;
+            info.pWaitSemaphores = waits;
+            info.swapchainCount = 1;
+            info.pSwapchains = &swapchain;
+            info.pImageIndices = &index;
+            const std::scoped_lock lock(*queue.queue->mutex);
+            if (called) *called = android_fg::Clock::now();
+            return vkQueuePresentKHR(queue.queue->vk, &info);
+        }
+
+        AndroidOutputResult RunAndroidOutput(const AndroidOutputJob& job)
+        {
+            using android_fg::Clock;
+            AndroidOutputResult result;
+            const auto waitForImage = [&] {
+                result.fence = vkWaitForFences(job.queue->device->vk, 1, &job.fence, VK_TRUE, UINT64_MAX);
+                result.gpuWait = Clock::now() - job.submitted;
+            };
+            // A separate physical queue can enqueue the image while the
+            // graphics queue is producing it. With just one native queue,
+            // finish the image outside its mutex before the WSI call instead.
+            if (!job.independent) {
+                waitForImage();
+                if (result.fence != VK_SUCCESS) return result;
+            }
+            const auto ready = Clock::now();
+            const uint64_t cpuBefore = AndroidPresentThreadCpuNs();
+            auto called = ready;
+            result.present = QueueAndroidImage(*job.queue, job.swapchain, job.image, 1,
+                &job.signal, &job.timing, &called);
+            const auto completed = Clock::now();
+            result.presentWall = completed - called;
+            result.late = called > job.slot + std::chrono::milliseconds(2);
+            if (result.Accepted()) gpu::present_clock::NotePresented();
+            const uint64_t cpuAfter = AndroidPresentThreadCpuNs();
+            auto& tester = ::diagnostics::android_tester::g_recorder;
+            tester.Add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                completed.time_since_epoch()).count()), uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                result.presentWall).count()), cpuBefore && cpuAfter >= cpuBefore ? cpuAfter - cpuBefore : 0,
+                result.Accepted(), gpu_busy::Total(), gpu_busy::Batches(), host_ui::SuspendEpoch(), host_ui::IsGamePaused(),
+                &job.origin, job.timing.presentID, job.timing.desiredPresentTime);
+            if (job.independent) waitForImage();
+            return result;
+        }
+
         std::unique_ptr<android_fg::Generator> g_androidFg;
         std::unique_ptr<plume::RenderCommandList> g_androidFgCommands;
         std::unique_ptr<plume::RenderCommandFence> g_androidFgFence;
         std::unique_ptr<plume::RenderCommandSemaphore> g_androidFgAcquire;
+        std::unique_ptr<plume::RenderQueryPool> g_androidFgQuery;
+        uint64_t g_androidFgQueryEnd = 0;
+        bool g_androidFgQueryPending = false, g_androidFgQueryUnavailable = false;
+        std::unique_ptr<plume::RenderCommandQueue> g_androidFgPresentQueue;
+        std::unique_ptr<android_fg::Presenter<AndroidOutputJob, AndroidOutputResult>> g_androidFgPresenter;
         android_fg::Budget g_androidFgBudget;
+        struct AndroidDisplayTiming {
+            VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+            android_fg::DisplayCadence cadence;
+            android_fg::Clock::time_point queryAfter{}, reportAfter{};
+            uint32_t nextId = 0, lastObservedId = 0;
+            uint64_t lastScanoutNs = 0, observed = 0, adjacent = 0, missedSlots = 0;
+            bool supported = false;
+        } g_androidFgDisplay;
+        uint64_t g_androidFgOutputs = 0;
+        uint32_t g_androidFgOutputSamples = 0, g_androidFgLateOutputs = 0;
+        double g_androidFgMaxGpuMs = 0, g_androidFgMaxPresentMs = 0, g_androidFgMaxJoinMs = 0;
         bool g_androidFgEligible = false;
         bool g_androidFgCapture = false;
         bool g_androidFgPending = false;
+        bool g_androidFgPresenterFailed = false;
+        bool g_androidFgThermalPaused = false;
 
         void SetAndroidFgCapture(bool enabled)
         {
             if (g_androidFgCapture == enabled) return;
             g_androidFgCapture = enabled;
             renderer::SetFrameGenerationInputCaptureEnabled(enabled);
-            if (!enabled && g_androidFg) g_androidFg->Interrupt();
+            if (!enabled) {
+                if (g_androidFg) g_androidFg->Interrupt();
+                g_androidFgDisplay.cadence.Interrupt();
+                g_androidFgDisplay.lastObservedId = 0;
+                g_androidFgDisplay.lastScanoutNs = 0;
+            }
         }
 
         void InterruptAndroidFg()
@@ -785,10 +889,153 @@ namespace gpu::video
             using android_fg::Pressure;
             if (pressure != Pressure::None)
                 LOG_INFO("Android FG: paused, reason={}", pressure == Pressure::NativeCadence ? "native_cadence" :
-                    pressure == Pressure::Present ? "presentation_budget" : "missing_scene_inputs");
+                    pressure == Pressure::Present ? "presentation_budget" :
+                    pressure == Pressure::Deadline ? "missed_display_slot" : "missing_scene_inputs");
             if (!g_androidFgCapture && g_androidFgBudget.Capturing())
                 LOG_INFO("Android FG: capturing after stable native frames");
             SetAndroidFgCapture(g_androidFgBudget.Capturing());
+        }
+
+        bool StartAndroidFgPresenter()
+        {
+            if (g_androidFgPresenter) return true;
+            if (g_androidFgPresenterFailed) return false;
+            try {
+                auto queue = g_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
+                auto* graphics = static_cast<plume::VulkanCommandQueue*>(g_queue.get());
+                auto* output = static_cast<plume::VulkanCommandQueue*>(queue.get());
+                const bool independent = output && output->queue && output->familyIndex == graphics->familyIndex &&
+                    output->queue->vk != graphics->queue->vk;
+                // Swapchain images belong to this queue family. The semaphore
+                // joins graphics and presentation without an ownership transfer.
+                if (independent) g_androidFgPresentQueue = std::move(queue);
+                g_androidFgPresenter = std::make_unique<android_fg::Presenter<AndroidOutputJob, AndroidOutputResult>>(RunAndroidOutput);
+                LOG_INFO("Android FG: output worker independent_queue={}", independent);
+                return true;
+            } catch (const std::exception& error) {
+                LOG_WARNING("Android FG: output worker unavailable: {}", error.what());
+                g_androidFgPresentQueue.reset();
+                g_androidFgPresenterFailed = true;
+                return false;
+            }
+        }
+
+        android_fg::DisplaySlots AndroidFgDisplaySlots()
+        {
+            using android_fg::Clock;
+            auto& timing = g_androidFgDisplay;
+            auto* swap = static_cast<plume::VulkanSwapChain*>(g_swapChain.get());
+            const auto now = Clock::now();
+            if (timing.swapchain != swap->vk) {
+                timing = {};
+                timing.swapchain = swap->vk;
+                timing.supported = g_device->getCapabilities().displayTiming &&
+                    vkGetRefreshCycleDurationGOOGLE && vkGetPastPresentationTimingGOOGLE;
+                if (timing.supported) {
+                    VkRefreshCycleDurationGOOGLE cycle{};
+                    const auto result = vkGetRefreshCycleDurationGOOGLE(swap->commandQueue->device->vk, swap->vk, &cycle);
+                    if (result == VK_SUCCESS && cycle.refreshDuration >= 15000000 && cycle.refreshDuration <= 18000000)
+                        timing.cadence.SetPeriod(std::chrono::nanoseconds(cycle.refreshDuration));
+                    else timing.supported = false;
+                }
+                LOG_INFO("Android FG: display timing={} period_ms={:.3f}", timing.supported,
+                    std::chrono::duration<double, std::milli>(timing.cadence.Period()).count());
+            }
+            if (timing.supported && now >= timing.queryAfter) {
+                timing.queryAfter = now + std::chrono::milliseconds(250);
+                std::array<VkPastPresentationTimingGOOGLE, 32> samples{};
+                uint32_t count = uint32_t(samples.size());
+                const auto result = vkGetPastPresentationTimingGOOGLE(swap->commandQueue->device->vk,
+                    swap->vk, &count, samples.data());
+                if (result == VK_SUCCESS || result == VK_INCOMPLETE) {
+                    count = std::min(count, uint32_t(samples.size()));
+                    std::sort(samples.begin(), samples.begin() + count, [](const auto& a, const auto& b) {
+                        return a.actualPresentTime < b.actualPresentTime; });
+                    const auto nowNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now().time_since_epoch()).count());
+                    for (uint32_t i = 0; i < count; ++i) {
+                        const auto& sample = samples[i];
+                        if (!sample.presentID || sample.actualPresentTime <= timing.lastScanoutNs ||
+                            sample.actualPresentTime > nowNs || sample.desiredPresentTime > nowNs)
+                            continue;
+                        const auto actual = Clock::time_point(std::chrono::nanoseconds(sample.actualPresentTime));
+                        const auto gap = std::chrono::nanoseconds(sample.actualPresentTime - timing.lastScanoutNs);
+                        if (timing.lastScanoutNs && sample.presentID == timing.lastObservedId + 1) {
+                            ++timing.adjacent;
+                            timing.missedSlots += gap > timing.cadence.Period() * 3 / 2;
+                        }
+                        timing.lastObservedId = sample.presentID;
+                        timing.lastScanoutNs = sample.actualPresentTime;
+                        ++timing.observed;
+                        timing.cadence.ObserveScanout(actual,
+                            Clock::time_point(std::chrono::nanoseconds(sample.desiredPresentTime)));
+                    }
+                    if (timing.observed && now >= timing.reportAfter) {
+                        timing.reportAfter = now + std::chrono::seconds(5);
+                        LOG_INFO("Android FG: scanout observations={} consecutive={} gaps_over_one_refresh={}",
+                            timing.observed, timing.adjacent, timing.missedSlots);
+                    }
+                }
+            }
+            return timing.cadence.Schedule(Clock::now());
+        }
+
+        VkPresentTimeGOOGLE AndroidFgPresentTime(android_fg::Clock::time_point slot)
+        {
+            if (!g_androidFgDisplay.supported || slot == android_fg::Clock::time_point{}) return {};
+            if (++g_androidFgDisplay.nextId == 0) ++g_androidFgDisplay.nextId;
+            // Request just before the observed refresh to tolerate small
+            // timestamp quantization without slipping to the following one.
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                (slot - std::chrono::microseconds(500)).time_since_epoch()).count();
+            return {g_androidFgDisplay.nextId, uint64_t(ns)};
+        }
+
+        bool FinishAndroidFgOutput()
+        {
+            using android_fg::Clock;
+            using android_fg::ExtraFrame;
+            if (!g_androidFgPending) return true;
+            const auto begin = Clock::now();
+            const auto result = g_androidFgPresenter->Take();
+            const auto join = Clock::now() - begin;
+            g_androidFgPending = false;
+            if (result.fence != VK_SUCCESS) {
+                StopGpuWork(int32_t(result.fence));
+                return false;
+            }
+            if (g_androidFgQueryPending) {
+                g_androidFgQueryPending = false;
+                g_androidFgQuery->queryResults();
+                if (const auto* stamps = g_androidFgQuery->getResults())
+                    gpu_busy::AddBatch(stamps[0], stamps[1], g_androidFgQueryEnd);
+            }
+            g_androidFg->AfterFence();
+            g_presentProgress.Completed();
+            if (result.present == VK_ERROR_DEVICE_LOST) {
+                StopGpuWork(int32_t(result.present));
+                return false;
+            }
+            const bool accepted = result.Accepted();
+            if (accepted) ++g_androidFgOutputs;
+            else if (g_swapChain) static_cast<plume::VulkanSwapChain*>(g_swapChain.get())->surfaceOutOfDate = true;
+            g_androidFg->Presented(accepted);
+            const auto pressure = g_androidFgBudget.ExtraFinished(Clock::now(),
+                !accepted ? ExtraFrame::Busy : result.late ? ExtraFrame::Late : ExtraFrame::Presented, join);
+            ++g_androidFgOutputSamples;
+            g_androidFgLateOutputs += result.late;
+            const auto ms = [](Clock::duration value) { return std::chrono::duration<double, std::milli>(value).count(); };
+            g_androidFgMaxGpuMs = std::max(g_androidFgMaxGpuMs, ms(result.gpuWait));
+            g_androidFgMaxPresentMs = std::max(g_androidFgMaxPresentMs, ms(result.presentWall));
+            g_androidFgMaxJoinMs = std::max(g_androidFgMaxJoinMs, ms(join));
+            if (g_androidFgOutputSamples >= 120 || pressure != android_fg::Pressure::None) {
+                LOG_INFO("Android FG: output samples={} late={} fence_observed_max_ms={:.2f} present_max_ms={:.2f} native_join_max_ms={:.2f}",
+                    g_androidFgOutputSamples, g_androidFgLateOutputs, g_androidFgMaxGpuMs, g_androidFgMaxPresentMs, g_androidFgMaxJoinMs);
+                g_androidFgOutputSamples = g_androidFgLateOutputs = 0;
+                g_androidFgMaxGpuMs = g_androidFgMaxPresentMs = g_androidFgMaxJoinMs = 0;
+            }
+            ApplyAndroidFgBudget(pressure);
+            return true;
         }
 #endif
         // For the GPU-stopped dialog (device_loss_hint.h): when the renderer
@@ -1476,6 +1723,9 @@ namespace gpu::video
 
         bool WaitForPresentGpuImpl()
         {
+#if LO_PLATFORM_ANDROID && !defined(LO_VIDEO_SUBMISSION_UNIT)
+            if (!FinishAndroidFgOutput()) return false;
+#endif
             if (g_presentPending) {
                 if (!g_queue || !g_fence || !WaitForGpuFence(g_fence.get())) {
                     g_fgPresent.WaitFailed();
@@ -1486,16 +1736,6 @@ namespace gpu::video
                     completed, g_fgPresentSerial);
                 PresentationFenceCompleted();
             }
-#if LO_PLATFORM_ANDROID && !defined(LO_VIDEO_SUBMISSION_UNIT)
-            // Real and predicted images have independent submissions. Both
-            // finish before the shared presentation resources are reused.
-            if (g_androidFgPending) {
-                if (!WaitForGpuFence(g_androidFgFence.get())) return false;
-                g_androidFgPending = false;
-                g_androidFg->AfterFence();
-                g_presentProgress.Completed();
-            }
-#endif
             return !GpuWorkStopped();
         }
 
@@ -2063,6 +2303,11 @@ namespace gpu::video
 #if !defined(LO_VIDEO_SUBMISSION_UNIT)
     void DrainGpuForShutdown() {
         if (!g_device) return;
+#if LO_PLATFORM_ANDROID
+        // No worker may be inside the device's queue or swapchain while the
+        // shutdown drain takes ownership of every GPU resource.
+        FinishAndroidFgOutput();
+#endif
 #if LO_PLATFORM_MACOS
         if (g_metal) {
             // Every submission signalled a counted fence; consuming them all
@@ -2559,11 +2804,21 @@ namespace gpu::video
         // boundary; a failed ordinary wait alone never releases these leases.
         g_fgPresent = FgPresentBridge{}; g_fgPresentSerial = 0;
 #if LO_PLATFORM_ANDROID
+        g_androidFgPresenter.reset();
+        g_androidFgPresentQueue.reset();
         g_androidFg.reset();
         g_androidFgCommands.reset();
         g_androidFgFence.reset();
         g_androidFgAcquire.reset();
+        g_androidFgQuery.reset();
+        g_androidFgQueryEnd = 0;
+        g_androidFgQueryPending = g_androidFgQueryUnavailable = false;
         g_androidFgBudget = {};
+        g_androidFgDisplay = {};
+        g_androidFgOutputSamples = g_androidFgLateOutputs = 0;
+        g_androidFgMaxGpuMs = g_androidFgMaxPresentMs = g_androidFgMaxJoinMs = 0;
+        g_androidFgPresenterFailed = false;
+        g_androidFgThermalPaused = false;
         g_androidFgEligible = g_androidFgCapture = g_androidFgPending = false;
 #endif
         g_presentation.reset();
@@ -3472,12 +3727,16 @@ namespace gpu::video
 #if defined(__ANDROID__)
     static bool EnsureAndroidSurfaceSwapChain()
     {
+        // Join the single optional WSI call before any host access to this
+        // swapchain, including surface replacement and the next acquire.
+        if (!FinishAndroidFgOutput()) return false;
         if (GpuWorkStopped() || (!g_available && !g_initializing) || !g_androidSurfaceReady.load())
             return false;
         const auto surfaceSerial = g_androidSurfaceChangeSerial.load();
         if (surfaceSerial == g_androidAppliedSurfaceChangeSerial && g_swapChain) return true;
         if (!g_queue || !g_window || !WaitForPresentGpu()) return false;
         InterruptAndroidFg();
+        g_androidFgDisplay = {};
         if (g_presentation) g_presentation->ForgetTargets();
         g_swapChain.reset();
         g_presentSemaphores.clear();
@@ -4489,17 +4748,25 @@ namespace gpu::video
             g_androidFgBudget = {};
             if (!g_androidFg->Warming()) {
                 if (!WaitForPresentGpu()) return false;
+                g_androidFgPresenter.reset();
+                g_androidFgPresentQueue.reset();
                 g_androidFg.reset();
                 g_androidFgCommands.reset();
                 g_androidFgFence.reset();
                 g_androidFgAcquire.reset();
+                g_androidFgQuery.reset();
+                g_androidFgQueryEnd = 0;
+                g_androidFgQueryPending = g_androidFgQueryUnavailable = false;
+                g_androidFgPresenterFailed = false;
                 renderer::SetFrameGenerationInputCaptureEnabled(false);
             }
         }
         const bool androidFgRequested = g_vulkan && frameConfig.androidFrameGeneration && !frameConfig.hdr &&
-            frameConfig.upscaler == upscaling::Upscaler::Sgsr2 && (!g_androidFg || !g_androidFg->Unavailable());
+            frameConfig.upscaler == upscaling::Upscaler::Sgsr2;
+        const bool androidFgAvailable = androidFgRequested &&
+            (!g_androidFg || !g_androidFg->Unavailable()) && !g_androidFgPresenterFailed;
         const uint32_t refresh = g_displayRefreshHz.load(std::memory_order_relaxed);
-        const bool androidFgOutputReady = androidFgRequested && refresh >= 59 && refresh <= 61;
+        const bool androidFgOutputReady = androidFgAvailable && refresh >= 59 && refresh <= 61;
 #endif
         {
             PresentScope reconcile(g_presentProgress, PresentStage::Reconcile);
@@ -4508,7 +4775,9 @@ namespace gpu::video
             // Shared by real game frames and paused host overlays. Saving a new
             // cap applies here before any swapchain acquire, even while paused.
 #if LO_PLATFORM_ANDROID
-            gpu::SetFrameRateTarget(androidFgOutputReady ? android_fg::kSourceFps : frameConfig.frameRate);
+            // The selected feature is also a 30 FPS power policy. Keep that
+            // target when interpolation is temporarily unavailable.
+            gpu::SetFrameRateTarget(androidFgRequested ? android_fg::kSourceFps : frameConfig.frameRate);
 #else
             gpu::SetFrameRateTarget(frameConfig.frameRate);
 #endif
@@ -4526,14 +4795,21 @@ namespace gpu::video
 #if LO_PLATFORM_ANDROID
         // A FIFO swapchain at 60 Hz displays the pair on successive refreshes.
         // Keep the normal path if the system declines the 60 Hz surface hint.
-        g_androidFgEligible = androidFgOutputReady && nativeTarget == android_fg::kSourceFps && !loading::Active();
+        const int battery = cinematic_power::batteryTenths.load(std::memory_order_relaxed);
+        const bool thermalPaused = androidFgRequested && !g_androidFgBudget.ThermallyAllowed(battery);
+        if (thermalPaused != g_androidFgThermalPaused) {
+            g_androidFgThermalPaused = thermalPaused;
+            LOG_INFO("Android FG: thermal_paused={} battery_c={:.1f}", thermalPaused, battery / 10.0);
+        }
+        g_androidFgEligible = androidFgOutputReady && !thermalPaused &&
+            nativeTarget == android_fg::kSourceFps && !loading::Active();
         if (!g_androidFgEligible) InterruptAndroidFg();
         // Declare the game frame rate on the phone surface (RuntimeActivity
         // 0x8005): a 120 Hz panel can then run at a matching rate for 30/60
         // FPS content instead of compositing four identical refreshes.
         {
             static uint32_t hinted = ~0u;
-            const uint32_t wanted = androidFgRequested ? android_fg::kOutputFps : nativeTarget;
+            const uint32_t wanted = androidFgAvailable && !thermalPaused ? android_fg::kOutputFps : nativeTarget;
             if (wanted != hinted && SDL_SendAndroidMessage(0x8005, int(wanted))) {
                 hinted = wanted;
                 LOG_INFO("video output: display frame rate hint {} FPS", wanted);
@@ -4655,6 +4931,7 @@ namespace gpu::video
             if (!WaitForPresentGpu()) return false;
 #if LO_PLATFORM_ANDROID
             InterruptAndroidFg();
+            g_androidFgDisplay = {};
 #endif
 #if defined(__APPLE__) && defined(LO_ENABLE_METALFX_FG)
             if (g_metalFg) g_metalFg->SuspendAfterHostDrain();
@@ -5098,7 +5375,7 @@ namespace gpu::video
         if (g_metalFg && g_metalFg->Available()) return {true, g_completedPresentCount};
 #endif
 #if defined(LO_GPU_PLUME) && LO_PLATFORM_ANDROID
-        if (g_androidFg && g_androidFg->Active()) return {true, g_completedPresentCount};
+        if (g_androidFg && g_androidFg->Active()) return {true, g_completedPresentCount + g_androidFgOutputs};
 #endif
         return {};
     }
@@ -5311,51 +5588,76 @@ namespace gpu::video
         return acquired;
     }
 
-    static bool PresentSwapchainImage(uint32_t imageIndex, plume::RenderCommandSemaphore** waits, uint32_t waitCount)
+    static bool PresentSwapchainImage(uint32_t imageIndex, plume::RenderCommandSemaphore** waits, uint32_t waitCount,
+        const VkPresentTimeGOOGLE* timing = nullptr)
     {
         PresentScope progress(g_presentProgress, PresentStage::QueuePresent);
+        const auto present = [&] {
+#if LO_PLATFORM_ANDROID
+            if (timing && timing->presentID && waitCount == 1) {
+                auto* swap = static_cast<plume::VulkanSwapChain*>(g_swapChain.get());
+                const auto semaphore = static_cast<plume::VulkanCommandSemaphore*>(waits[0])->vk;
+                const auto result = QueueAndroidImage(*swap->commandQueue, swap->vk, imageIndex, 1, &semaphore, timing);
+                if (result == VK_ERROR_DEVICE_LOST) StopGpuWork(int32_t(result));
+                const bool accepted = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+                if (!accepted) swap->surfaceOutOfDate = true;
+                return accepted;
+            }
+#else
+            (void)timing;
+#endif
+            return g_swapChain->present(imageIndex, waits, waitCount);
+        };
 #if defined(__ANDROID__)
         auto& tester = ::diagnostics::android_tester::g_recorder;
         if (tester.recording.load(std::memory_order_relaxed)) {
-            const auto threadTime = []() -> uint64_t {
-                timespec t{};
-                return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) == 0
-                    ? uint64_t(t.tv_sec) * 1000000000ull + uint64_t(t.tv_nsec) : 0;
-            };
-            const uint64_t wallBefore = ::diagnostics::android_tester::NowNs(), cpuBefore = threadTime();
-            const bool ok = g_swapChain->present(imageIndex, waits, waitCount);
-            const uint64_t wallAfter = ::diagnostics::android_tester::NowNs(), cpuAfter = threadTime();
+            const uint64_t wallBefore = ::diagnostics::android_tester::NowNs(), cpuBefore = AndroidPresentThreadCpuNs();
+            const bool ok = present();
+            const uint64_t wallAfter = ::diagnostics::android_tester::NowNs(), cpuAfter = AndroidPresentThreadCpuNs();
             tester.Add(wallAfter, wallAfter - wallBefore,
                 cpuBefore && cpuAfter >= cpuBefore ? cpuAfter - cpuBefore : 0,
-                ok, gpu_busy::Total(), gpu_busy::Batches(), host_ui::SuspendEpoch(), host_ui::IsGamePaused());
+                ok, gpu_busy::Total(), gpu_busy::Batches(), host_ui::SuspendEpoch(), host_ui::IsGamePaused(),
+                nullptr, timing ? timing->presentID : 0, timing ? timing->desiredPresentTime : 0);
             return ok;
         }
 #endif
-        return g_swapChain->present(imageIndex, waits, waitCount);
+        return present();
     }
 
 #if LO_PLATFORM_ANDROID
-    static android_fg::ExtraFrame PresentAndroidPrediction(plume::RenderTexture* source,
-        uint32_t sourceWidth, uint32_t sourceHeight, PresentationOptions options, bool performanceOverlay)
+    static bool SubmitAndroidPrediction(plume::RenderTexture* source,
+        uint32_t sourceWidth, uint32_t sourceHeight, PresentationOptions options, bool performanceOverlay,
+        android_fg::Clock::time_point slot)
     {
         using android_fg::Clock;
-        using android_fg::ExtraFrame;
-        if (!g_androidFgBudget.CanGenerate(Clock::now())) return ExtraFrame::Busy;
+        const auto fits = [&] {
+            const auto now = Clock::now();
+            return g_androidFgBudget.CanGenerate(now) && slot >= now + std::chrono::milliseconds(5);
+        };
+        if (!g_androidFgPresenter || g_androidFgPending || !fits()) return false;
         if (!g_androidFgCommands) g_androidFgCommands = g_queue->createCommandList();
         if (!g_androidFgFence) g_androidFgFence = g_device->createCommandFence();
         if (!g_androidFgAcquire) g_androidFgAcquire = g_device->createCommandSemaphore();
-        if (!g_androidFgCommands || !g_androidFgFence || !g_androidFgAcquire ||
-            !g_androidFgBudget.CanGenerate(Clock::now()))
-            return ExtraFrame::Busy;
+        if (!g_androidFgCommands || !g_androidFgFence || !g_androidFgAcquire || !fits()) return false;
 
         // The real image has already been submitted and presented. A prediction
         // gets its own optional slot at the next refresh, using FIFO ordering.
         auto* wait = g_androidFgAcquire.get();
         uint32_t index = 0;
-        if (!AcquirePresentTexture(&index, wait)) return ExtraFrame::Busy;
+        if (!AcquirePresentTexture(&index, wait)) return false;
         auto* commands = g_androidFgCommands.get();
         auto* target = g_swapChain->getTexture(index);
-        if (!BeginGpuCommands(commands)) return ExtraFrame::Busy;
+        if (!BeginGpuCommands(commands)) return false;
+        const bool measure = gpu_busy::Requested();
+        if (measure && !g_androidFgQuery && !g_androidFgQueryUnavailable) {
+            if (g_device->getCapabilities().queryPools) g_androidFgQuery = g_device->createQueryPool(2);
+            if (g_androidFgQuery && g_androidFgQuery->getCount() != 2) g_androidFgQuery.reset();
+            g_androidFgQueryUnavailable = !g_androidFgQuery;
+        }
+        if (measure && g_androidFgQuery) {
+            commands->resetQueryPool(g_androidFgQuery.get(), 0, 2);
+            commands->writeTimestamp(g_androidFgQuery.get(), 0);
+        }
         auto* predicted = g_androidFg->Record(*commands, source);
         options.antialiasing = Antialiasing::Off;
         options.scalingFilter = ScalingFilter::Bilinear;
@@ -5365,17 +5667,29 @@ namespace gpu::video
         if (performanceOverlay) DrawPreparedPerformanceOverlay(commands, target);
         commands->barriers(plume::RenderBarrierStage::NONE,
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::PRESENT));
-        if (!EndGpuCommands(commands)) return ExtraFrame::Busy;
+        if (measure && g_androidFgQuery) commands->writeTimestamp(g_androidFgQuery.get(), 1);
+        if (!EndGpuCommands(commands)) return false;
 
         const plume::RenderCommandList* lists[] = {commands};
         auto* ready = PresentSemaphore(index);
         if (!SubmitPresentationBatch(lists, 1, &wait, 1, &ready, 1, g_androidFgFence.get(), nullptr, nullptr))
-            return ExtraFrame::Busy;
+            return false;
+        g_androidFgQueryPending = measure && bool(g_androidFgQuery);
+        auto* swap = static_cast<plume::VulkanSwapChain*>(g_swapChain.get());
+        auto* queue = static_cast<plume::VulkanCommandQueue*>(g_androidFgPresentQueue ?
+            g_androidFgPresentQueue.get() : g_queue.get());
+        AndroidOutputJob job{queue, swap->vk, static_cast<plume::VulkanCommandFence*>(g_androidFgFence.get())->vk,
+            static_cast<plume::VulkanCommandSemaphore*>(ready)->vk, index, AndroidFgPresentTime(slot),
+            Clock::now(), slot, ::diagnostics::android_tester::g_recorder.CapturePresentOrigin(),
+            bool(g_androidFgPresentQueue)};
+        // The prior job was reaped before this acquire. Keep the swapchain,
+        // submission fence and signal semaphore alive until the worker returns.
+        if (!g_androidFgPresenter->Submit(job)) {
+            StopGpuWork(submission::VulkanState::InvalidState);
+            return false;
+        }
         g_androidFgPending = true;
-        if (!PresentSwapchainImage(index, &ready, 1)) return ExtraFrame::Busy;
-        ++g_completedPresentCount;
-        gpu::present_clock::NotePresented();
-        return ExtraFrame::Presented;
+        return true;
     }
 #endif
 
@@ -6031,7 +6345,15 @@ namespace gpu::video
                 if (presentTiming) g_presentTiming.pending = g_presentTiming.recording;
                 g_fgPresent.Submitted(g_deviceEpoch.load(), submissionSerial);
                 FgPresentStart();
+#if LO_PLATFORM_ANDROID
+                const bool androidFgUsable = androidFgFrame && !g_achievementToast.texture && !g_preparationBar.texture &&
+                    !settings::title_entry::HintShown();
+                const auto slots = androidFgUsable && g_androidFgCapture ? AndroidFgDisplaySlots() : android_fg::DisplaySlots{};
+                const auto timing = AndroidFgPresentTime(slots.native);
+                const bool presented = PresentSwapchainImage(imageIndex, &signalSemaphore, 1, &timing);
+#else
                 const bool presented = PresentSwapchainImage(imageIndex, &signalSemaphore, 1);
+#endif
                 FgPresented(presented);
                 if (!presented) {
                     g_fgPresent.CancelAll(frame_generation::HandoffCancel::DisplayChange);
@@ -6042,24 +6364,24 @@ namespace gpu::video
                 g_presentPending = true;
                 g_lastPresentedImage=imageIndex; g_hasPresentedImage=true;
 #if LO_PLATFORM_ANDROID
-                if (androidFgFrame && presented && !g_achievementToast.texture && !g_preparationBar.texture &&
-                    !settings::title_entry::HintShown()) {
+                if (androidFgUsable && presented) {
                     const auto nativeEnd = android_fg::Clock::now();
                     if (!g_androidFg) g_androidFg = std::make_unique<android_fg::Generator>();
-                    if (g_androidFg->Warmup(*g_device)) {
+                    if (g_androidFg->Warmup(*g_device) && StartAndroidFgPresenter()) {
                         const bool captured = g_androidFgCapture;
                         ApplyAndroidFgBudget(g_androidFgBudget.NativePresented(nativeStart, nativeEnd));
                         if (captured && g_androidFgCapture) {
                             frame_generation::CompositeHandoff inputs;
                             renderer::AcquireFgCompositeInputs(physicalAddress & 0x1FFFFFFF, inputs);
                             const bool ready = g_androidFg->Prepare(*g_device, inputs, {sourceWidth, sourceHeight}, nativeStart);
-                            const auto extra = ready ?
-                                PresentAndroidPrediction(source, sourceWidth, sourceHeight, presentationOptions,
-                                    presentationConfig.performanceOverlay != ui::performance_overlay::Off) :
-                                android_fg::ExtraFrame::MissingInputs;
-                            if (!g_androidFgPending && !GpuWorkStopped()) g_androidFg->AfterFence();
-                            g_androidFg->Presented(extra == android_fg::ExtraFrame::Presented);
-                            ApplyAndroidFgBudget(g_androidFgBudget.ExtraFinished(android_fg::Clock::now(), extra));
+                            const bool queued = ready && SubmitAndroidPrediction(source, sourceWidth, sourceHeight, presentationOptions,
+                                presentationConfig.performanceOverlay != ui::performance_overlay::Off, slots.prediction);
+                            if (!queued) {
+                                if (!GpuWorkStopped()) g_androidFg->AfterFence();
+                                g_androidFg->Presented(false);
+                                ApplyAndroidFgBudget(g_androidFgBudget.ExtraFinished(android_fg::Clock::now(),
+                                    ready ? android_fg::ExtraFrame::Busy : android_fg::ExtraFrame::MissingInputs));
+                            }
                         }
                     }
                 } else if (androidFgFrame && !presented && g_androidFgCapture) {

@@ -35,6 +35,14 @@ struct Frame {
     bool gamePaused = false;
     // Steprant 2.1.1: the heavy GPU/CPU profiling was on for this frame.
     bool profiling = false;
+    bool generated = false;
+    uint32_t displayPresentId = 0;
+    uint64_t desiredDisplayTimeNs = 0;
+};
+
+struct PresentOrigin {
+    uint64_t session = 0, rendererFrame = 0, draws = 0;
+    bool movieActive = false, profiling = false;
 };
 
 // Steprant 2.1.1: the heavy profiling (per-render-pass GPU timestamps, the
@@ -133,13 +141,21 @@ public:
         }
         movieWall_.store(wallNs, std::memory_order_relaxed);
     }
+    PresentOrigin CapturePresentOrigin() const {
+        if (!recording.load(std::memory_order_acquire)) return {};
+        return {startedNs_.load(std::memory_order_relaxed), rendererFrame_.load(std::memory_order_relaxed),
+            draws_.load(std::memory_order_relaxed), movieActive_.load(std::memory_order_relaxed),
+            burst_.load(std::memory_order_relaxed)};
+    }
     void Add(uint64_t now, uint64_t wall, uint64_t cpu, bool presented, uint64_t gpuTotal, uint64_t gpuBatches,
-             uint32_t suspendEpoch = 0, bool pausedNow = false) {
+             uint32_t suspendEpoch = 0, bool pausedNow = false, const PresentOrigin* origin = nullptr,
+             uint32_t displayPresentId = 0, uint64_t desiredDisplayTimeNs = 0) {
         if (!recording.load(std::memory_order_acquire)) return;
         // The burst state for the next frames; this one is recorded with the
         // state it was produced under.
-        const bool profiled = burst_.load(std::memory_order_relaxed);
+        const bool profiled = origin ? origin->profiling : burst_.load(std::memory_order_relaxed);
         const uint64_t started = startedNs_.load(std::memory_order_relaxed);
+        if (origin && (!origin->session || origin->session != started)) return;
         burst_.store(ProfilingBurst(now >= started ? now - started : 0), std::memory_order_relaxed);
         const uint32_t previousEpoch = suspendEpoch_.exchange(suspendEpoch, std::memory_order_relaxed);
         const bool gamePaused = pausedNow || previousEpoch != suspendEpoch;
@@ -152,17 +168,19 @@ public:
         }
         std::unique_lock lock(mutex_, std::try_to_lock);
         if (!lock.owns_lock()) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
-        if (!recording.load(std::memory_order_relaxed)) return;
-        Frame sample{now, interval, wall, cpu, rendererFrame_.load(std::memory_order_relaxed),
-            draws_.load(std::memory_order_relaxed), gpuTotal, gpuBatches,
+        if (!recording.load(std::memory_order_relaxed) || (origin && origin->session != started_)) return;
+        Frame sample{now, interval, wall, cpu,
+            origin ? origin->rendererFrame : rendererFrame_.load(std::memory_order_relaxed),
+            origin ? origin->draws : draws_.load(std::memory_order_relaxed), gpuTotal, gpuBatches,
             starved_.load(std::memory_order_relaxed), clockResets_.load(std::memory_order_relaxed),
             xmaFrames_.load(std::memory_order_relaxed), xmaFailures_.load(std::memory_order_relaxed), xmaWall_.load(std::memory_order_relaxed),
             movieFrames_.load(std::memory_order_relaxed), moviePts_.load(std::memory_order_relaxed), movieWall_.load(std::memory_order_relaxed),
             pipelineCreates_.load(std::memory_order_relaxed), pipelineFailures_.load(std::memory_order_relaxed),
             pipelineWall_.load(std::memory_order_relaxed), pipelineVs_.load(std::memory_order_relaxed), pipelinePs_.load(std::memory_order_relaxed),
-            movieActive_.load(std::memory_order_relaxed),
+            origin ? origin->movieActive : movieActive_.load(std::memory_order_relaxed),
             presented, automatic.load(std::memory_order_relaxed) && interval >= threshold_ && !gamePaused, gamePaused,
-            profiled && profile.load(std::memory_order_relaxed) != 0};
+            profiled && profile.load(std::memory_order_relaxed) != 0,
+            origin != nullptr, displayPresentId, desiredDisplayTimeNs};
         if (count_ == Capacity) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
         frames_[(head_ + count_) % Capacity] = sample;
         ++count_;

@@ -121,7 +121,7 @@ bool Generator::Prepare(RenderDevice& device, const frame_generation::CompositeH
     const auto& current = last.images->inputs;
     const auto delta = now - previous.time;
     if (current.resetHistory || !previous.images || delta < std::chrono::milliseconds(23) ||
-        delta > std::chrono::milliseconds(38))
+        delta > std::chrono::milliseconds(40))
         return false;
     const auto& prior = previous.images->inputs;
     if (prior.renderFrameId + 1 != current.renderFrameId || prior.temporalEpoch != current.temporalEpoch ||

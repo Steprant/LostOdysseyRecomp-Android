@@ -2109,8 +2109,8 @@ void Publish(uint8_t *base, uint32_t config)
         case GraphicsRow::FrameGenerationMultiplier:
         {
 #if LO_PLATFORM_ANDROID
-            next.help = Tr(L"Experimental. Targets 30 game FPS and adds frames when the device has headroom. Requires SGSR2 and 60 Hz SDR.",
-                           L"實驗性功能。以遊戲 30 FPS 為目標，有足夠效能時補幀。需要 SGSR2 與 60 Hz SDR。");
+            next.help = Tr(L"Experimental. Targets 30 game FPS and adds frames when performance and temperature allow. Requires SGSR2 and 60 Hz SDR.",
+                           L"實驗性功能。以遊戲 30 FPS 為目標，效能和溫度允許時補幀。需要 SGSR2 與 60 Hz SDR。");
 #else
             const auto compiled = [](GraphicsBackend backend, framegen::Provider provider) {
                 return gpu::frame_generation::CompiledProvider(backend, provider);

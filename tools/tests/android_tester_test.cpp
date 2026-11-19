@@ -66,4 +66,25 @@ int main() {
     producer.join();
     r.Stop(1000000);
     assert(r.Drain().size() <= Recorder::Capacity);
+
+    // The asynchronous output retains its game frame even when the renderer
+    // has begun the next one. A result from a retired recording is discarded.
+    r.collectorIdle = true;
+    assert(r.Start(2000000, 30));
+    r.SetRenderer(12, 200);
+    const auto origin = r.CapturePresentOrigin();
+    r.Add(5000000, 1, 1, true, 0, 0);
+    r.SetRenderer(13, 400);
+    r.Add(15000000, 1, 1, true, 0, 0, 0, false, &origin, 23, 20000000);
+    const auto asyncFrames = r.Drain();
+    assert(asyncFrames.size() == 2 && !asyncFrames[0].generated && asyncFrames[1].generated);
+    assert(asyncFrames[1].rendererFrame == 12 && asyncFrames[1].draws == 200);
+    assert(asyncFrames[1].displayPresentId == 23 && asyncFrames[1].desiredDisplayTimeNs == 20000000);
+    r.Stop(20000000);
+    r.collectorIdle = true;
+    assert(r.Start(30000000, 30));
+    r.Add(40000000, 1, 1, true, 0, 0, 0, false, &origin);
+    r.Add(41000000, 1, 1, true, 0, 0);
+    const auto newFrames = r.Drain();
+    assert(newFrames.size() == 1 && newFrames[0].intervalNs == 0 && !newFrames[0].generated);
 }
